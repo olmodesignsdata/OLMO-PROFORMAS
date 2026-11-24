@@ -2,6 +2,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
+  CloudUpload,
   CopyPlus,
   Download,
   Edit3,
@@ -9,6 +10,7 @@ import {
   FilePlus2,
   FileSpreadsheet,
   Filter,
+  Loader2,
   PenLine,
   RefreshCw,
   Search,
@@ -38,9 +40,11 @@ interface HistoryViewProps {
   activeConsecutivo: number;
   hasAppsScriptUrl: boolean;
   isSyncingSheet: boolean;
+  isSendingToSheet?: boolean;
   lastSheetSyncAt?: string;
   sheetSyncFeedback: { ok: boolean; message: string } | null;
   onSyncFromSheet: () => void;
+  onSendProforma?: () => void;
   onGoToIntegration: () => void;
   onOpenRecord: (record: SavedProformaRecord) => void;
   onDuplicateRecord: (record: SavedProformaRecord) => void;
@@ -97,9 +101,11 @@ export function HistoryView({
   activeConsecutivo,
   hasAppsScriptUrl,
   isSyncingSheet,
+  isSendingToSheet = false,
   lastSheetSyncAt,
   sheetSyncFeedback,
   onSyncFromSheet,
+  onSendProforma,
   onGoToIntegration,
   onOpenRecord,
   onDuplicateRecord,
@@ -320,6 +326,25 @@ export function HistoryView({
                 : 'Actualizar desde Sheet'}
             </span>
           </button>
+
+          {onSendProforma && (
+            <button
+              type="button"
+              onClick={onSendProforma}
+              disabled={isSendingToSheet}
+              title={`Enviar la Proforma Nº ${activeConsecutivo} al Google Sheet configurado`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#8C5A32] bg-[#FAF6F1] px-3.5 py-2 text-xs font-semibold text-[#6F4423] hover:bg-[#F3ECE2] disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isSendingToSheet ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>
+                {isSendingToSheet ? 'Enviando Proforma...' : 'Enviar Proforma'}
+              </span>
+            </button>
+          )}
 
           <button
             type="button"

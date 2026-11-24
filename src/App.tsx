@@ -1702,9 +1702,11 @@ export default function App() {
             activeConsecutivo={proforma.consecutivo}
             hasAppsScriptUrl={Boolean(cloudConfig.webhookUrl.trim())}
             isSyncingSheet={isSyncingRemoteHistory}
+            isSendingToSheet={isSendingToSheet}
             lastSheetSyncAt={lastRemoteHistorySyncAt}
             sheetSyncFeedback={remoteHistoryFeedback}
             onSyncFromSheet={() => void handleSyncHistoryFromSheet()}
+            onSendProforma={() => void handleSendProformaToSheet()}
             onGoToIntegration={() => setActiveSection('integration')}
             onOpenRecord={handleOpenRecord}
             onDuplicateRecord={handleDuplicateRecord}

@@ -19,7 +19,7 @@ export function TopBar({
   const navItems: Array<{ id: AppSection; label: string }> = [
     {
       id: 'history',
-      label: historyCount > 0 ? `Historial (${historyCount})` : 'Historial',
+      label: historyCount > 0 ? `PROFORMAS (${historyCount})` : 'PROFORMAS',
     },
     { id: 'editor', label: 'Editor' },
     { id: 'preview', label: 'Vista Previa' },

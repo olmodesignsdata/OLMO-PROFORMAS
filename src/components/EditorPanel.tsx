@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Copy,
   FileSpreadsheet,
   ImagePlus,
@@ -101,6 +103,14 @@ interface EditorPanelProps {
 
 type EditorTab = 'cliente' | 'productos' | 'referencias' | 'terminos' | 'banco';
 
+function normalizeProductSearchText(value: string): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 export function EditorPanel({
   data,
   totals,
@@ -149,6 +159,9 @@ export function EditorPanel({
   const [selectedExcelSheet, setSelectedExcelSheet] = useState('');
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
   const [visualRefError, setVisualRefError] = useState<string | null>(null);
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [collapsedProductIds, setCollapsedProductIds] = useState<Record<string, boolean>>({});
+  const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
 
   const [mainLogoUrlInput, setMainLogoUrlInput] = useState('');
   const [mainLogoUrlLoading, setMainLogoUrlLoading] = useState(false);
@@ -203,9 +216,24 @@ export function EditorPanel({
   const itemImageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>(
     {}
   );
+  const productCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const manualUnitItemIdsRef = useRef<Set<string>>(new Set());
 
   const proformaType: ProformaType = data.proformaType ?? 'mobiliario';
   const effectiveMainLogo = mainLogo?.dataUrl ? mainLogo : DEFAULT_OLMO_MAIN_LOGO;
+
+  const filteredProductEntries = useMemo(() => {
+    const q = normalizeProductSearchText(productSearchQuery);
+    return data.items
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => {
+        if (!q) return true;
+        const haystack = normalizeProductSearchText(
+          `${item.producto} ${item.descripcion}`
+        );
+        return haystack.includes(q);
+      });
+  }, [data.items, productSearchQuery]);
 
   const handleMainLogoFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -574,27 +602,45 @@ export function EditorPanel({
   };
 
   const handleChangeProformaType = (nextType: ProformaType) => {
-    onChange((prev) => ({
-      ...prev,
-      proformaType: nextType,
-      items: prev.items.map((item) => {
-        if (nextType === 'cielos_pisos') {
-          const qty = Number(item.cantidad) > 0 ? Number(item.cantidad) : 1;
-          const unitPrice =
-            typeof item.valorUnitario === 'number'
-              ? item.valorUnitario
-              : Number(item.valor) > 0 && qty > 0
-                ? Number((Number(item.valor) / qty).toFixed(2))
-                : 0;
-          return {
-            ...item,
-            unidad: 'm²',
-            valorUnitario: unitPrice,
-          };
-        }
-        return item;
-      }),
-    }));
+    onChange((prev) => {
+      const prevType: ProformaType = prev.proformaType ?? 'mobiliario';
+      return {
+        ...prev,
+        proformaType: nextType,
+        items: prev.items.map((item) => {
+          if (nextType === 'cielos_pisos') {
+            const qty = Number(item.cantidad) > 0 ? Number(item.cantidad) : 1;
+            const unitPrice =
+              typeof item.valorUnitario === 'number'
+                ? item.valorUnitario
+                : Number(item.valor) > 0 && qty > 0
+                  ? Number((Number(item.valor) / qty).toFixed(2))
+                  : 0;
+            return {
+              ...item,
+              unidad: 'm²',
+              valorUnitario: unitPrice,
+            };
+          }
+
+          const trimmedUnit = item.unidad.trim();
+          const isSquareMeterUnit = /^(m²|m2|m\^2)$/i.test(trimmedUnit);
+          const hasManualUnit = manualUnitItemIdsRef.current.has(item.id);
+          const shouldResetToDefaultUnit =
+            (prevType === 'cielos_pisos' && (!hasManualUnit || isSquareMeterUnit || !trimmedUnit)) ||
+            (!hasManualUnit && (isSquareMeterUnit || !trimmedUnit));
+
+          if (shouldResetToDefaultUnit) {
+            return {
+              ...item,
+              unidad: 'und(s)',
+            };
+          }
+
+          return item;
+        }),
+      };
+    });
   };
 
   const updateItem = (
@@ -602,6 +648,14 @@ export function EditorPanel({
     field: keyof ProductLineItem,
     value: string | number
   ) => {
+    if (field === 'unidad') {
+      const unitStr = String(value).trim();
+      if (unitStr && unitStr !== 'und(s)' && !/^(m²|m2|m\^2)$/i.test(unitStr)) {
+        manualUnitItemIdsRef.current.add(id);
+      } else if (!unitStr || unitStr === 'und(s)') {
+        manualUnitItemIdsRef.current.delete(id);
+      }
+    }
     onChange((prev) => ({
       ...prev,
       items: prev.items.map((item) =>
@@ -821,10 +875,61 @@ export function EditorPanel({
       valorUnitario: proformaType === 'cielos_pisos' ? 0 : undefined,
       imagen: '',
     };
+    if (productSearchQuery.trim()) {
+      setProductSearchQuery('');
+    }
     onChange((prev) => ({
       ...prev,
       items: [...prev.items, newItem],
     }));
+  };
+
+  const toggleProductCollapsed = (itemId: string) => {
+    setCollapsedProductIds((prev) => ({
+      ...prev,
+      [itemId]: !prev[itemId],
+    }));
+  };
+
+  const handleCollapseAllProducts = () => {
+    const next: Record<string, boolean> = {};
+    data.items.forEach((item) => {
+      next[item.id] = true;
+    });
+    setCollapsedProductIds(next);
+  };
+
+  const handleExpandAllProducts = () => {
+    setCollapsedProductIds({});
+  };
+
+  const handleJumpToProduct = (itemId: string) => {
+    const wasCollapsed = Boolean(collapsedProductIds[itemId]);
+    if (wasCollapsed) {
+      setCollapsedProductIds((prev) => ({
+        ...prev,
+        [itemId]: false,
+      }));
+    }
+    setHighlightedProductId(itemId);
+    window.setTimeout(() => {
+      setHighlightedProductId((current) => (current === itemId ? null : current));
+    }, 1500);
+
+    const scrollNow = () => {
+      const el = productCardRefs.current[itemId];
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+
+    if (wasCollapsed) {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(scrollNow);
+      });
+    } else {
+      scrollNow();
+    }
   };
 
   const applyTemplate = (tpl: ProductTemplate) => {
@@ -2174,6 +2279,133 @@ export function EditorPanel({
               )}
             </div>
 
+            {data.items.length > 0 && (
+              <div className="space-y-3 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5">
+                {/* Buscador dentro de productos */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative min-w-[210px] flex-1">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      aria-label="Buscar productos por nombre o descripción"
+                      placeholder="Buscar producto por nombre o descripción..."
+                      value={productSearchQuery}
+                      onChange={(e) => setProductSearchQuery(e.target.value)}
+                      className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                    />
+                    {productSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setProductSearchQuery('')}
+                        title="Limpiar búsqueda"
+                        aria-label="Limpiar filtro de productos"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 cursor-pointer"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {productSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setProductSearchQuery('')}
+                      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <X className="h-3 w-3" aria-hidden="true" />
+                      <span>Limpiar filtro ({filteredProductEntries.length}/{data.items.length})</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Resumen comprimido con navegación por clic y comprimir/expandir detalle */}
+                <div className="rounded-md border border-[#E5E4DF] bg-white">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F0EFEA] px-3 py-2">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <span className="font-semibold text-zinc-800">
+                        Resumen rápido de productos
+                      </span>
+                      <span className="rounded border border-[#E5E4DF] bg-[#FAF9F6] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-zinc-600 tabular-nums">
+                        {filteredProductEntries.length}
+                        {productSearchQuery ? ` de ${data.items.length}` : ''}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleCollapseAllProducts}
+                        title="Comprimir detalle de todos los productos"
+                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 cursor-pointer"
+                      >
+                        <ChevronsDownUp className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                        <span>Comprimir detalle</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleExpandAllProducts}
+                        title="Expandir detalle de todos los productos"
+                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                      >
+                        <ChevronsUpDown className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                        <span>Expandir detalle</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {filteredProductEntries.length === 0 ? (
+                    <div className="px-3 py-3 text-center text-[11px] text-zinc-500">
+                      Ningún producto coincide con &ldquo;{productSearchQuery}&rdquo;.
+                    </div>
+                  ) : (
+                    <div className="max-h-44 divide-y divide-[#F0EFEA] overflow-y-auto">
+                      {filteredProductEntries.map(({ item, idx }) => {
+                        const unitLabel =
+                          proformaType === 'cielos_pisos'
+                            ? 'm²'
+                            : item.unidad.trim() || 'und(s)';
+                        const isCollapsed = Boolean(collapsedProductIds[item.id]);
+                        return (
+                          <button
+                            key={`summary-${item.id}`}
+                            type="button"
+                            onClick={() => handleJumpToProduct(item.id)}
+                            title="Ir a este producto en el listado principal"
+                            className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-[#FAF9F6] cursor-pointer"
+                          >
+                            <div className="flex min-w-0 flex-1 items-center gap-2">
+                              <span className="font-mono text-[11px] font-semibold text-zinc-400 tabular-nums shrink-0">
+                                #{String(idx + 1).padStart(2, '0')}
+                              </span>
+                              <span className="truncate font-medium text-zinc-800">
+                                {item.producto.trim() || 'Sin título'}
+                              </span>
+                              {isCollapsed && (
+                                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 shrink-0">
+                                  Comprimido
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0 font-mono text-[11px] tabular-nums">
+                              <span className="text-zinc-500">
+                                {item.cantidad} {unitLabel}
+                              </span>
+                              <span className="font-semibold text-zinc-900">
+                                {formatMoney(item.valor, data.clientProject.moneda)}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {data.items.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-10 text-center">
                 <p className="text-sm font-medium text-zinc-800">
@@ -2192,24 +2424,96 @@ export function EditorPanel({
                   <span>Agregar primer ítem</span>
                 </button>
               </div>
+            ) : filteredProductEntries.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-8 text-center">
+                <p className="text-sm font-medium text-zinc-800">
+                  No se encontraron productos para &ldquo;{productSearchQuery}&rdquo;
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Limpia el filtro de búsqueda para volver a ver los {data.items.length} productos de la cotización.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setProductSearchQuery('')}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 cursor-pointer"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Limpiar filtro y ver todos</span>
+                </button>
+              </div>
             ) : (
               <div className="space-y-4">
-                {data.items.map((item, idx) => (
+                {filteredProductEntries.map(({ item, idx }) => {
+                  const isCollapsed = Boolean(collapsedProductIds[item.id]);
+                  const isHighlighted = highlightedProductId === item.id;
+                  const unitLabel =
+                    proformaType === 'cielos_pisos'
+                      ? 'm²'
+                      : item.unidad.trim() || 'und(s)';
+                  return (
                   <div
                     key={item.id}
-                    className="rounded-lg border border-[#E5E4DF] bg-white p-4"
+                    ref={(el) => {
+                      productCardRefs.current[item.id] = el;
+                    }}
+                    className={`rounded-lg border bg-white p-4 transition-all duration-300 ${
+                      isHighlighted
+                        ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/25 shadow-sm'
+                        : 'border-[#E5E4DF]'
+                    }`}
                   >
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[#F0EFEA] pb-2.5">
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="font-mono font-semibold text-zinc-400 tabular-nums">
+                    <div
+                      className={`flex flex-wrap items-center justify-between gap-2 ${
+                        isCollapsed ? '' : 'mb-3 border-b border-[#F0EFEA] pb-2.5'
+                      }`}
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
+                        <span className="font-mono font-semibold text-zinc-400 tabular-nums shrink-0">
                           #{String(idx + 1).padStart(2, '0')}
                         </span>
-                        <span className="font-semibold text-zinc-800">
+                        <span className="truncate font-semibold text-zinc-800">
                           {item.producto || 'Sin título'}
                         </span>
+                        {isCollapsed && (
+                          <span className="hidden sm:inline-flex items-center gap-2 font-mono text-[11px] text-zinc-500 tabular-nums shrink-0">
+                            <span>·</span>
+                            <span>
+                              {item.cantidad} {unitLabel}
+                            </span>
+                            <span>·</span>
+                            <span className="font-semibold text-zinc-800">
+                              {formatMoney(item.valor, data.clientProject.moneda)}
+                            </span>
+                          </span>
+                        )}
                       </div>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleProductCollapsed(item.id)}
+                          aria-expanded={!isCollapsed}
+                          aria-label={
+                            isCollapsed
+                              ? 'Expandir detalle del producto'
+                              : 'Comprimir detalle del producto'
+                          }
+                          title={
+                            isCollapsed
+                              ? 'Expandir detalle'
+                              : 'Comprimir detalle'
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer mr-1"
+                        >
+                          {isCollapsed ? (
+                            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                          ) : (
+                            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                          <span className="hidden sm:inline">
+                            {isCollapsed ? 'Expandir' : 'Comprimir'}
+                          </span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => onSaveProductTemplate(item)}
@@ -2265,6 +2569,9 @@ export function EditorPanel({
                         </button>
                       </div>
                     </div>
+
+                    {!isCollapsed && (
+                      <>
 
                     {proformaType === 'cielos_pisos' ? (
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
@@ -2607,8 +2914,11 @@ export function EditorPanel({
                         </div>
                       </div>
                     )}
+                      </>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
