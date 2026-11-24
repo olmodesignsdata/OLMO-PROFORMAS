@@ -56,6 +56,7 @@ import {
 } from './types/proforma';
 import {
   fetchAranSpecTemplatesFromAppsScript,
+  fetchClientsFromAppsScript,
   fetchRemoteProformasFromAppsScript,
   parseProformaFromJsonInput,
   sendProformaToWebhook,
@@ -66,7 +67,12 @@ import {
   generateProformaPDF,
 } from './utils/exporters';
 import { computeProformaTotals, formatMoney } from './utils/formatters';
-import { ClientImportRow } from './utils/googleSheets';
+import {
+  ClientImportRow,
+  DEFAULT_CLIENTS_SHEET_NAME,
+  fetchAndParseGoogleSheetClients,
+  SpreadsheetSheetNotFoundError,
+} from './utils/googleSheets';
 import {
   processLogoFile,
   processLogoUrl,
@@ -363,6 +369,11 @@ export default function App() {
     loadAranTemplatesCache()
   );
   const [isSyncingAran, setIsSyncingAran] = useState(false);
+  const [isSyncingClients, setIsSyncingClients] = useState(false);
+  const [clientsSyncFeedback, setClientsSyncFeedback] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   const [activeSection, setActiveSection] = useState<AppSection>('history');
   const [layoutMode, setLayoutMode] = useState<WorkspaceLayoutMode>('split');
@@ -391,7 +402,11 @@ export default function App() {
   const latestHistoryRef = useRef(history);
   const latestFooterLogosRef = useRef(footerLogos);
   const latestCloudConfigRef = useRef(cloudConfig);
+  const latestSavedClientsRef = useRef(savedClients);
+  const latestClientsImportConfigRef = useRef(clientsImportConfig);
   const didInitialAranFetchRef = useRef(false);
+  const didInitialProformasSyncRef = useRef(false);
+  const didInitialClientsSyncRef = useRef(false);
   const prevFooterSyncContextRef = useRef<{ id: string; type: string }>({
     id: proforma.id,
     type: proforma.proformaType ?? 'mobiliario',
@@ -407,6 +422,8 @@ export default function App() {
   latestHistoryRef.current = history;
   latestFooterLogosRef.current = footerLogos;
   latestCloudConfigRef.current = cloudConfig;
+  latestSavedClientsRef.current = savedClients;
+  latestClientsImportConfigRef.current = clientsImportConfig;
 
   // Aplicar clase .dark en <html> para Modo Oscuro en toda la interfaz de trabajo (sin afectar el documento final/PDF)
   useEffect(() => {
@@ -1154,106 +1171,118 @@ export default function App() {
     saveClientsImportConfig(next);
   };
 
-  const handleImportClients = (
-    rows: ClientImportRow[],
-    strategy: ClientsImportStrategy
-  ): ClientsImportSummary => {
-    const now = new Date().toISOString();
-    const normalizeKey = (name: string) => name.trim().toLowerCase();
+  const handleImportClients = useCallback(
+    (
+      rows: ClientImportRow[],
+      strategy: ClientsImportStrategy,
+      options?: { silent?: boolean }
+    ): ClientsImportSummary => {
+      const now = new Date().toISOString();
+      const normalizeKey = (name: string) => name.trim().toLowerCase();
+      const currentClients = latestSavedClientsRef.current;
 
-    if (strategy === 'replace') {
-      const deduped = new Map<string, SavedClient>();
+      if (strategy === 'replace') {
+        const deduped = new Map<string, SavedClient>();
+        rows.forEach((row, idx) => {
+          const cleanName = row.cliente.trim();
+          if (!cleanName) return;
+          const key = normalizeKey(cleanName);
+          const existing = deduped.get(key);
+          deduped.set(key, {
+            id:
+              existing?.id ??
+              `cli-imp-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+            cliente: cleanName,
+            contacto: row.contacto || existing?.contacto || '',
+            telefono: row.telefono || existing?.telefono || '',
+            correo: row.correo || existing?.correo || '',
+            ubicacion: row.ubicacion || existing?.ubicacion || '',
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          });
+        });
+
+        const nextList = Array.from(deduped.values());
+        saveSavedClients(nextList);
+        setSavedClients(nextList);
+        if (!options?.silent) {
+          showToast(
+            `Lista de clientes reemplazada con ${nextList.length} cliente(s).`
+          );
+        }
+        return {
+          added: nextList.length,
+          updated: 0,
+          total: nextList.length,
+        };
+      }
+
+      const nextList = [...currentClients];
+      const indexByName = new Map<string, number>();
+      nextList.forEach((c, idx) => {
+        indexByName.set(normalizeKey(c.cliente), idx);
+      });
+
+      let added = 0;
+      let updated = 0;
+      const updatedIndexes = new Set<number>();
+
       rows.forEach((row, idx) => {
         const cleanName = row.cliente.trim();
         if (!cleanName) return;
         const key = normalizeKey(cleanName);
-        const existing = deduped.get(key);
-        deduped.set(key, {
-          id:
-            existing?.id ??
-            `cli-imp-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
-          cliente: cleanName,
-          contacto: row.contacto || existing?.contacto || '',
-          telefono: row.telefono || existing?.telefono || '',
-          correo: row.correo || existing?.correo || '',
-          ubicacion: row.ubicacion || existing?.ubicacion || '',
-          createdAt: existing?.createdAt ?? now,
-          updatedAt: now,
-        });
+        const matchIdx = indexByName.get(key);
+
+        if (matchIdx !== undefined) {
+          const current = nextList[matchIdx];
+          nextList[matchIdx] = {
+            ...current,
+            cliente: cleanName,
+            contacto: row.contacto || current.contacto,
+            telefono: row.telefono || current.telefono,
+            correo: row.correo || current.correo,
+            ubicacion: row.ubicacion || current.ubicacion,
+            updatedAt: now,
+          };
+          if (
+            !updatedIndexes.has(matchIdx) &&
+            matchIdx < currentClients.length
+          ) {
+            updated++;
+            updatedIndexes.add(matchIdx);
+          }
+        } else {
+          const newClient: SavedClient = {
+            id: `cli-imp-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+            cliente: cleanName,
+            contacto: row.contacto,
+            telefono: row.telefono,
+            correo: row.correo,
+            ubicacion: row.ubicacion,
+            createdAt: now,
+            updatedAt: now,
+          };
+          indexByName.set(key, nextList.length);
+          nextList.push(newClient);
+          added++;
+        }
       });
 
-      const nextList = Array.from(deduped.values());
       saveSavedClients(nextList);
       setSavedClients(nextList);
-      showToast(
-        `Lista de clientes reemplazada con ${nextList.length} cliente(s).`
-      );
+      if (!options?.silent) {
+        showToast(
+          `Importación de clientes completada: ${added} agregado(s), ${updated} actualizado(s).`
+        );
+      }
       return {
-        added: nextList.length,
-        updated: 0,
+        added,
+        updated,
         total: nextList.length,
       };
-    }
-
-    const nextList = [...savedClients];
-    const indexByName = new Map<string, number>();
-    nextList.forEach((c, idx) => {
-      indexByName.set(normalizeKey(c.cliente), idx);
-    });
-
-    let added = 0;
-    let updated = 0;
-    const updatedIndexes = new Set<number>();
-
-    rows.forEach((row, idx) => {
-      const cleanName = row.cliente.trim();
-      if (!cleanName) return;
-      const key = normalizeKey(cleanName);
-      const matchIdx = indexByName.get(key);
-
-      if (matchIdx !== undefined) {
-        const current = nextList[matchIdx];
-        nextList[matchIdx] = {
-          ...current,
-          cliente: cleanName,
-          contacto: row.contacto || current.contacto,
-          telefono: row.telefono || current.telefono,
-          correo: row.correo || current.correo,
-          ubicacion: row.ubicacion || current.ubicacion,
-          updatedAt: now,
-        };
-        if (!updatedIndexes.has(matchIdx) && matchIdx < savedClients.length) {
-          updated++;
-          updatedIndexes.add(matchIdx);
-        }
-      } else {
-        const newClient: SavedClient = {
-          id: `cli-imp-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
-          cliente: cleanName,
-          contacto: row.contacto,
-          telefono: row.telefono,
-          correo: row.correo,
-          ubicacion: row.ubicacion,
-          createdAt: now,
-          updatedAt: now,
-        };
-        indexByName.set(key, nextList.length);
-        nextList.push(newClient);
-        added++;
-      }
-    });
-
-    saveSavedClients(nextList);
-    setSavedClients(nextList);
-    showToast(
-      `Importación de clientes completada: ${added} agregado(s), ${updated} actualizado(s).`
-    );
-    return {
-      added,
-      updated,
-      total: nextList.length,
-    };
-  };
+    },
+    [showToast]
+  );
 
   const handleUseClientInProforma = (client: SavedClient) => {
     hasEditedSinceLoadRef.current = true;
@@ -1370,46 +1399,206 @@ export default function App() {
     }
   }, [cloudConfig.aranScriptUrl, handleSyncAranTemplates]);
 
-  const handleSyncHistoryFromSheet = async () => {
-    if (!cloudConfig.webhookUrl.trim()) {
-      const msg =
-        'Configura primero la URL de Google Apps Script (/exec) en la pestaña Integración.';
-      setRemoteHistoryFeedback({ ok: false, message: msg });
-      showToast(msg, true);
-      return;
-    }
+  const handleSyncHistoryFromSheet = useCallback(
+    async (silent = false) => {
+      const currentCloudConfig = latestCloudConfigRef.current;
+      if (!currentCloudConfig.webhookUrl.trim()) {
+        const msg =
+          'Configura primero la URL de Google Apps Script (/exec) en la pestaña Integración.';
+        setRemoteHistoryFeedback({ ok: false, message: msg });
+        if (!silent) showToast(msg, true);
+        return;
+      }
 
-    setIsSyncingRemoteHistory(true);
-    setRemoteHistoryFeedback(null);
-    try {
-      const fetched = await fetchRemoteProformasFromAppsScript(cloudConfig);
-      const normalized = fetched.map((rec) => ({
-        ...rec,
-        source: 'sheet' as const,
-        data: normalizeProformaClientContact(rec.data),
-      }));
-      const syncedAt = new Date().toISOString();
-      setRemoteHistory(normalized);
-      setLastRemoteHistorySyncAt(syncedAt);
-      saveRemoteHistoryCache({ records: normalized, syncedAt });
+      setIsSyncingRemoteHistory(true);
+      if (!silent) {
+        setRemoteHistoryFeedback(null);
+      }
+      try {
+        const fetched =
+          await fetchRemoteProformasFromAppsScript(currentCloudConfig);
+        const normalized = fetched.map((rec) => ({
+          ...rec,
+          source: 'sheet' as const,
+          data: normalizeProformaClientContact(rec.data),
+        }));
+        const syncedAt = new Date().toISOString();
+        setRemoteHistory(normalized);
+        setLastRemoteHistorySyncAt(syncedAt);
+        saveRemoteHistoryCache({ records: normalized, syncedAt });
 
-      const msg =
-        normalized.length > 0
-          ? `Se sincronizaron ${normalized.length} proforma(s) desde la pestaña PROFORMAS.`
-          : 'Conexión correcta con PROFORMAS, pero la hoja aún no contiene filas registradas.';
-      setRemoteHistoryFeedback({ ok: true, message: msg });
-      showToast(msg);
-    } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'No se pudo consultar la pestaña PROFORMAS.';
-      setRemoteHistoryFeedback({ ok: false, message: msg });
-      showToast(msg, true);
-    } finally {
-      setIsSyncingRemoteHistory(false);
+        const msg =
+          normalized.length > 0
+            ? `Se sincronizaron ${normalized.length} proforma(s) desde la pestaña PROFORMAS.`
+            : 'Conexión correcta con PROFORMAS, pero la hoja aún no contiene filas registradas.';
+        if (!silent) {
+          setRemoteHistoryFeedback({ ok: true, message: msg });
+          showToast(msg);
+        } else {
+          setRemoteHistoryFeedback(null);
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'No se pudo consultar la pestaña PROFORMAS.';
+        setRemoteHistoryFeedback({ ok: false, message: msg });
+        if (!silent) showToast(msg, true);
+      } finally {
+        setIsSyncingRemoteHistory(false);
+      }
+    },
+    [showToast]
+  );
+
+  const handleSyncClientsFromSheet = useCallback(
+    async (
+      silent = false
+    ): Promise<{
+      ok: boolean;
+      message: string;
+      sheetNotFoundError?: SpreadsheetSheetNotFoundError;
+    }> => {
+      const cfg = latestClientsImportConfigRef.current;
+      const hasSheetUrl = Boolean(cfg.sheetUrl.trim());
+      const hasAppsScriptUrl = Boolean(cfg.appsScriptUrl.trim());
+
+      if (!hasSheetUrl && !hasAppsScriptUrl) {
+        const msg =
+          'Configura primero el enlace de tu Google Sheet / CSV de clientes (o la URL de Google Apps Script) para usar Refrescar.';
+        setClientsSyncFeedback({ ok: false, message: msg });
+        if (!silent) showToast(msg, true);
+        return { ok: false, message: msg };
+      }
+
+      setIsSyncingClients(true);
+      if (!silent) {
+        setClientsSyncFeedback(null);
+      }
+
+      try {
+        const targetSheetName = cfg.sheetName || DEFAULT_CLIENTS_SHEET_NAME;
+
+        if (hasSheetUrl) {
+          const result = await fetchAndParseGoogleSheetClients(
+            cfg.sheetUrl,
+            targetSheetName
+          );
+          let summary: ClientsImportSummary = {
+            added: 0,
+            updated: 0,
+            total: latestSavedClientsRef.current.length,
+          };
+          if (result.clients.length > 0 || !silent) {
+            summary = handleImportClients(result.clients, cfg.strategy, {
+              silent,
+            });
+            const nextCfg: ClientsImportConfig = {
+              ...latestClientsImportConfigRef.current,
+              sheetName: result.sheetNameUsed || cfg.sheetName,
+              lastImportedAt: new Date().toISOString(),
+            };
+            setClientsImportConfig(nextCfg);
+            saveClientsImportConfig(nextCfg);
+          }
+
+          const sheetNote = result.sheetNameUsed
+            ? ` desde la hoja "${result.sheetNameUsed}"`
+            : '';
+          const ignoredNote =
+            result.ignoredCount > 0
+              ? ` (${result.ignoredCount} fila(s) vacía(s) o sin cliente omitida(s))`
+              : '';
+          const message =
+            cfg.strategy === 'replace'
+              ? `Lista de clientes reemplazada${sheetNote}: ${summary.added} cliente(s) importado(s)${ignoredNote}.`
+              : `Clientes actualizados${sheetNote}: ${summary.added} agregado(s), ${summary.updated} actualizado(s)${ignoredNote}.`;
+
+          if (!silent) {
+            setClientsSyncFeedback({ ok: true, message });
+          } else {
+            setClientsSyncFeedback(null);
+          }
+          return { ok: true, message };
+        } else {
+          const rows = await fetchClientsFromAppsScript(
+            cfg.appsScriptUrl,
+            targetSheetName
+          );
+          if (rows.length === 0) {
+            if (!silent) {
+              throw new Error(
+                'No se encontraron clientes en la pestaña CLIENTES del Apps Script.'
+              );
+            }
+            setClientsSyncFeedback(null);
+            return {
+              ok: true,
+              message:
+                'Conexión correcta con CLIENTES, sin registros nuevos.',
+            };
+          }
+
+          const summary = handleImportClients(rows, cfg.strategy, { silent });
+          const nextCfg: ClientsImportConfig = {
+            ...latestClientsImportConfigRef.current,
+            sheetName: targetSheetName,
+            lastImportedAt: new Date().toISOString(),
+          };
+          setClientsImportConfig(nextCfg);
+          saveClientsImportConfig(nextCfg);
+
+          const message =
+            cfg.strategy === 'replace'
+              ? `Lista de clientes reemplazada desde la hoja "${targetSheetName}": ${summary.added} cliente(s) importado(s).`
+              : `Clientes actualizados desde la hoja "${targetSheetName}": ${summary.added} agregado(s), ${summary.updated} actualizado(s).`;
+
+          if (!silent) {
+            setClientsSyncFeedback({ ok: true, message });
+          } else {
+            setClientsSyncFeedback(null);
+          }
+          return { ok: true, message };
+        }
+      } catch (err) {
+        if (err instanceof SpreadsheetSheetNotFoundError) {
+          const msg = `${err.message} Selecciona la pestaña correcta abajo.`;
+          const nextCfg: ClientsImportConfig = {
+            ...latestClientsImportConfigRef.current,
+            sheetName:
+              err.availableSheets[0] ||
+              latestClientsImportConfigRef.current.sheetName,
+          };
+          setClientsImportConfig(nextCfg);
+          saveClientsImportConfig(nextCfg);
+          setClientsSyncFeedback({ ok: false, message: msg });
+          return { ok: false, message: msg, sheetNotFoundError: err };
+        }
+
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'No se pudo refrescar la lista de clientes desde Google Sheets.';
+        setClientsSyncFeedback({ ok: false, message: msg });
+        if (!silent) showToast(msg, true);
+        return { ok: false, message: msg };
+      } finally {
+        setIsSyncingClients(false);
+      }
+    },
+    [handleImportClients, showToast]
+  );
+
+  useEffect(() => {
+    if (!didInitialProformasSyncRef.current) {
+      didInitialProformasSyncRef.current = true;
+      void handleSyncHistoryFromSheet(true);
     }
-  };
+    if (!didInitialClientsSyncRef.current) {
+      didInitialClientsSyncRef.current = true;
+      void handleSyncClientsFromSheet(true);
+    }
+  }, [handleSyncHistoryFromSheet, handleSyncClientsFromSheet]);
 
   const handleManualConsecutivoChange = (updater: (prev: ProformaData) => ProformaData) => {
     hasEditedSinceLoadRef.current = true;
@@ -1817,6 +2006,10 @@ export default function App() {
             onUseClientInProforma={handleUseClientInProforma}
             onGoToEditor={() => setActiveSection('editor')}
             onNotify={showToast}
+            isSyncingClients={isSyncingClients}
+            clientsSyncFeedback={clientsSyncFeedback}
+            onSyncClientsFromSheet={() => handleSyncClientsFromSheet(false)}
+            onClearClientsSyncFeedback={() => setClientsSyncFeedback(null)}
           />
         )}
 
@@ -1832,7 +2025,7 @@ export default function App() {
             isSendingToSheet={isSendingToSheet}
             lastSheetSyncAt={lastRemoteHistorySyncAt}
             sheetSyncFeedback={remoteHistoryFeedback}
-            onSyncFromSheet={() => void handleSyncHistoryFromSheet()}
+            onSyncFromSheet={() => void handleSyncHistoryFromSheet(false)}
             onSendProforma={() => void handleSendProformaToSheet()}
             onGoToIntegration={() => setActiveSection('integration')}
             onOpenRecord={handleOpenRecord}

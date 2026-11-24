@@ -71,6 +71,14 @@ interface ClientsViewProps {
   onUseClientInProforma: (client: SavedClient) => void;
   onGoToEditor: () => void;
   onNotify?: (text: string, isError?: boolean) => void;
+  isSyncingClients?: boolean;
+  clientsSyncFeedback?: { ok: boolean; message: string } | null;
+  onSyncClientsFromSheet?: () => Promise<{
+    ok: boolean;
+    message: string;
+    sheetNotFoundError?: SpreadsheetSheetNotFoundError;
+  }>;
+  onClearClientsSyncFeedback?: () => void;
 }
 
 const EMPTY_FORM: ClientDraftPayload = {
@@ -92,6 +100,10 @@ export function ClientsView({
   onUseClientInProforma,
   onGoToEditor,
   onNotify,
+  isSyncingClients = false,
+  clientsSyncFeedback = null,
+  onSyncClientsFromSheet,
+  onClearClientsSyncFeedback,
 }: ClientsViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -277,6 +289,26 @@ export function ClientsView({
         'Configura primero el enlace de tu Google Sheet / CSV de clientes (o la URL de Google Apps Script) para usar Refrescar.';
       setImportFeedback({ ok: false, message: msg });
       setSyncBanner({ ok: false, message: msg });
+      return;
+    }
+
+    if (onSyncClientsFromSheet) {
+      setImportFeedback(null);
+      setSyncBanner(null);
+      setRemoteSheetsList(null);
+      const res = await onSyncClientsFromSheet();
+      if (res.ok) {
+        setImportFeedback({ ok: true, message: res.message });
+      } else if (res.sheetNotFoundError) {
+        setIsImportOpen(true);
+        setRemoteSheetsList({
+          sheets: res.sheetNotFoundError.availableSheets,
+          workbook: res.sheetNotFoundError.workbook,
+        });
+        setImportFeedback({ ok: false, message: res.message });
+      } else {
+        setImportFeedback({ ok: false, message: res.message });
+      }
       return;
     }
 
@@ -495,10 +527,14 @@ export function ClientsView({
     'w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500';
   const labelClass = 'mb-1.5 block text-xs font-medium text-zinc-600 dark:text-zinc-400';
 
+  const isRefreshingClients =
+    importingSource === 'refresh' || isSyncingClients;
+  const effectiveSyncBanner = syncBanner ?? clientsSyncFeedback ?? null;
+
   const isDirectorySheetReady =
     (Boolean(importConfig.sheetUrl.trim()) ||
       Boolean(importConfig.appsScriptUrl.trim())) &&
-    syncBanner?.ok !== false &&
+    effectiveSyncBanner?.ok !== false &&
     importFeedback?.ok !== false;
   const isGoogleSheetImportReady =
     Boolean(importConfig.sheetUrl.trim()) && importFeedback?.ok !== false;
@@ -507,7 +543,8 @@ export function ClientsView({
     (Boolean(loadedExcel) || Boolean(selectedCsvFile)) &&
     importFeedback?.ok !== false;
   const isAppsScriptPushReady =
-    Boolean(importConfig.appsScriptUrl.trim()) && syncBanner?.ok !== false;
+    Boolean(importConfig.appsScriptUrl.trim()) &&
+    effectiveSyncBanner?.ok !== false;
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-6">
@@ -541,18 +578,18 @@ export function ClientsView({
           <button
             type="button"
             onClick={handleDirectRefresh}
-            disabled={importingSource !== null}
+            disabled={importingSource !== null || isSyncingClients}
             title="Volver a consultar automáticamente la fuente de Google Sheets guardada"
             className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isDirectorySheetReady, 'outline')}`}
           >
             <RefreshCw
               className={`h-3.5 w-3.5 ${
-                importingSource === 'refresh' ? 'animate-spin' : ''
+                isRefreshingClients ? 'animate-spin' : ''
               }`}
               aria-hidden="true"
             />
             <span>
-              {importingSource === 'refresh' ? 'Refrescando...' : 'Refrescar'}
+              {isRefreshingClients ? 'Refrescando...' : 'Refrescar'}
             </span>
           </button>
 
@@ -576,16 +613,16 @@ export function ClientsView({
         </div>
       </div>
 
-      {syncBanner && !isImportOpen && (
+      {effectiveSyncBanner && !isImportOpen && (
         <div
           className={`flex items-start justify-between gap-3 rounded-md border px-4 py-2.5 text-xs ${
-            syncBanner.ok
+            effectiveSyncBanner.ok
               ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800/80 dark:bg-emerald-950/60 dark:text-emerald-200'
               : 'border-red-200 bg-red-50 text-red-900 dark:border-red-800/80 dark:bg-red-950/60 dark:text-red-200'
           }`}
         >
           <div className="flex items-start gap-2">
-            {syncBanner.ok ? (
+            {effectiveSyncBanner.ok ? (
               <CheckCircle2
                 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
                 aria-hidden="true"
@@ -596,11 +633,14 @@ export function ClientsView({
                 aria-hidden="true"
               />
             )}
-            <span>{syncBanner.message}</span>
+            <span>{effectiveSyncBanner.message}</span>
           </div>
           <button
             type="button"
-            onClick={() => setSyncBanner(null)}
+            onClick={() => {
+              setSyncBanner(null);
+              onClearClientsSyncFeedback?.();
+            }}
             aria-label="Cerrar aviso"
             className="rounded p-0.5 text-current opacity-60 hover:opacity-100 cursor-pointer"
           >
