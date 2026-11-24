@@ -156,11 +156,13 @@ export function ProformaPreview({
                     <ResilientImage
                       src={effectiveMainLogo.dataUrl}
                       alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                      crossOrigin="anonymous"
                       className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
                       fallback={
                         <img
                           src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
                           alt="OLMO B.N."
+                          crossOrigin="anonymous"
                           className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
                         />
                       }
@@ -570,11 +572,13 @@ export function ProformaPreview({
                       <ResilientImage
                         src={effectiveMainLogo.dataUrl}
                         alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                        crossOrigin="anonymous"
                         className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                         fallback={
                           <img
                             src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
                             alt="OLMO B.N."
+                            crossOrigin="anonymous"
                             className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                           />
                         }
@@ -675,11 +679,13 @@ export function ProformaPreview({
                   <ResilientImage
                     src={effectiveMainLogo.dataUrl}
                     alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                    crossOrigin="anonymous"
                     className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                     fallback={
                       <img
                         src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
                         alt="OLMO B.N."
+                        crossOrigin="anonymous"
                         className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                       />
                     }
@@ -779,11 +785,13 @@ export function ProformaPreview({
                   <ResilientImage
                     src={effectiveMainLogo.dataUrl}
                     alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                    crossOrigin="anonymous"
                     className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                     fallback={
                       <img
                         src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
                         alt="OLMO B.N."
+                        crossOrigin="anonymous"
                         className="max-h-5 max-w-[80px] w-auto h-auto object-contain"
                       />
                     }

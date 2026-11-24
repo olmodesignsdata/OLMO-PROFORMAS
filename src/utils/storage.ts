@@ -1,7 +1,9 @@
 import {
   DEFAULT_BANK_ACCOUNT,
+  DEFAULT_CLIENTS_APPS_SCRIPT_URL,
   DEFAULT_COMPANY_INFO,
   DEFAULT_OLMO_MAIN_LOGO,
+  DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
   INITIAL_CONSECUTIVO,
 } from '../data/defaults';
 import {
@@ -185,15 +187,30 @@ export function loadCloudConfig(): CloudSyncConfig {
     const raw = localStorage.getItem(KEYS.CLOUD_CONFIG);
     if (!raw) {
       return {
-        webhookUrl: '',
+        webhookUrl: DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
         autoSyncOnSave: false,
         secretToken: '',
       };
     }
-    return JSON.parse(raw) as CloudSyncConfig;
+    const parsed = JSON.parse(raw) as Partial<CloudSyncConfig>;
+    return {
+      webhookUrl:
+        typeof parsed.webhookUrl === 'string' && parsed.webhookUrl.trim()
+          ? parsed.webhookUrl
+          : DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
+      autoSyncOnSave:
+        typeof parsed.autoSyncOnSave === 'boolean'
+          ? parsed.autoSyncOnSave
+          : false,
+      secretToken:
+        typeof parsed.secretToken === 'string' ? parsed.secretToken : '',
+      lastSyncedAt: parsed.lastSyncedAt,
+      lastStatus: parsed.lastStatus,
+      lastMessage: parsed.lastMessage,
+    };
   } catch {
     return {
-      webhookUrl: '',
+      webhookUrl: DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
       autoSyncOnSave: false,
       secretToken: '',
     };
@@ -249,7 +266,16 @@ export function loadMainLogo(): LogoAsset {
     const raw = localStorage.getItem(KEYS.MAIN_LOGO);
     if (!raw) return DEFAULT_OLMO_MAIN_LOGO;
     const parsed = JSON.parse(raw) as LogoAsset;
-    if (!parsed || typeof parsed.dataUrl !== 'string' || !parsed.dataUrl.trim()) {
+    if (
+      !parsed ||
+      typeof parsed.dataUrl !== 'string' ||
+      !parsed.dataUrl.trim() ||
+      (parsed.id === 'default-olmo-bn' &&
+        parsed.dataUrl !== DEFAULT_OLMO_MAIN_LOGO.dataUrl)
+    ) {
+      if (parsed?.id === 'default-olmo-bn') {
+        localStorage.removeItem(KEYS.MAIN_LOGO);
+      }
       return DEFAULT_OLMO_MAIN_LOGO;
     }
     return parsed;
@@ -417,7 +443,7 @@ export function loadClientsImportConfig(): ClientsImportConfig {
       return {
         sheetUrl: '',
         sheetName: 'CLIENTES',
-        appsScriptUrl: '',
+        appsScriptUrl: DEFAULT_CLIENTS_APPS_SCRIPT_URL,
         autoSyncToSheet: true,
         strategy: 'upsert',
       };
@@ -428,7 +454,9 @@ export function loadClientsImportConfig(): ClientsImportConfig {
       sheetName:
         typeof parsed.sheetName === 'string' ? parsed.sheetName : 'CLIENTES',
       appsScriptUrl:
-        typeof parsed.appsScriptUrl === 'string' ? parsed.appsScriptUrl : '',
+        typeof parsed.appsScriptUrl === 'string' && parsed.appsScriptUrl.trim()
+          ? parsed.appsScriptUrl
+          : DEFAULT_CLIENTS_APPS_SCRIPT_URL,
       autoSyncToSheet:
         typeof parsed.autoSyncToSheet === 'boolean'
           ? parsed.autoSyncToSheet
@@ -440,7 +468,7 @@ export function loadClientsImportConfig(): ClientsImportConfig {
     return {
       sheetUrl: '',
       sheetName: 'CLIENTES',
-      appsScriptUrl: '',
+      appsScriptUrl: DEFAULT_CLIENTS_APPS_SCRIPT_URL,
       autoSyncToSheet: true,
       strategy: 'upsert',
     };

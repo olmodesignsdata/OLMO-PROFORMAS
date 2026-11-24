@@ -1422,11 +1422,13 @@ export function EditorPanel({
                       <ResilientImage
                         src={effectiveMainLogo.dataUrl}
                         alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                        crossOrigin="anonymous"
                         className="max-h-11 max-w-full w-auto h-auto object-contain"
                         fallback={
                           <img
                             src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
                             alt="OLMO B.N."
+                            crossOrigin="anonymous"
                             className="max-h-11 max-w-full w-auto h-auto object-contain"
                           />
                         }

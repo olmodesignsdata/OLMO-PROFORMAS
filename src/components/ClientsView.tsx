@@ -13,6 +13,7 @@ import {
   MapPin,
   Phone,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
   Upload,
@@ -21,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { FormEvent, useMemo, useRef, useState } from 'react';
+import { DEFAULT_CLIENTS_APPS_SCRIPT_URL } from '../data/defaults';
 import {
   ClientsImportConfig,
   ClientsImportStrategy,
@@ -868,12 +870,30 @@ export function ClientsView({
 
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:items-center">
               <div className="lg:col-span-7">
-                <label
-                  htmlFor="clients-apps-script-url"
-                  className="mb-1 block text-[11px] font-medium text-zinc-600"
-                >
-                  URL de Google Apps Script (/exec) para guardar en pestaña CLIENTES (guardada en el navegador)
-                </label>
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <label
+                    htmlFor="clients-apps-script-url"
+                    className="block text-[11px] font-medium text-zinc-600"
+                  >
+                    URL de Google Apps Script (/exec) para guardar en pestaña CLIENTES (guardada en el navegador)
+                  </label>
+                  {importConfig.appsScriptUrl.trim() !==
+                    DEFAULT_CLIENTS_APPS_SCRIPT_URL && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onImportConfigChange({
+                          ...importConfig,
+                          appsScriptUrl: DEFAULT_CLIENTS_APPS_SCRIPT_URL,
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#8C5A32] hover:bg-[#F3ECE2] cursor-pointer"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                      <span>Restaurar predeterminada</span>
+                    </button>
+                  )}
+                </div>
                 <input
                   id="clients-apps-script-url"
                   type="url"

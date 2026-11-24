@@ -535,14 +535,62 @@ export async function processProductImageFile(file: File): Promise<LogoAsset> {
   };
 }
 
-function loadImageWithCors(src: string): Promise<HTMLImageElement> {
+const rasterizedSrcCache = new Map<string, RasterizedPdfLogo>();
+
+function loadImageWithCors(
+  src: string,
+  timeoutMs = 12000
+): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    let settled = false;
+
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Tiempo de espera agotado al cargar la imagen con CORS.'));
+    }, timeoutMs);
+
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('No se pudo cargar la imagen.'));
+    img.onload = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if ((img.naturalWidth || 0) > 0 && (img.naturalHeight || 0) > 0) {
+        resolve(img);
+      } else {
+        reject(new Error('La imagen cargada no tiene dimensiones válidas.'));
+      }
+    };
+    img.onerror = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(new Error('No se pudo cargar la imagen.'));
+    };
     img.src = src;
   });
+}
+
+async function fetchImageBlobWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 10000
+): Promise<Blob | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    if (blob.size <= 0) return null;
+    if (blob.type && !blob.type.startsWith('image/')) return null;
+    return blob;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function tryRasterizeSingleExternalUrl(
@@ -551,17 +599,19 @@ async function tryRasterizeSingleExternalUrl(
   let resolvedSrc = url;
   let objectUrlToRevoke: string | null = null;
 
-  try {
-    const resp = await fetch(url, { mode: 'cors' });
-    if (resp.ok) {
-      const blob = await resp.blob();
-      if (blob.type.startsWith('image/') || blob.size > 0) {
-        objectUrlToRevoke = URL.createObjectURL(blob);
-        resolvedSrc = objectUrlToRevoke;
-      }
-    }
-  } catch {
-    // Fallback directo a <img crossOrigin="anonymous">
+  const blob =
+    (await fetchImageBlobWithTimeout(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+    })) ??
+    (await fetchImageBlobWithTimeout(url, {
+      mode: 'cors',
+    }));
+
+  if (blob) {
+    objectUrlToRevoke = URL.createObjectURL(blob);
+    resolvedSrc = objectUrlToRevoke;
   }
 
   try {
@@ -614,20 +664,29 @@ export async function rasterizeImageSrcForPdf(
     });
   }
 
+  const cached = rasterizedSrcCache.get(cleanSrc);
+  if (cached) {
+    return cached;
+  }
+
   const baseCandidates = getImageFallbackCandidates(cleanSrc);
   const driveId = extractGoogleDriveFileId(cleanSrc);
   const candidates = driveId
     ? Array.from(
         new Set([
-          ...baseCandidates,
+          cleanSrc,
           `https://lh3.googleusercontent.com/d/${driveId}=w1200`,
+          ...baseCandidates,
         ])
       )
     : baseCandidates;
 
   for (const candidate of candidates) {
     const raster = await tryRasterizeSingleExternalUrl(candidate);
-    if (raster) return raster;
+    if (raster) {
+      rasterizedSrcCache.set(cleanSrc, raster);
+      return raster;
+    }
   }
 
   return null;

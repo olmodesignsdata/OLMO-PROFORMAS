@@ -57,7 +57,11 @@ import {
 } from './utils/exporters';
 import { computeProformaTotals, formatMoney } from './utils/formatters';
 import { ClientImportRow } from './utils/googleSheets';
-import { processLogoFile, processLogoUrl } from './utils/logoUtils';
+import {
+  processLogoFile,
+  processLogoUrl,
+  rasterizeLogoForPdf,
+} from './utils/logoUtils';
 import {
   deleteProformaFromHistory,
   getNextConsecutivo,
@@ -368,6 +372,12 @@ export default function App() {
   latestProformaRef.current = proforma;
   latestTotalsRef.current = totals;
   latestHistoryRef.current = history;
+
+  // Preconvertir el logo principal externo a DataURL en memoria para garantizar exportación PDF sin bloqueos CORS
+  useEffect(() => {
+    if (!mainLogo.dataUrl || mainLogo.dataUrl.startsWith('data:')) return;
+    void rasterizeLogoForPdf(mainLogo);
+  }, [mainLogo]);
 
   const persistLocalBackup = useCallback(
     (forceHistoryBackup: boolean): string | null => {

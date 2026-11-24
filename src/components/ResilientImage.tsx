@@ -6,11 +6,17 @@ interface ResilientImageProps {
   alt: string;
   className?: string;
   fallback?: ReactNode;
+  crossOrigin?: 'anonymous' | 'use-credentials';
+}
+
+interface ImageAttempt {
+  src: string;
+  crossOrigin?: 'anonymous' | 'use-credentials';
 }
 
 /**
  * Renderiza una imagen con respaldo automático para enlaces de Google Drive
- * (thumbnail -> uc?export=view) y ocultamiento limpio si la URL falla,
+ * (URL directa / lh3 -> thumbnail -> uc?export=view) y soporte crossOrigin,
  * evitando íconos rotos o cuadros dañados en la vista previa y el editor.
  */
 export function ResilientImage({
@@ -18,24 +24,45 @@ export function ResilientImage({
   alt,
   className,
   fallback = null,
+  crossOrigin,
 }: ResilientImageProps) {
-  const candidates = useMemo(() => getImageFallbackCandidates(src), [src]);
+  const attempts = useMemo<ImageAttempt[]>(() => {
+    const candidates = getImageFallbackCandidates(src);
+    if (!candidates.length) return [];
+    if (!crossOrigin) {
+      return candidates.map((candidate) => ({ src: candidate }));
+    }
+    const corsAttempts: ImageAttempt[] = candidates.map((candidate) => ({
+      src: candidate,
+      crossOrigin,
+    }));
+    const nonCorsAttempts: ImageAttempt[] = candidates
+      .filter((candidate) => !candidate.startsWith('data:'))
+      .map((candidate) => ({ src: candidate }));
+    return [...corsAttempts, ...nonCorsAttempts];
+  }, [src, crossOrigin]);
+
   const [attemptIdx, setAttemptIdx] = useState(0);
 
   useEffect(() => {
     setAttemptIdx(0);
-  }, [src]);
+  }, [src, crossOrigin]);
 
-  const activeSrc = candidates[attemptIdx];
-  if (!activeSrc) {
+  const activeAttempt = attempts[attemptIdx];
+  if (!activeAttempt) {
     return <>{fallback}</>;
   }
 
   return (
     <img
-      src={activeSrc}
+      src={activeAttempt.src}
       alt={alt}
       className={className}
+      crossOrigin={
+        activeAttempt.src.startsWith('data:')
+          ? undefined
+          : activeAttempt.crossOrigin
+      }
       onError={() => {
         setAttemptIdx((idx) => idx + 1);
       }}

@@ -9,17 +9,19 @@ import {
   SpecBlock,
 } from '../types/proforma';
 
-const DEFAULT_OLMO_BN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 92" width="320" height="92" fill="none">
-  <rect x="2" y="10" width="72" height="72" stroke="#18181B" stroke-width="5"/>
-  <circle cx="38" cy="46" r="18" stroke="#18181B" stroke-width="5"/>
-  <text x="94" y="59" font-family="Plus Jakarta Sans, Inter, Helvetica, Arial, sans-serif" font-size="46" font-weight="800" letter-spacing="7" fill="#18181B">OLMO</text>
-  <line x1="94" y1="74" x2="296" y2="74" stroke="#18181B" stroke-width="2.5"/>
-</svg>`;
+export const DEFAULT_OLMO_MAIN_LOGO_URL =
+  'https://lh3.googleusercontent.com/d/1PlUDro7TJHTMOK5aUf031-8KxUNlrsbM';
+
+export const DEFAULT_PROFORMAS_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbxV0ZS7mGZE-ZV_lqhkRDQXsJKzmAFvc3g8wtvE-VxUZP8UrS0G_JS_PNkU6ydwyzXT/exec';
+
+export const DEFAULT_CLIENTS_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbw8Ws1QBeHUd0KnO81Ny2mgllT79Fc_H_zG4xUzFmXtjlQ3kIkAGjGkHYR0xLuI4MGWtg/exec';
 
 export const DEFAULT_OLMO_MAIN_LOGO: LogoAsset = {
   id: 'default-olmo-bn',
   name: 'OLMO B.N.',
-  dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(DEFAULT_OLMO_BN_SVG)}`,
+  dataUrl: DEFAULT_OLMO_MAIN_LOGO_URL,
   width: 320,
   height: 92,
 };

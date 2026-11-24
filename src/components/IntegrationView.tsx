@@ -7,10 +7,12 @@ import {
   Download,
   Link2,
   Loader2,
+  RotateCcw,
   Save,
   Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { DEFAULT_PROFORMAS_APPS_SCRIPT_URL } from '../data/defaults';
 import {
   CloudSyncConfig,
   ComputedTotals,
@@ -87,7 +89,20 @@ export function IntegrationView({
     onSaveConfig(cleared);
     setFeedback({
       ok: true,
-      message: 'Se eliminó la URL configurada del almacenamiento local.',
+      message: 'Se limpió el campo de URL. Puedes pegar una nueva o restaurar la predeterminada.',
+    });
+  };
+
+  const handleRestoreDefaultWebhookUrl = () => {
+    const restored: CloudSyncConfig = {
+      ...draftConfig,
+      webhookUrl: DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
+    };
+    setDraftConfig(restored);
+    onSaveConfig(restored);
+    setFeedback({
+      ok: true,
+      message: `URL predeterminada de PROFORMAS restaurada: ${DEFAULT_PROFORMAS_APPS_SCRIPT_URL}`,
     });
   };
 
@@ -187,16 +202,28 @@ export function IntegrationView({
                 <Link2 className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
                 <span>URL configurada actualmente:</span>
               </span>
-              {configuredUrl && (
-                <button
-                  type="button"
-                  onClick={handleClearWebhookUrl}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-red-50 hover:text-red-700 cursor-pointer"
-                >
-                  <Trash2 className="h-3 w-3" aria-hidden="true" />
-                  <span>Limpiar</span>
-                </button>
-              )}
+              <div className="flex items-center gap-1.5">
+                {configuredUrl !== DEFAULT_PROFORMAS_APPS_SCRIPT_URL && (
+                  <button
+                    type="button"
+                    onClick={handleRestoreDefaultWebhookUrl}
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#8C5A32] hover:bg-[#F3ECE2] cursor-pointer"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    <span>Restaurar predeterminada</span>
+                  </button>
+                )}
+                {configuredUrl && (
+                  <button
+                    type="button"
+                    onClick={handleClearWebhookUrl}
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                    <span>Limpiar</span>
+                  </button>
+                )}
+              </div>
             </div>
             {configuredUrl ? (
               <p className="mt-1.5 break-all font-mono text-[11px] text-zinc-900">

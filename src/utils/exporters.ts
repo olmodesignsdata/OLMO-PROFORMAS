@@ -220,13 +220,16 @@ export async function generateProformaPDF(
 
   let skippedExternalImages = 0;
 
-  const effectiveMainLogo = mainLogo ?? DEFAULT_OLMO_MAIN_LOGO;
+  const effectiveMainLogo = mainLogo?.dataUrl ? mainLogo : DEFAULT_OLMO_MAIN_LOGO;
   const customMainRaster = await rasterizeLogoForPdf(effectiveMainLogo);
   if (!customMainRaster && !effectiveMainLogo.dataUrl.startsWith('data:')) {
     skippedExternalImages++;
   }
+  const isDefaultMainLogo =
+    effectiveMainLogo.dataUrl === DEFAULT_OLMO_MAIN_LOGO.dataUrl;
   const rasterMainLogo =
-    customMainRaster ?? (await rasterizeLogoForPdf(DEFAULT_OLMO_MAIN_LOGO));
+    customMainRaster ??
+    (isDefaultMainLogo ? null : await rasterizeLogoForPdf(DEFAULT_OLMO_MAIN_LOGO));
 
   const loadedFooterAssets = footerLogos.filter(
     (item): item is LogoAsset => item !== null && Boolean(item.dataUrl)
