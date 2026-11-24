@@ -4,7 +4,6 @@ import {
   Cloud,
   CloudUpload,
   CopyPlus,
-  Download,
   Edit3,
   FileJson,
   FilePlus2,
@@ -22,6 +21,7 @@ import {
 import { ChangeEvent, useMemo, useRef, useState } from 'react';
 import { GRIFERIA_AUTO_FOOTER_LOGOS } from '../data/defaults';
 import { ComputedTotals, SavedProformaRecord } from '../types/proforma';
+import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import {
   computeProformaTotals,
   formatDateSpanish,
@@ -32,6 +32,7 @@ import {
   exportProformaToJSON,
   generateProformaPDF,
 } from '../utils/exporters';
+import { PdfIcon } from './PdfIcon';
 
 interface HistoryViewProps {
   records: SavedProformaRecord[];
@@ -41,6 +42,7 @@ interface HistoryViewProps {
   hasAppsScriptUrl: boolean;
   isSyncingSheet: boolean;
   isSendingToSheet?: boolean;
+  hasCloudSendError?: boolean;
   lastSheetSyncAt?: string;
   sheetSyncFeedback: { ok: boolean; message: string } | null;
   onSyncFromSheet: () => void;
@@ -113,7 +115,13 @@ export function HistoryView({
   onGoToEditor,
   onNewProforma,
   onImportDraftFile,
+  hasCloudSendError = false,
 }: HistoryViewProps) {
+  const cardSurface =
+    'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
+  const isSheetSyncReady =
+    hasAppsScriptUrl && sheetSyncFeedback?.ok !== false;
+  const isCloudSendReady = hasAppsScriptUrl && !hasCloudSendError;
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<HistoryFilterSource>('all');
@@ -294,13 +302,13 @@ export function HistoryView({
     <div className="mx-auto max-w-[1200px] space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             Historial de Cotizaciones
           </h1>
-          <p className="mt-1 text-sm text-zinc-600">
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             Consulta cotizaciones guardadas localmente en este navegador y
             sincroniza los registros de la hoja{' '}
-            <strong className="font-semibold text-zinc-800">
+            <strong className="font-semibold text-zinc-800 dark:text-zinc-200">
               Registro_Proformas_OLMO
             </strong>{' '}
             (pestaña <span className="font-mono text-xs">PROFORMAS</span>).
@@ -312,10 +320,10 @@ export function HistoryView({
             type="button"
             onClick={onSyncFromSheet}
             disabled={isSyncingSheet}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isSheetSyncReady, 'outline')}`}
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 text-[#8C5A32] ${
+              className={`h-3.5 w-3.5 ${
                 isSyncingSheet ? 'animate-spin' : ''
               }`}
               aria-hidden="true"
@@ -333,7 +341,7 @@ export function HistoryView({
               onClick={onSendProforma}
               disabled={isSendingToSheet}
               title={`Enviar la Proforma Nº ${activeConsecutivo} al Google Sheet configurado`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#8C5A32] bg-[#FAF6F1] px-3.5 py-2 text-xs font-semibold text-[#6F4423] hover:bg-[#F3ECE2] disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isCloudSendReady, 'outline')}`}
             >
               {isSendingToSheet ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -350,9 +358,9 @@ export function HistoryView({
             type="button"
             onClick={onGoToEditor}
             title="Volver al editor de la cotización activa"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <PenLine className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+            <PenLine className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
             <span>Ir al Editor (Nº {activeConsecutivo})</span>
           </button>
 
@@ -374,9 +382,9 @@ export function HistoryView({
                 type="button"
                 onClick={() => importFileRef.current?.click()}
                 title="Importar archivo de borrador (.json) enviado desde otra computadora"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
               >
-                <Upload className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                <Upload className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                 <span>Importar Borrador (.json)</span>
               </button>
             </>
@@ -385,7 +393,7 @@ export function HistoryView({
           <button
             type="button"
             onClick={onNewProforma}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Nueva Cotización</span>
@@ -394,17 +402,17 @@ export function HistoryView({
       </div>
 
       {/* Estado de sincronización con Google Sheet PROFORMAS */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#E5E4DF] bg-white px-4 py-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2.5 text-zinc-600">
-          <Cloud className="h-4 w-4 text-[#8C5A32]" aria-hidden="true" />
+      <div className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs ${cardSurface}`}>
+        <div className="flex flex-wrap items-center gap-2.5 text-zinc-600 dark:text-zinc-400">
+          <Cloud className="h-4 w-4 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
           {hasAppsScriptUrl ? (
             <span>
               Conexión configurada en Integración ·{' '}
-              <strong className="text-zinc-800">
+              <strong className="text-zinc-800 dark:text-zinc-200">
                 {sheetCount} registro(s) cargado(s) desde PROFORMAS
               </strong>
               {lastSheetSyncAt && (
-                <span className="ml-1.5 text-zinc-500">
+                <span className="ml-1.5 text-zinc-500 dark:text-zinc-400">
                   (última consulta:{' '}
                   {new Date(lastSheetSyncAt).toLocaleString('es-CR')})
                 </span>
@@ -413,7 +421,7 @@ export function HistoryView({
           ) : (
             <span>
               Para sincronizar con{' '}
-              <strong className="text-zinc-800">Registro_Proformas_OLMO</strong>,
+              <strong className="text-zinc-800 dark:text-zinc-200">Registro_Proformas_OLMO</strong>,
               configura la URL de Google Apps Script (/exec) en Integración.
             </span>
           )}
@@ -424,7 +432,7 @@ export function HistoryView({
             <button
               type="button"
               onClick={onGoToIntegration}
-              className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
             >
               <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Ir a Integración</span>
@@ -432,14 +440,14 @@ export function HistoryView({
           )}
 
           {combinedRecords.length > 0 && (
-            <div className="inline-flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5">
+            <div className="inline-flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800">
               <button
                 type="button"
                 onClick={() => setSourceFilter('all')}
                 className={`rounded px-2.5 py-1 text-[11px] font-medium cursor-pointer ${
                   sourceFilter === 'all'
-                    ? 'bg-white text-zinc-900 shadow-xs'
-                    : 'text-zinc-600 hover:text-zinc-900'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-700 dark:text-zinc-100'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                 }`}
               >
                 Todas ({combinedRecords.length})
@@ -449,8 +457,8 @@ export function HistoryView({
                 onClick={() => setSourceFilter('local')}
                 className={`rounded px-2.5 py-1 text-[11px] font-medium cursor-pointer ${
                   sourceFilter === 'local'
-                    ? 'bg-white text-zinc-900 shadow-xs'
-                    : 'text-zinc-600 hover:text-zinc-900'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-700 dark:text-zinc-100'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                 }`}
               >
                 Locales ({localCount})
@@ -460,8 +468,8 @@ export function HistoryView({
                 onClick={() => setSourceFilter('sheet')}
                 className={`rounded px-2.5 py-1 text-[11px] font-medium cursor-pointer ${
                   sourceFilter === 'sheet'
-                    ? 'bg-white text-zinc-900 shadow-xs'
-                    : 'text-zinc-600 hover:text-zinc-900'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-700 dark:text-zinc-100'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                 }`}
               >
                 Google Sheet ({sheetCount})
@@ -472,19 +480,19 @@ export function HistoryView({
       </div>
 
       {/* Barra de búsqueda y filtros por cliente, fecha y rango de totales */}
-      <div className="rounded-lg border border-[#E5E4DF] bg-white p-4">
+      <div className={`p-4 ${cardSurface}`}>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
           {/* Búsqueda general */}
           <div className="lg:col-span-4">
             <label
               htmlFor="history-search"
-              className="mb-1 block text-[11px] font-semibold text-zinc-600"
+              className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
             >
               Buscar cotización
             </label>
             <div className="relative">
               <Search
-                className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
                 aria-hidden="true"
               />
               <input
@@ -493,14 +501,14 @@ export function HistoryView({
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Nº, cliente, proyecto, contacto o ítem..."
-                className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
               />
               {query && (
                 <button
                   type="button"
                   onClick={() => setQuery('')}
                   aria-label="Limpiar búsqueda"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 cursor-pointer"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -512,7 +520,7 @@ export function HistoryView({
           <div className="lg:col-span-3">
             <label
               htmlFor="history-client-filter"
-              className="mb-1 block text-[11px] font-semibold text-zinc-600"
+              className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
             >
               Cliente
             </label>
@@ -520,7 +528,7 @@ export function HistoryView({
               id="history-client-filter"
               value={clientFilter}
               onChange={(e) => setClientFilter(e.target.value)}
-              className="w-full rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+              className="w-full rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500"
             >
               <option value="">Todos los clientes ({uniqueClients.length})</option>
               {uniqueClients.map((c) => (
@@ -536,7 +544,7 @@ export function HistoryView({
             <div>
               <label
                 htmlFor="history-date-from"
-                className="mb-1 block text-[11px] font-semibold text-zinc-600"
+                className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
               >
                 Fecha desde
               </label>
@@ -545,13 +553,13 @@ export function HistoryView({
                 type="date"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
-                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500"
               />
             </div>
             <div>
               <label
                 htmlFor="history-date-to"
-                className="mb-1 block text-[11px] font-semibold text-zinc-600"
+                className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
               >
                 Fecha hasta
               </label>
@@ -560,7 +568,7 @@ export function HistoryView({
                 type="date"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
-                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500"
               />
             </div>
           </div>
@@ -570,7 +578,7 @@ export function HistoryView({
             <div>
               <label
                 htmlFor="history-total-min"
-                className="mb-1 block text-[11px] font-semibold text-zinc-600"
+                className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
               >
                 Total mín.
               </label>
@@ -582,13 +590,13 @@ export function HistoryView({
                 placeholder="0.00"
                 value={minTotal}
                 onChange={(e) => setMinTotal(e.target.value)}
-                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
               />
             </div>
             <div>
               <label
                 htmlFor="history-total-max"
-                className="mb-1 block text-[11px] font-semibold text-zinc-600"
+                className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
               >
                 Total máx.
               </label>
@@ -600,23 +608,23 @@ export function HistoryView({
                 placeholder="Sin límite"
                 value={maxTotal}
                 onChange={(e) => setMaxTotal(e.target.value)}
-                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                className="w-full rounded-md border border-[#DCDAD3] bg-white px-2 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
               />
             </div>
           </div>
         </div>
 
         {(hasActiveFilters || combinedRecords.length > 0) && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#F0EFEA] pt-2.5 text-xs text-zinc-500">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#F0EFEA] pt-2.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
             <span className="inline-flex items-center gap-1.5">
-              <Filter className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+              <Filter className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
               <span>
                 Mostrando{' '}
-                <strong className="font-semibold text-zinc-800">
+                <strong className="font-semibold text-zinc-800 dark:text-zinc-200">
                   {filtered.length}
                 </strong>{' '}
                 de{' '}
-                <strong className="font-semibold text-zinc-800">
+                <strong className="font-semibold text-zinc-800 dark:text-zinc-200">
                   {combinedRecords.length}
                 </strong>{' '}
                 proforma(s) (Local + Google Sheet)
@@ -627,7 +635,7 @@ export function HistoryView({
               <button
                 type="button"
                 onClick={handleClearFilters}
-                className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 cursor-pointer"
+                className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
               >
                 <X className="h-3 w-3" aria-hidden="true" />
                 <span>Limpiar filtros</span>
@@ -641,18 +649,18 @@ export function HistoryView({
         <div
           className={`flex items-start gap-2 rounded-md border px-3.5 py-2.5 text-xs ${
             sheetSyncFeedback.ok
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-              : 'border-red-200 bg-red-50 text-red-900'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800/80 dark:bg-emerald-950/60 dark:text-emerald-200'
+              : 'border-red-200 bg-red-50 text-red-900 dark:border-red-800/80 dark:bg-red-950/60 dark:text-red-200'
           }`}
         >
           {sheetSyncFeedback.ok ? (
             <CheckCircle2
-              className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700"
+              className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
               aria-hidden="true"
             />
           ) : (
             <AlertCircle
-              className="mt-0.5 h-4 w-4 shrink-0 text-red-700"
+              className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-400"
               aria-hidden="true"
             />
           )}
@@ -661,11 +669,11 @@ export function HistoryView({
       )}
 
       {combinedRecords.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-white px-6 py-14 text-center">
-          <p className="font-display text-base font-semibold text-zinc-900">
+        <div className="rounded-xl border border-dashed border-[#DCDAD3] bg-white px-6 py-14 text-center dark:border-zinc-700 dark:bg-zinc-900">
+          <p className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
             Aún no hay cotizaciones guardadas en el historial
           </p>
-          <p className="mx-auto mt-1.5 max-w-md text-sm text-zinc-500">
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-zinc-500 dark:text-zinc-400">
             Guarda una proforma localmente desde el editor o usa{' '}
             &ldquo;Actualizar desde Sheet&rdquo; para cargar las cotizaciones de
             la pestaña PROFORMAS.
@@ -675,7 +683,7 @@ export function HistoryView({
               type="button"
               onClick={onSyncFromSheet}
               disabled={isSyncingSheet}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-4 py-2 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer"
+              className={`inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-semibold transition-colors cursor-pointer ${getConnectionButtonClasses(isSheetSyncReady, 'outline')}`}
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${
@@ -688,7 +696,7 @@ export function HistoryView({
             <button
               type="button"
               onClick={onNewProforma}
-              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
             >
               <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Nueva Cotización</span>
@@ -696,15 +704,15 @@ export function HistoryView({
             <button
               type="button"
               onClick={onGoToEditor}
-              className="rounded-md border border-[#DCDAD3] bg-white px-4 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+              className="rounded-md border border-[#DCDAD3] bg-white px-4 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
             >
               Ir al Editor
             </button>
           </div>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-lg border border-[#E5E4DF] bg-white px-6 py-12 text-center">
-          <p className="text-sm font-medium text-zinc-700">
+        <div className="rounded-xl border border-[#E5E4DF] bg-white px-6 py-12 text-center dark:border-zinc-800 dark:bg-zinc-900">
+          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
             No se encontraron cotizaciones con los criterios seleccionados
             {query ? ` ("${query}")` : ''}.
           </p>
@@ -712,7 +720,7 @@ export function HistoryView({
             <button
               type="button"
               onClick={handleClearFilters}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Limpiar filtros y ver todas</span>
@@ -720,10 +728,10 @@ export function HistoryView({
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-[#E5E4DF] bg-white">
+        <div className={`overflow-x-auto ${cardSurface}`}>
           <table className="w-full border-collapse text-left text-sm">
             <thead>
-              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600">
+              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
                 <th className="px-4 py-3">Consecutivo</th>
                 <th className="px-4 py-3">Cliente y Proyecto</th>
                 <th className="px-4 py-3">Origen</th>
@@ -733,55 +741,55 @@ export function HistoryView({
                 <th className="px-4 py-3 text-right">Acciones</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#E5E4DF]">
+            <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
               {filtered.map(({ record: rec, totals, displayTotal }) => {
                 const isCurrent = rec.id === activeProformaId;
 
                 return (
                   <tr
                     key={`${rec.source ?? 'local'}-${rec.id}-${rec.consecutivo}`}
-                    className={`transition-colors hover:bg-[#FAF9F6]/70 ${
-                      isCurrent ? 'bg-[#FAF9F6]' : ''
+                    className={`transition-colors hover:bg-[#FAF9F6]/70 dark:hover:bg-zinc-800/60 ${
+                      isCurrent ? 'bg-[#FAF9F6] dark:bg-zinc-800/40' : ''
                     }`}
                   >
-                    <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 whitespace-nowrap tabular-nums">
+                    <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
                       Nº {rec.consecutivo}
                       {isCurrent && (
-                        <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32]">
+                        <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
                           · En edición
                         </span>
                       )}
                     </td>
                     <td className="px-4 py-3.5">
-                      <div className="font-medium text-zinc-900">
+                      <div className="font-medium text-zinc-900 dark:text-zinc-100">
                         {rec.data.clientProject.cliente || 'Cliente sin nombre'}
                       </div>
-                      <div className="text-xs text-zinc-500">
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
                         {rec.data.clientProject.proyecto || 'Sin proyecto'}
                       </div>
                     </td>
                     <td className="px-4 py-3.5 whitespace-nowrap">
                       {rec.source === 'both' ? (
-                        <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                        <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
                           Local + Sheet
                         </span>
                       ) : rec.source === 'sheet' ? (
-                        <span className="inline-flex items-center rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 text-[11px] font-semibold text-[#8C5A32]">
+                        <span className="inline-flex items-center rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 text-[11px] font-semibold text-[#8C5A32] dark:border-zinc-700 dark:bg-zinc-800 dark:text-amber-400">
                           Google Sheet
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700">
+                        <span className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                           Local
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-zinc-600 whitespace-nowrap tabular-nums">
+                    <td className="px-4 py-3.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
                       {formatDateSpanish(rec.data.clientProject.fecha)}
                     </td>
-                    <td className="px-4 py-3.5 text-right font-mono text-xs text-zinc-600 whitespace-nowrap tabular-nums">
+                    <td className="px-4 py-3.5 text-right font-mono text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
                       {totals.unidadResumen}
                     </td>
-                    <td className="px-4 py-3.5 text-right font-mono text-sm font-semibold text-zinc-900 whitespace-nowrap tabular-nums">
+                    <td className="px-4 py-3.5 text-right font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
                       {formatMoney(displayTotal, rec.data.clientProject.moneda)}
                     </td>
                     <td className="px-4 py-3.5">
@@ -790,16 +798,16 @@ export function HistoryView({
                           type="button"
                           onClick={() => onOpenRecord(rec)}
                           title="Leer Datos_JSON y cargar todos los datos editables en el formulario principal"
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 hover:text-zinc-900 whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
                         >
-                          <Edit3 className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                          <Edit3 className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                           <span>Cargar / Editar</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => onDuplicateRecord(rec)}
                           title="Duplicar con siguiente consecutivo"
-                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
                         >
                           <CopyPlus className="h-3.5 w-3.5" aria-hidden="true" />
                           <span>Duplicar</span>
@@ -818,16 +826,16 @@ export function HistoryView({
                           }
                           title="Descargar PDF"
                           aria-label={`Descargar PDF Proforma ${rec.consecutivo}`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="rounded border border-black bg-black p-1.5 text-white hover:bg-zinc-800 dark:border-zinc-700 dark:bg-black dark:hover:bg-zinc-900 cursor-pointer"
                         >
-                          <Download className="h-3.5 w-3.5" />
+                          <PdfIcon className="h-4 w-4" />
                         </button>
                         <button
                           type="button"
                           onClick={() => exportProformaToJSON(rec.data, totals)}
                           title="Exportar JSON"
                           aria-label={`Exportar JSON Proforma ${rec.consecutivo}`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
                         >
                           <FileJson className="h-3.5 w-3.5" />
                         </button>
@@ -836,7 +844,7 @@ export function HistoryView({
                           onClick={() => exportProformaToCSV(rec.data, totals)}
                           title="Exportar CSV / Excel"
                           aria-label={`Exportar CSV Proforma ${rec.consecutivo}`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className={`rounded p-1.5 transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'icon')}`}
                         >
                           <FileSpreadsheet className="h-3.5 w-3.5" />
                         </button>
@@ -846,7 +854,7 @@ export function HistoryView({
                             onClick={() => onDeleteRecord(rec.id)}
                             title="Eliminar del historial local"
                             aria-label={`Eliminar Proforma ${rec.consecutivo}`}
-                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>

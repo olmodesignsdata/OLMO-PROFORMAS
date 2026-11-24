@@ -35,6 +35,7 @@ import {
   PROFORMA_TYPE_OPTIONS,
 } from '../data/defaults';
 import {
+  AranSpecTemplate,
   BankAccountInfo,
   CompanyInfo,
   ComputedTotals,
@@ -49,6 +50,7 @@ import {
   SpecBlock,
   VisualReferenceItem,
 } from '../types/proforma';
+import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import { formatMoney, getCurrencyCode } from '../utils/formatters';
 import {
   DEFAULT_IMPORT_SHEET_NAME,
@@ -99,6 +101,13 @@ interface EditorPanelProps {
     mode: 'upsert' | 'create'
   ) => void;
   onGoToClientsDirectory: () => void;
+  aranTemplates: AranSpecTemplate[];
+  aranScriptUrl: string;
+  aranLastStatus?: 'ok' | 'error';
+  aranLastMessage?: string;
+  isSyncingAran: boolean;
+  onSyncAranTemplates: () => void;
+  onGoToIntegration: () => void;
 }
 
 type EditorTab = 'cliente' | 'productos' | 'referencias' | 'terminos' | 'banco';
@@ -135,6 +144,13 @@ export function EditorPanel({
   onDeleteProductTemplate,
   onSaveClientToDirectory,
   onGoToClientsDirectory,
+  aranTemplates,
+  aranScriptUrl,
+  aranLastStatus,
+  aranLastMessage,
+  isSyncingAran,
+  onSyncAranTemplates,
+  onGoToIntegration,
 }: EditorPanelProps) {
   const [activeTab, setActiveTab] = useState<EditorTab>('cliente');
   const [clientFilterQuery, setClientFilterQuery] = useState('');
@@ -162,6 +178,7 @@ export function EditorPanel({
   const [productSearchQuery, setProductSearchQuery] = useState('');
   const [collapsedProductIds, setCollapsedProductIds] = useState<Record<string, boolean>>({});
   const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
+  const [selectedAranByBlockId, setSelectedAranByBlockId] = useState<Record<string, string>>({});
 
   const [mainLogoUrlInput, setMainLogoUrlInput] = useState('');
   const [mainLogoUrlLoading, setMainLogoUrlLoading] = useState(false);
@@ -218,6 +235,15 @@ export function EditorPanel({
   );
   const productCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const manualUnitItemIdsRef = useRef<Set<string>>(new Set());
+  const editorRootRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSelectEditorTab = (nextTab: EditorTab) => {
+    setActiveTab(nextTab);
+    const scrollParent = editorRootRef.current?.closest('.olmo-editor-scroll');
+    if (scrollParent instanceof HTMLElement && scrollParent.scrollTop > 24) {
+      scrollParent.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   const proformaType: ProformaType = data.proformaType ?? 'mobiliario';
   const effectiveMainLogo = mainLogo?.dataUrl ? mainLogo : DEFAULT_OLMO_MAIN_LOGO;
@@ -1017,10 +1043,63 @@ export function EditorPanel({
   };
 
   const removeSpecBlock = (id: string) => {
+    setSelectedAranByBlockId((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     onChange((prev) => ({
       ...prev,
       specBlocks: prev.specBlocks.filter((b) => b.id !== id),
     }));
+  };
+
+  const applyAranTemplateToBlock = (blockId: string, templateId: string) => {
+    setSelectedAranByBlockId((prev) => ({
+      ...prev,
+      [blockId]: templateId,
+    }));
+    if (!templateId) return;
+    const tpl = aranTemplates.find((item) => item.id === templateId);
+    if (!tpl) return;
+
+    onChange((prev) => ({
+      ...prev,
+      specBlocks: prev.specBlocks.map((b) =>
+        b.id === blockId
+          ? {
+              ...b,
+              titulo: tpl.titulo,
+              subtitulo: tpl.subtitulo,
+              contenido: tpl.contenido,
+            }
+          : b
+      ),
+    }));
+    flashBanner(`Plantilla "${tpl.titulo}" aplicada desde la hoja ARAN.`);
+  };
+
+  const addSpecBlockFromAran = (templateId: string) => {
+    if (!templateId) return;
+    const tpl = aranTemplates.find((item) => item.id === templateId);
+    if (!tpl) return;
+    const newId = `spec-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const newBlock: SpecBlock = {
+      id: newId,
+      titulo: tpl.titulo,
+      subtitulo: tpl.subtitulo,
+      contenido: tpl.contenido,
+    };
+    setSelectedAranByBlockId((prev) => ({
+      ...prev,
+      [newId]: tpl.id,
+    }));
+    onChange((prev) => ({
+      ...prev,
+      specBlocks: [...prev.specBlocks, newBlock],
+    }));
+    flashBanner(`Bloque "${tpl.titulo}" agregado desde la hoja ARAN.`);
   };
 
   const updateBank = (field: keyof BankAccountInfo, value: string) => {
@@ -1068,8 +1147,18 @@ export function EditorPanel({
   };
 
   const inputClass =
-    'w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15';
-  const labelClass = 'mb-1.5 block text-xs font-medium text-zinc-600';
+    'w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500';
+  const labelClass =
+    'mb-1.5 block text-xs font-medium text-zinc-600 dark:text-zinc-400';
+
+  const isSheetsImportReady =
+    Boolean(sheetsConfig.sheetUrl.trim()) && !sheetsStatus?.isError;
+  const isExcelFileImportReady =
+    Boolean(loadedExcel) || (sheetsStatus !== null && !sheetsStatus.isError);
+  const isExcelSheetReady =
+    Boolean(selectedExcelSheet.trim()) && !sheetsStatus?.isError;
+  const isAranConnected =
+    Boolean(aranScriptUrl.trim()) && aranLastStatus !== 'error';
 
   const activeVisualRefsCount = (data.visualReferences ?? []).filter((r) =>
     r.imageDataUrl.trim()
@@ -1090,20 +1179,23 @@ export function EditorPanel({
   ];
 
   return (
-    <div className="flex flex-col rounded-lg border border-[#E5E4DF] bg-white">
+    <div
+      ref={editorRootRef}
+      className="flex flex-col rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
+    >
       {/* Navegación por pestañas del formulario */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-[#E5E4DF] bg-[#FAF9F6] p-1.5">
+      <div className="sticky top-0 z-10 flex items-center gap-1.5 overflow-x-auto rounded-t-xl border-b border-[#E5E4DF] bg-[#FAF9F6]/95 px-2.5 py-2 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-900/95">
         {tabs.map((tab) => {
           const active = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`rounded-md px-3 py-2 text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+              onClick={() => handleSelectEditorTab(tab.id)}
+              className={`rounded-lg px-3 py-2 text-xs whitespace-nowrap shrink-0 transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8C5A32] dark:focus-visible:ring-amber-500 ${
                 active
-                  ? 'bg-white text-zinc-900 shadow-xs border border-[#E5E4DF]'
-                  : 'text-zinc-600 hover:text-zinc-900 hover:bg-white/60'
+                  ? 'border border-[#DCDAD3] border-b-2 border-b-[#8C5A32] bg-white font-semibold text-zinc-900 shadow-xs dark:border-zinc-700 dark:border-b-amber-500 dark:bg-zinc-800 dark:text-zinc-100'
+                  : 'border border-transparent font-medium text-zinc-600 hover:bg-white/75 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
               }`}
             >
               {tab.label}
@@ -1113,7 +1205,7 @@ export function EditorPanel({
       </div>
 
       {savedBanner && (
-        <div className="flex items-center gap-2 border-b border-[#E5E4DF] bg-emerald-50 px-4 py-2 text-xs font-medium text-emerald-800">
+        <div className="flex items-center gap-2 border-b border-[#E5E4DF] bg-emerald-50 px-4 py-2 text-xs font-medium text-emerald-800 dark:border-zinc-800 dark:bg-emerald-950/70 dark:text-emerald-200">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>{savedBanner}</span>
         </div>
@@ -1128,15 +1220,15 @@ export function EditorPanel({
             {/* Consecutivo, tipo y parámetros generales */}
             <div>
               <div className="mb-3 flex items-center justify-between gap-2">
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Control de Consecutivo, Tipo y Moneda
                 </h2>
-                <span className="text-xs text-zinc-500 tabular-nums">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
                   Siguiente disponible en navegador: Nº {nextStoredConsecutivo}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-4 sm:grid-cols-2 dark:border-zinc-800 dark:bg-zinc-800/50">
                 <div>
                   <label htmlFor="consecutivo-input" className={labelClass}>
                     Nº de Proforma (Consecutivo)
@@ -1160,7 +1252,7 @@ export function EditorPanel({
                       type="button"
                       onClick={onSyncNextConsecutivo}
                       title="Asignar siguiente consecutivo automático"
-                      className="rounded-md border border-[#DCDAD3] bg-white px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="rounded-md border border-[#DCDAD3] bg-white px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       Auto
                     </button>
@@ -1243,15 +1335,15 @@ export function EditorPanel({
             </div>
 
             {/* Datos del Cliente y Proyecto */}
-            <div className="border-t border-[#E5E4DF] pt-5">
+            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Datos del Cliente y Proyecto
                 </h2>
                 <button
                   type="button"
                   onClick={onGoToClientsDirectory}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8C5A32] hover:underline cursor-pointer"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8C5A32] hover:underline dark:text-amber-400 cursor-pointer"
                 >
                   <Users className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>
@@ -1261,9 +1353,9 @@ export function EditorPanel({
               </div>
 
               {/* Selector rápido y buscador de Clientes Guardados */}
-              <div className="mb-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5 space-y-2.5">
+              <div className="mb-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5 space-y-2.5 dark:border-zinc-800 dark:bg-zinc-800/50">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-zinc-800">
+                  <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
                     Clientes guardados
                   </span>
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -1272,10 +1364,10 @@ export function EditorPanel({
                         <button
                           type="button"
                           onClick={() => handleQuickSaveClient('upsert')}
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                         >
                           <CheckCircle2
-                            className="h-3 w-3 text-[#8C5A32]"
+                            className="h-3 w-3 text-[#8C5A32] dark:text-amber-400"
                             aria-hidden="true"
                           />
                           <span>Actualizar en directorio</span>
@@ -1283,10 +1375,10 @@ export function EditorPanel({
                         <button
                           type="button"
                           onClick={() => handleQuickSaveClient('create')}
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                         >
                           <UserPlus
-                            className="h-3 w-3 text-[#8C5A32]"
+                            className="h-3 w-3 text-[#8C5A32] dark:text-amber-400"
                             aria-hidden="true"
                           />
                           <span>Crear nuevo cliente desde estos datos</span>
@@ -1302,10 +1394,10 @@ export function EditorPanel({
                             ? 'Crear nuevo cliente en el directorio con estos datos'
                             : 'Ingresa al menos el nombre del cliente para guardarlo'
                         }
-                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
+                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed"
                       >
                         <UserPlus
-                          className="h-3 w-3 text-[#8C5A32]"
+                          className="h-3 w-3 text-[#8C5A32] dark:text-amber-400"
                           aria-hidden="true"
                         />
                         <span>Guardar en directorio</span>
@@ -1315,12 +1407,12 @@ export function EditorPanel({
                 </div>
 
                 {savedClients.length === 0 ? (
-                  <p className="text-[11px] text-zinc-500">
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                     Aún no hay clientes guardados. Completa los campos abajo y usa &ldquo;Guardar en directorio&rdquo; o crea registros en la pestaña{' '}
                     <button
                       type="button"
                       onClick={onGoToClientsDirectory}
-                      className="font-semibold text-[#8C5A32] hover:underline cursor-pointer"
+                      className="font-semibold text-[#8C5A32] hover:underline dark:text-amber-400 cursor-pointer"
                     >
                       Clientes
                     </button>
@@ -1330,7 +1422,7 @@ export function EditorPanel({
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
                     <div className="relative sm:col-span-5">
                       <Search
-                        className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                        className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
                         aria-hidden="true"
                       />
                       <input
@@ -1339,7 +1431,7 @@ export function EditorPanel({
                         placeholder="Filtrar cliente guardado..."
                         value={clientFilterQuery}
                         onChange={(e) => setClientFilterQuery(e.target.value)}
-                        className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-2.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                        className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-2.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                       />
                     </div>
                     <div className="sm:col-span-7">
@@ -1349,7 +1441,7 @@ export function EditorPanel({
                         onChange={(e) =>
                           handleSelectSavedClient(e.target.value)
                         }
-                        className="w-full rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                        className="w-full rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500"
                       >
                         <option value="">
                           {filteredSavedClients.length === 0
@@ -1500,12 +1592,12 @@ export function EditorPanel({
             </div>
 
             {/* Logos de Encabezado y Pie de Página */}
-            <div className="border-t border-[#E5E4DF] pt-5 space-y-4">
+            <div className="border-t border-[#E5E4DF] pt-5 space-y-4 dark:border-zinc-800">
               <div>
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Logos de la Proforma
                 </h2>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   El logo principal de OLMO B.N. permanece fijo en el encabezado. Los logos adicionales del pie de página son opcionales y se guardan en este navegador.
                 </p>
               </div>
@@ -1520,10 +1612,10 @@ export function EditorPanel({
               />
 
               {/* Logo Principal OLMO B.N. (Fijo por defecto) */}
-              <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5 space-y-3">
+              <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-800/50">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-14 w-32 shrink-0 items-center justify-center rounded border border-[#DCDAD3] bg-white px-2">
+                    <div className="flex h-14 w-32 shrink-0 items-center justify-center rounded border border-[#DCDAD3] bg-white px-2 dark:border-zinc-700">
                       <ResilientImage
                         src={effectiveMainLogo.dataUrl}
                         alt={effectiveMainLogo.name || 'OLMO B.N.'}
@@ -1540,10 +1632,10 @@ export function EditorPanel({
                       />
                     </div>
                     <div>
-                      <div className="text-xs font-semibold text-zinc-900">
+                      <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                         Logo Principal — {effectiveMainLogo.name || 'OLMO B.N.'}
                       </div>
-                      <div className="mt-0.5 text-[11px] text-zinc-500">
+                      <div className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                         Fijo por defecto en encabezado y PDF
                       </div>
                     </div>
@@ -1557,7 +1649,7 @@ export function EditorPanel({
                           setMainLogoUrlError(null);
                           onResetMainLogo();
                         }}
-                        className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                       >
                         <RotateCcw className="h-3 w-3" aria-hidden="true" />
                         <span>Restaurar OLMO B.N.</span>
@@ -1566,19 +1658,19 @@ export function EditorPanel({
                     <button
                       type="button"
                       onClick={() => mainLogoInputRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                     >
-                      <Upload className="h-3 w-3 text-zinc-500" aria-hidden="true" />
+                      <Upload className="h-3 w-3 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                       <span>Subir archivo</span>
                     </button>
                   </div>
                 </div>
 
                 {/* URL o Google Drive para Logo Principal */}
-                <div className="border-t border-[#E5E4DF] pt-2.5">
+                <div className="border-t border-[#E5E4DF] pt-2.5 dark:border-zinc-800">
                   <label
                     htmlFor="main-logo-url-input"
-                    className="mb-1 block text-[11px] font-medium text-zinc-600"
+                    className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                   >
                     O cargar logo principal desde URL / Google Drive
                   </label>
@@ -1598,24 +1690,24 @@ export function EditorPanel({
                           handleLoadMainLogoUrl();
                         }
                       }}
-                      className="min-w-0 flex-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                      className="min-w-0 flex-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                     />
                     <button
                       type="button"
                       disabled={mainLogoUrlLoading}
                       onClick={handleLoadMainLogoUrl}
-                      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       {mainLogoUrlLoading ? (
                         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       ) : (
-                        <Link2 className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                        <Link2 className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                       )}
                       <span>Aplicar URL</span>
                     </button>
                   </div>
                   {mainLogoUrlError && (
-                    <p className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                    <p className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
                       {mainLogoUrlError}
                     </p>
                   )}
@@ -1623,12 +1715,12 @@ export function EditorPanel({
               </div>
 
               {/* Hasta 3 Logos Adicionales en Pie de Página */}
-              <div className="rounded-lg border border-[#E5E4DF] bg-white p-3.5">
+              <div className="rounded-lg border border-[#E5E4DF] bg-white p-3.5 dark:border-zinc-800 dark:bg-zinc-900/60">
                 <div className="mb-3">
-                  <div className="text-xs font-semibold text-zinc-900">
+                  <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                     Logos Adicionales en Pie de Página (hasta 3)
                   </div>
-                  <div className="text-[11px] text-zinc-500">
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
                     Marcas, líneas o aliados opcionales (desde PC o URL / Google Drive). Los espacios sin imagen no aparecen en la vista previa ni en el PDF.
                   </div>
                 </div>
@@ -1641,7 +1733,7 @@ export function EditorPanel({
                     return (
                       <div
                         key={slotIdx}
-                        className="flex flex-col justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-2.5 space-y-2"
+                        className="flex flex-col justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-2.5 space-y-2 dark:border-zinc-800 dark:bg-zinc-800/50"
                       >
                         <input
                           ref={(el) => {
@@ -1655,7 +1747,7 @@ export function EditorPanel({
                         />
 
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-semibold text-zinc-700">
+                          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
                             Espacio {slotIdx + 1}
                           </span>
                           {slotLogo && (
@@ -1671,14 +1763,14 @@ export function EditorPanel({
                               }}
                               title={`Quitar logo ${slotIdx + 1}`}
                               aria-label={`Quitar logo ${slotIdx + 1}`}
-                              className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                              className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           )}
                         </div>
 
-                        <div className="flex h-12 items-center justify-center rounded border border-[#E5E4DF] bg-white px-2">
+                        <div className="flex h-12 items-center justify-center rounded border border-[#E5E4DF] bg-white px-2 dark:border-zinc-700">
                           {slotLogo ? (
                             <ResilientImage
                               src={slotLogo.dataUrl}
@@ -1703,9 +1795,9 @@ export function EditorPanel({
                           onClick={() =>
                             footerLogoInputRefs.current[slotIdx]?.click()
                           }
-                          className="inline-flex w-full items-center justify-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="inline-flex w-full items-center justify-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                         >
-                          <ImagePlus className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                          <ImagePlus className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                           <span>{slotLogo ? 'Cambiar archivo' : 'Subir archivo'}</span>
                         </button>
 
@@ -1735,25 +1827,25 @@ export function EditorPanel({
                                   handleLoadFooterLogoUrl(slotIdx);
                                 }
                               }}
-                              className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none"
+                              className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                             />
                             <button
                               type="button"
                               disabled={slotLoading}
                               onClick={() => handleLoadFooterLogoUrl(slotIdx)}
                               title="Cargar logo desde URL"
-                              className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 shrink-0 cursor-pointer"
+                              className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 shrink-0 cursor-pointer"
                             >
                               {slotLoading ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               ) : (
-                                <Link2 className="h-3 w-3 text-[#8C5A32]" />
+                                <Link2 className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" />
                               )}
                               <span>Cargar</span>
                             </button>
                           </div>
                           {slotUrlErr && (
-                            <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] leading-snug text-amber-900">
+                            <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] leading-snug text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
                               {slotUrlErr}
                             </p>
                           )}
@@ -1766,25 +1858,25 @@ export function EditorPanel({
             </div>
 
             {/* Datos de la Empresa (Acordeón discreto) */}
-            <div className="border-t border-[#E5E4DF] pt-5">
+            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
               <button
                 type="button"
                 onClick={() => setShowCompanyDrawer((v) => !v)}
-                className="flex w-full items-center justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-4 py-2.5 text-left text-xs font-semibold text-zinc-800 hover:bg-zinc-100 transition-colors cursor-pointer"
+                className="flex w-full items-center justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-4 py-2.5 text-left text-xs font-semibold text-zinc-800 hover:bg-zinc-100 transition-colors dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-800 cursor-pointer"
               >
                 <span className="inline-flex items-center gap-2">
-                  <Building2 className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                  <Building2 className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                   <span>Datos del Estudio Emisor ({data.company.nombreComercial})</span>
                 </span>
                 {showCompanyDrawer ? (
-                  <ChevronUp className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                  <ChevronUp className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                 ) : (
-                  <ChevronDown className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                  <ChevronDown className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                 )}
               </button>
 
               {showCompanyDrawer && (
-                <div className="mt-3 space-y-4 rounded-lg border border-[#E5E4DF] p-4">
+                <div className="mt-3 space-y-4 rounded-lg border border-[#E5E4DF] p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                       <label className={labelClass}>Nombre Comercial</label>
@@ -1873,7 +1965,7 @@ export function EditorPanel({
                           'Datos de empresa guardados como predeterminados.'
                         );
                       }}
-                      className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+                      className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                     >
                       Guardar como predeterminado
                     </button>
@@ -1891,10 +1983,10 @@ export function EditorPanel({
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Líneas de Producto y Alcance
                 </h2>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   Agrega, duplica, reordena o edita los ítems cotizados según el tipo de proforma.
                 </p>
               </div>
@@ -1905,7 +1997,7 @@ export function EditorPanel({
                   onChange={(e) =>
                     handleChangeProformaType(e.target.value as ProformaType)
                   }
-                  className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-2 text-xs font-medium text-zinc-800 focus:border-[#8C5A32] focus:outline-none"
+                  className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-2 text-xs font-medium text-zinc-800 focus:border-[#8C5A32] focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:focus:border-amber-500"
                 >
                   {PROFORMA_TYPE_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -1916,7 +2008,7 @@ export function EditorPanel({
                 <button
                   type="button"
                   onClick={() => addItem()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Agregar Ítem</span>
@@ -1925,31 +2017,35 @@ export function EditorPanel({
             </div>
 
             {/* Panel opcional plegable: Importar desde Google Sheets / Excel */}
-            <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6]">
+            <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] dark:border-zinc-800 dark:bg-zinc-800/40">
               <button
                 type="button"
                 onClick={() => setShowSheetsDrawer((v) => !v)}
-                className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs font-semibold text-zinc-800 hover:bg-zinc-100/70 transition-colors cursor-pointer"
+                className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs font-semibold text-zinc-800 hover:bg-zinc-100/70 transition-colors dark:text-zinc-200 dark:hover:bg-zinc-800/70 cursor-pointer"
               >
                 <span className="inline-flex items-center gap-2">
                   <FileSpreadsheet
-                    className="h-4 w-4 text-[#8C5A32]"
+                    className={`h-4 w-4 ${
+                      isSheetsImportReady || isExcelFileImportReady
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-red-600 dark:text-red-400'
+                    }`}
                     aria-hidden="true"
                   />
                   <span>Importar desde Google Sheets / Excel</span>
-                  <span className="rounded border border-[#DCDAD3] bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">
+                  <span className="rounded border border-[#DCDAD3] bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
                     Opcional
                   </span>
                 </span>
                 {showSheetsDrawer ? (
-                  <ChevronUp className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                  <ChevronUp className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                 ) : (
-                  <ChevronDown className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+                  <ChevronDown className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                 )}
               </button>
 
               {showSheetsDrawer && (
-                <div className="space-y-4 border-t border-[#E5E4DF] bg-white p-4">
+                <div className="space-y-4 border-t border-[#E5E4DF] bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                   <input
                     ref={spreadsheetFileInputRef}
                     type="file"
@@ -1960,8 +2056,8 @@ export function EditorPanel({
                   />
 
                   {/* Elegir Reemplazar o Agregar */}
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-3 py-2 text-xs">
-                    <span className="font-medium text-zinc-700">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-800/60">
+                    <span className="font-medium text-zinc-700 dark:text-zinc-300">
                       Al importar filas:
                     </span>
                     <div className="flex flex-wrap items-center gap-4">
@@ -1978,7 +2074,7 @@ export function EditorPanel({
                           }
                           className="accent-[#8C5A32]"
                         />
-                        <span className="font-medium text-zinc-800">
+                        <span className="font-medium text-zinc-800 dark:text-zinc-200">
                           Reemplazar líneas actuales
                         </span>
                       </label>
@@ -1995,7 +2091,7 @@ export function EditorPanel({
                           }
                           className="accent-[#8C5A32]"
                         />
-                        <span className="font-medium text-zinc-800">
+                        <span className="font-medium text-zinc-800 dark:text-zinc-200">
                           Agregar a las líneas existentes
                         </span>
                       </label>
@@ -2003,7 +2099,7 @@ export function EditorPanel({
                   </div>
 
                   {/* Nombre de pestaña configurable (EXPORTACION por defecto) */}
-                  <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3">
+                  <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 dark:border-zinc-800 dark:bg-zinc-800/50">
                     <div className="flex flex-wrap items-end justify-between gap-2">
                       <div className="min-w-[210px] flex-1">
                         <label
@@ -2036,15 +2132,15 @@ export function EditorPanel({
                               sheetName: DEFAULT_IMPORT_SHEET_NAME,
                             })
                           }
-                          className="rounded-md border border-[#DCDAD3] bg-white px-2.5 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="rounded-md border border-[#DCDAD3] bg-white px-2.5 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                         >
                           Usar EXPORTACION
                         </button>
                       )}
                     </div>
-                    <p className="mt-1.5 text-[11px] text-zinc-500">
+                    <p className="mt-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                       Por defecto busca la hoja{' '}
-                      <span className="font-mono font-semibold text-zinc-700">
+                      <span className="font-mono font-semibold text-zinc-700 dark:text-zinc-300">
                         EXPORTACION
                       </span>{' '}
                       sin importar su orden (insensible a mayúsculas y espacios extra). Los CSV publicados sin pestañas se leen directamente.
@@ -2080,7 +2176,7 @@ export function EditorPanel({
                         type="button"
                         disabled={sheetsLoading}
                         onClick={() => handleImportFromSheets('import')}
-                        className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-60 cursor-pointer"
+                        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60 cursor-pointer ${getConnectionButtonClasses(isSheetsImportReady, 'solid')}`}
                       >
                         {sheetsLoading ? (
                           <Loader2
@@ -2100,10 +2196,10 @@ export function EditorPanel({
                         type="button"
                         disabled={sheetsLoading}
                         onClick={() => handleImportFromSheets('update')}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 disabled:opacity-60 cursor-pointer"
+                        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-60 cursor-pointer ${getConnectionButtonClasses(isSheetsImportReady, 'outline')}`}
                       >
                         <RefreshCw
-                          className={`h-3.5 w-3.5 text-[#8C5A32] ${
+                          className={`h-3.5 w-3.5 ${
                             sheetsLoading ? 'animate-spin' : ''
                           }`}
                           aria-hidden="true"
@@ -2114,13 +2210,13 @@ export function EditorPanel({
                   </div>
 
                   {/* Opción B: Archivo local .csv o .xlsx */}
-                  <div className="space-y-3 border-t border-[#E5E4DF] pt-3">
+                  <div className="space-y-3 border-t border-[#E5E4DF] pt-3 dark:border-zinc-800">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div className="text-xs font-semibold text-zinc-800">
+                        <div className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
                           O subir archivo local (.csv o .xlsx)
                         </div>
-                        <p className="text-[11px] text-zinc-500">
+                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                           Columnas: Producto, Descripcion, Cantidad, Unidad y Valor. Se omiten filas vacías, con Valor 0/no numérico o totales (TOTAL, SUBTOTAL, IVA, IMPUESTO, RESUMEN).
                         </p>
                       </div>
@@ -2128,19 +2224,19 @@ export function EditorPanel({
                         type="button"
                         disabled={sheetsLoading}
                         onClick={() => spreadsheetFileInputRef.current?.click()}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer"
+                        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-60 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isExcelFileImportReady, 'outline')}`}
                       >
-                        <Upload className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                        <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                         <span>Subir archivo (.csv / .xlsx)</span>
                       </button>
                     </div>
 
                     {loadedExcel && (
-                      <div className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] p-3 space-y-2.5">
+                      <div className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] p-3 space-y-2.5 dark:border-zinc-700 dark:bg-zinc-800/60">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="text-xs font-semibold text-zinc-900">
+                          <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                             Archivo Excel: {loadedExcel.fileName}{' '}
-                            <span className="font-normal text-zinc-500">
+                            <span className="font-normal text-zinc-500 dark:text-zinc-400">
                               ({loadedExcel.sheetNames.length}{' '}
                               {loadedExcel.sheetNames.length === 1
                                 ? 'hoja'
@@ -2156,7 +2252,7 @@ export function EditorPanel({
                             }}
                             title="Cerrar selección de archivo Excel"
                             aria-label="Cerrar selección de archivo Excel"
-                            className="rounded p-1 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 cursor-pointer"
+                            className="rounded p-1 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
                           >
                             <X className="h-3.5 w-3.5" />
                           </button>
@@ -2189,7 +2285,7 @@ export function EditorPanel({
                           <button
                             type="button"
                             onClick={handleImportSelectedExcelSheet}
-                            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer"
+                            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isExcelSheetReady, 'solid')}`}
                           >
                             <FileSpreadsheet
                               className="h-3.5 w-3.5"
@@ -2206,16 +2302,16 @@ export function EditorPanel({
                     <div
                       className={`rounded-md border px-3 py-2 text-xs ${
                         sheetsStatus.isError
-                          ? 'border-amber-300 bg-amber-50 text-amber-900'
-                          : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                          ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800/80 dark:bg-amber-950/60 dark:text-amber-200'
+                          : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/80 dark:bg-emerald-950/60 dark:text-emerald-200'
                       }`}
                     >
                       <p>{sheetsStatus.text}</p>
 
                       {pendingSheetChoice &&
                         pendingSheetChoice.error.availableSheets.length > 0 && (
-                          <div className="mt-2.5 border-t border-amber-200/80 pt-2">
-                            <span className="block text-[11px] font-semibold text-amber-950">
+                          <div className="mt-2.5 border-t border-amber-200/80 pt-2 dark:border-amber-800/60">
+                            <span className="block text-[11px] font-semibold text-amber-950 dark:text-amber-200">
                               Selecciona una de las hojas disponibles para importar:
                             </span>
                             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -2227,7 +2323,7 @@ export function EditorPanel({
                                     onClick={() =>
                                       handlePickAvailableSheet(sheetOption)
                                     }
-                                    className="rounded border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-800 hover:border-[#8C5A32] hover:bg-[#FAF9F6] cursor-pointer"
+                                    className="rounded border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-800 hover:border-[#8C5A32] hover:bg-[#FAF9F6] dark:border-amber-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800 cursor-pointer"
                                   >
                                     {sheetOption}
                                   </button>
@@ -2243,25 +2339,25 @@ export function EditorPanel({
             </div>
 
             {/* Plantillas rápidas guardadas por el usuario */}
-            <div className="flex flex-wrap items-center gap-1.5 border-y border-[#E5E4DF] py-2.5">
-              <span className="mr-1 text-[11px] font-medium text-zinc-500">
+            <div className="flex flex-wrap items-center gap-1.5 border-y border-[#E5E4DF] py-2.5 dark:border-zinc-800">
+              <span className="mr-1 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
                 Plantillas rápidas:
               </span>
               {productTemplates.length === 0 ? (
-                <span className="text-[11px] text-zinc-400">
+                <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
                   Sin plantillas guardadas. Usa &ldquo;Guardar plantilla&rdquo; en cualquier producto para reutilizarlo.
                 </span>
               ) : (
                 productTemplates.map((tpl) => (
                   <div
                     key={tpl.id}
-                    className="inline-flex items-center overflow-hidden rounded border border-[#E5E4DF] bg-[#FAF9F6]"
+                    className="inline-flex items-center overflow-hidden rounded border border-[#E5E4DF] bg-[#FAF9F6] dark:border-zinc-700 dark:bg-zinc-800"
                   >
                     <button
                       type="button"
                       onClick={() => applyTemplate(tpl)}
                       title={`Aplicar plantilla: ${tpl.producto} · ${tpl.cantidad} ${tpl.unidad} · ${formatMoney(tpl.valor, data.clientProject.moneda)}`}
-                      className="px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors cursor-pointer"
+                      className="px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                     >
                       + {tpl.producto}
                     </button>
@@ -2270,7 +2366,7 @@ export function EditorPanel({
                       onClick={() => onDeleteProductTemplate(tpl.id)}
                       aria-label={`Eliminar plantilla ${tpl.producto}`}
                       title={`Eliminar plantilla ${tpl.producto}`}
-                      className="border-l border-[#E5E4DF] px-1.5 py-1 text-zinc-400 hover:bg-red-50 hover:text-red-700 transition-colors cursor-pointer"
+                      className="border-l border-[#E5E4DF] px-1.5 py-1 text-zinc-400 hover:bg-red-50 hover:text-red-700 transition-colors dark:border-zinc-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -2280,12 +2376,12 @@ export function EditorPanel({
             </div>
 
             {data.items.length > 0 && (
-              <div className="space-y-3 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5">
+              <div className="space-y-3 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3.5 dark:border-zinc-800 dark:bg-zinc-800/50">
                 {/* Buscador dentro de productos */}
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="relative min-w-[210px] flex-1">
                     <Search
-                      className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                      className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
                       aria-hidden="true"
                     />
                     <input
@@ -2294,7 +2390,7 @@ export function EditorPanel({
                       placeholder="Buscar producto por nombre o descripción..."
                       value={productSearchQuery}
                       onChange={(e) => setProductSearchQuery(e.target.value)}
-                      className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                      className="w-full rounded-md border border-[#DCDAD3] bg-white py-1.5 pl-8 pr-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                     />
                     {productSearchQuery && (
                       <button
@@ -2302,7 +2398,7 @@ export function EditorPanel({
                         onClick={() => setProductSearchQuery('')}
                         title="Limpiar búsqueda"
                         aria-label="Limpiar filtro de productos"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 cursor-pointer"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>
@@ -2313,7 +2409,7 @@ export function EditorPanel({
                     <button
                       type="button"
                       onClick={() => setProductSearchQuery('')}
-                      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <X className="h-3 w-3" aria-hidden="true" />
                       <span>Limpiar filtro ({filteredProductEntries.length}/{data.items.length})</span>
@@ -2322,13 +2418,13 @@ export function EditorPanel({
                 </div>
 
                 {/* Resumen comprimido con navegación por clic y comprimir/expandir detalle */}
-                <div className="rounded-md border border-[#E5E4DF] bg-white">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F0EFEA] px-3 py-2">
+                <div className="rounded-md border border-[#E5E4DF] bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#F0EFEA] px-3 py-2 dark:border-zinc-800">
                     <div className="flex items-center gap-2 text-[11px]">
-                      <span className="font-semibold text-zinc-800">
+                      <span className="font-semibold text-zinc-800 dark:text-zinc-200">
                         Resumen rápido de productos
                       </span>
-                      <span className="rounded border border-[#E5E4DF] bg-[#FAF9F6] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-zinc-600 tabular-nums">
+                      <span className="rounded border border-[#E5E4DF] bg-[#FAF9F6] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-zinc-600 tabular-nums dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                         {filteredProductEntries.length}
                         {productSearchQuery ? ` de ${data.items.length}` : ''}
                       </span>
@@ -2339,29 +2435,29 @@ export function EditorPanel({
                         type="button"
                         onClick={handleCollapseAllProducts}
                         title="Comprimir detalle de todos los productos"
-                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                       >
-                        <ChevronsDownUp className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                        <ChevronsDownUp className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                         <span>Comprimir detalle</span>
                       </button>
                       <button
                         type="button"
                         onClick={handleExpandAllProducts}
                         title="Expandir detalle de todos los productos"
-                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                       >
-                        <ChevronsUpDown className="h-3 w-3 text-[#8C5A32]" aria-hidden="true" />
+                        <ChevronsUpDown className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                         <span>Expandir detalle</span>
                       </button>
                     </div>
                   </div>
 
                   {filteredProductEntries.length === 0 ? (
-                    <div className="px-3 py-3 text-center text-[11px] text-zinc-500">
+                    <div className="px-3 py-3 text-center text-[11px] text-zinc-500 dark:text-zinc-400">
                       Ningún producto coincide con &ldquo;{productSearchQuery}&rdquo;.
                     </div>
                   ) : (
-                    <div className="max-h-44 divide-y divide-[#F0EFEA] overflow-y-auto">
+                    <div className="max-h-44 divide-y divide-[#F0EFEA] overflow-y-auto dark:divide-zinc-800">
                       {filteredProductEntries.map(({ item, idx }) => {
                         const unitLabel =
                           proformaType === 'cielos_pisos'
@@ -2374,26 +2470,26 @@ export function EditorPanel({
                             type="button"
                             onClick={() => handleJumpToProduct(item.id)}
                             title="Ir a este producto en el listado principal"
-                            className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-[#FAF9F6] cursor-pointer"
+                            className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-[#FAF9F6] dark:hover:bg-zinc-800/70 cursor-pointer"
                           >
                             <div className="flex min-w-0 flex-1 items-center gap-2">
-                              <span className="font-mono text-[11px] font-semibold text-zinc-400 tabular-nums shrink-0">
+                              <span className="font-mono text-[11px] font-semibold text-zinc-400 dark:text-zinc-500 tabular-nums shrink-0">
                                 #{String(idx + 1).padStart(2, '0')}
                               </span>
-                              <span className="truncate font-medium text-zinc-800">
+                              <span className="truncate font-medium text-zinc-800 dark:text-zinc-200">
                                 {item.producto.trim() || 'Sin título'}
                               </span>
                               {isCollapsed && (
-                                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 shrink-0">
+                                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400 shrink-0">
                                   Comprimido
                                 </span>
                               )}
                             </div>
                             <div className="flex items-center gap-3 shrink-0 font-mono text-[11px] tabular-nums">
-                              <span className="text-zinc-500">
+                              <span className="text-zinc-500 dark:text-zinc-400">
                                 {item.cantidad} {unitLabel}
                               </span>
-                              <span className="font-semibold text-zinc-900">
+                              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                                 {formatMoney(item.valor, data.clientProject.moneda)}
                               </span>
                             </div>
@@ -2407,35 +2503,35 @@ export function EditorPanel({
             )}
 
             {data.items.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-10 text-center">
-                <p className="text-sm font-medium text-zinc-800">
+              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-10 text-center dark:border-zinc-700 dark:bg-zinc-800/40">
+                <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
                   No hay líneas de producto en esta proforma
                 </p>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                   Agrega una línea vacía o importa filas desde Google Sheets / Excel para
                   calcular el subtotal e impuesto.
                 </p>
                 <button
                   type="button"
                   onClick={() => addItem()}
-                  className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
                 >
                   <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Agregar primer ítem</span>
                 </button>
               </div>
             ) : filteredProductEntries.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-8 text-center">
-                <p className="text-sm font-medium text-zinc-800">
+              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-6 py-8 text-center dark:border-zinc-700 dark:bg-zinc-800/40">
+                <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
                   No se encontraron productos para &ldquo;{productSearchQuery}&rdquo;
                 </p>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                   Limpia el filtro de búsqueda para volver a ver los {data.items.length} productos de la cotización.
                 </p>
                 <button
                   type="button"
                   onClick={() => setProductSearchQuery('')}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 cursor-pointer"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Limpiar filtro y ver todos</span>
@@ -2456,32 +2552,32 @@ export function EditorPanel({
                     ref={(el) => {
                       productCardRefs.current[item.id] = el;
                     }}
-                    className={`rounded-lg border bg-white p-4 transition-all duration-300 ${
+                    className={`rounded-lg border bg-white p-4 transition-all duration-300 dark:bg-zinc-900 ${
                       isHighlighted
-                        ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/25 shadow-sm'
-                        : 'border-[#E5E4DF]'
+                        ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/25 shadow-sm dark:border-amber-500 dark:ring-amber-500/25'
+                        : 'border-[#E5E4DF] dark:border-zinc-800'
                     }`}
                   >
                     <div
                       className={`flex flex-wrap items-center justify-between gap-2 ${
-                        isCollapsed ? '' : 'mb-3 border-b border-[#F0EFEA] pb-2.5'
+                        isCollapsed ? '' : 'mb-3 border-b border-[#F0EFEA] pb-2.5 dark:border-zinc-800'
                       }`}
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
-                        <span className="font-mono font-semibold text-zinc-400 tabular-nums shrink-0">
+                        <span className="font-mono font-semibold text-zinc-400 dark:text-zinc-500 tabular-nums shrink-0">
                           #{String(idx + 1).padStart(2, '0')}
                         </span>
-                        <span className="truncate font-semibold text-zinc-800">
+                        <span className="truncate font-semibold text-zinc-800 dark:text-zinc-100">
                           {item.producto || 'Sin título'}
                         </span>
                         {isCollapsed && (
-                          <span className="hidden sm:inline-flex items-center gap-2 font-mono text-[11px] text-zinc-500 tabular-nums shrink-0">
+                          <span className="hidden sm:inline-flex items-center gap-2 font-mono text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums shrink-0">
                             <span>·</span>
                             <span>
                               {item.cantidad} {unitLabel}
                             </span>
                             <span>·</span>
-                            <span className="font-semibold text-zinc-800">
+                            <span className="font-semibold text-zinc-800 dark:text-zinc-200">
                               {formatMoney(item.valor, data.clientProject.moneda)}
                             </span>
                           </span>
@@ -2503,7 +2599,7 @@ export function EditorPanel({
                               ? 'Expandir detalle'
                               : 'Comprimir detalle'
                           }
-                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer mr-1"
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer mr-1"
                         >
                           {isCollapsed ? (
                             <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2524,9 +2620,9 @@ export function EditorPanel({
                               ? 'Guardar este producto como plantilla rápida'
                               : 'Escribe el nombre del producto para guardar como plantilla'
                           }
-                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-[#FAF9F6] px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed mr-1"
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-[#FAF9F6] px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed mr-1"
                         >
-                          <BookmarkPlus className="h-3 w-3 text-[#8C5A32]" />
+                          <BookmarkPlus className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" />
                           <span className="hidden sm:inline">Guardar plantilla</span>
                         </button>
                         <button
@@ -2535,7 +2631,7 @@ export function EditorPanel({
                           disabled={idx === 0}
                           aria-label="Subir línea"
                           title="Subir"
-                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
                         >
                           <ArrowUp className="h-3.5 w-3.5" />
                         </button>
@@ -2545,7 +2641,7 @@ export function EditorPanel({
                           disabled={idx === data.items.length - 1}
                           aria-label="Bajar línea"
                           title="Bajar"
-                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
                         >
                           <ArrowDown className="h-3.5 w-3.5" />
                         </button>
@@ -2554,7 +2650,7 @@ export function EditorPanel({
                           onClick={() => duplicateItem(idx)}
                           aria-label="Duplicar línea"
                           title="Duplicar"
-                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 cursor-pointer"
+                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 cursor-pointer"
                         >
                           <Copy className="h-3.5 w-3.5" />
                         </button>
@@ -2563,7 +2659,7 @@ export function EditorPanel({
                           onClick={() => removeItem(item.id)}
                           aria-label="Eliminar línea"
                           title="Eliminar"
-                          className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                          className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-700 dark:text-zinc-400 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -2739,7 +2835,7 @@ export function EditorPanel({
                         </div>
 
                         {proformaType === 'griferia' && (
-                          <div className="sm:col-span-12 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-2">
+                          <div className="sm:col-span-12 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-2 dark:border-zinc-800 dark:bg-zinc-800/50">
                             <input
                               ref={(el) => {
                                 itemImageFileInputRefs.current[item.id] = el;
@@ -2757,7 +2853,7 @@ export function EditorPanel({
                               aria-label={`Subir imagen para ${item.producto || 'ítem'}`}
                             />
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <label className="text-xs font-medium text-zinc-600">
+                              <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
                                 Imagen del producto (archivo PC o enlace / Google Drive — opcional)
                               </label>
                               {item.imagen?.trim() && (
@@ -2774,7 +2870,7 @@ export function EditorPanel({
                                       [item.id]: null,
                                     }));
                                   }}
-                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-500 hover:text-red-700 cursor-pointer"
+                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-500 hover:text-red-700 dark:text-zinc-400 dark:hover:text-red-300 cursor-pointer"
                                 >
                                   <Trash2 className="h-3 w-3" />
                                   <span>Quitar imagen</span>
@@ -2784,7 +2880,7 @@ export function EditorPanel({
 
                             <div className="flex flex-wrap items-center gap-2.5">
                               {item.imagen?.trim() && (
-                                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded border border-[#DCDAD3] bg-white p-1">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded border border-[#DCDAD3] bg-white p-1 dark:border-zinc-700">
                                   <ResilientImage
                                     src={item.imagen.trim()}
                                     alt={item.producto || 'Producto'}
@@ -2836,7 +2932,7 @@ export function EditorPanel({
                                   onClick={() =>
                                     handleLoadItemImageUrl(item.id, item.imagen)
                                   }
-                                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-xs font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                                 >
                                   {itemImageLoading[item.id] ? (
                                     <Loader2
@@ -2845,7 +2941,7 @@ export function EditorPanel({
                                     />
                                   ) : (
                                     <Link2
-                                      className="h-3.5 w-3.5 text-[#8C5A32]"
+                                      className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                                       aria-hidden="true"
                                     />
                                   )}
@@ -2860,10 +2956,10 @@ export function EditorPanel({
                                     item.id
                                   ]?.click()
                                 }
-                                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
                               >
                                 <Upload
-                                  className="h-3.5 w-3.5 text-[#8C5A32]"
+                                  className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                                   aria-hidden="true"
                                 />
                                 <span>
@@ -2875,13 +2971,13 @@ export function EditorPanel({
                             </div>
 
                             {item.imagen?.startsWith('data:') && (
-                              <p className="text-[11px] text-emerald-700">
+                              <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
                                 Imagen cargada desde archivo local de tu equipo.
                               </p>
                             )}
 
                             {itemImageErrors[item.id] && (
-                              <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                              <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
                                 {itemImageErrors[item.id]}
                               </p>
                             )}
@@ -2923,35 +3019,35 @@ export function EditorPanel({
             )}
 
             {/* Resumen en tiempo real */}
-            <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-4">
+            <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-4 dark:border-zinc-800 dark:bg-zinc-800/50">
               <div className="grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
                 <div>
-                  <span className="block text-zinc-500">
+                  <span className="block text-zinc-500 dark:text-zinc-400">
                     {proformaType === 'cielos_pisos'
                       ? 'Total m²'
                       : 'Total de Unidades'}
                   </span>
-                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 tabular-nums">
+                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
                     {totals.unidadResumen}
                   </span>
                 </div>
                 <div>
-                  <span className="block text-zinc-500">Valor de Producto</span>
-                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 tabular-nums">
+                  <span className="block text-zinc-500 dark:text-zinc-400">Valor de Producto</span>
+                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
                     {formatMoney(totals.subtotal, data.clientProject.moneda)}
                   </span>
                 </div>
                 <div>
-                  <span className="block text-zinc-500">
+                  <span className="block text-zinc-500 dark:text-zinc-400">
                     Impuesto ({data.taxRate}%)
                   </span>
-                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 tabular-nums">
+                  <span className="mt-1 block font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
                     {formatMoney(totals.impuesto, data.clientProject.moneda)}
                   </span>
                 </div>
                 <div>
-                  <span className="block text-zinc-500">Total Cotizado</span>
-                  <span className="mt-1 block font-mono text-base font-bold text-[#8C5A32] tabular-nums">
+                  <span className="block text-zinc-500 dark:text-zinc-400">Total Cotizado</span>
+                  <span className="mt-1 block font-mono text-base font-bold text-[#8C5A32] dark:text-amber-400 tabular-nums">
                     {formatMoney(totals.total, data.clientProject.moneda)}
                   </span>
                 </div>
@@ -2967,20 +3063,20 @@ export function EditorPanel({
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Referencias Visuales (hasta 10 imágenes)
                 </h2>
-                <p className="mt-0.5 text-xs text-zinc-500">
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   Carga hasta 10 imágenes de referencia desde tu PC o mediante enlace/URL (incluyendo Google Drive). Los espacios sin imagen no aparecen en la vista previa ni en el PDF; si dejas la descripción en blanco, se mostrará únicamente la imagen.
                 </p>
               </div>
-              <span className="rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 font-mono text-[11px] font-medium text-zinc-600 tabular-nums">
+              <span className="rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 font-mono text-[11px] font-medium text-zinc-600 tabular-nums dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                 {activeVisualRefsCount}/10
               </span>
             </div>
 
             {visualRefError && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
                 {visualRefError}
               </div>
             )}
@@ -3002,7 +3098,7 @@ export function EditorPanel({
                 return (
                   <div
                     key={slotIdx}
-                    className="flex flex-col justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3"
+                    className="flex flex-col justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 dark:border-zinc-800 dark:bg-zinc-800/50"
                   >
                     <input
                       ref={(el) => {
@@ -3022,7 +3118,7 @@ export function EditorPanel({
                     />
 
                     <div className="mb-2 flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-zinc-700">
+                      <span className="font-semibold text-zinc-700 dark:text-zinc-300">
                         Imagen {slotIdx + 1}
                       </span>
                       {hasImage && (
@@ -3031,14 +3127,14 @@ export function EditorPanel({
                           onClick={() => handleRemoveVisualRef(slotIdx)}
                           title={`Quitar imagen ${slotIdx + 1}`}
                           aria-label={`Quitar imagen ${slotIdx + 1}`}
-                          className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                          className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
 
-                    <div className="mb-2.5 flex h-24 items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5">
+                    <div className="mb-2.5 flex h-24 items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5 dark:border-zinc-700">
                       {hasImage && entry ? (
                         <ResilientImage
                           src={entry.imageDataUrl}
@@ -3067,10 +3163,10 @@ export function EditorPanel({
                         onClick={() =>
                           visualRefFileInputRefs.current[slotIdx]?.click()
                         }
-                        className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                        className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                       >
                         <ImagePlus
-                          className="h-3.5 w-3.5 text-[#8C5A32]"
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                           aria-hidden="true"
                         />
                         <span>
@@ -3105,13 +3201,13 @@ export function EditorPanel({
                               handleLoadVisualRefUrl(slotIdx);
                             }
                           }}
-                          className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                          className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                         />
                         <button
                           type="button"
                           disabled={slotLoading}
                           onClick={() => handleLoadVisualRefUrl(slotIdx)}
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                         >
                           {slotLoading ? (
                             <Loader2
@@ -3120,7 +3216,7 @@ export function EditorPanel({
                             />
                           ) : (
                             <Link2
-                              className="h-3.5 w-3.5 text-[#8C5A32]"
+                              className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                               aria-hidden="true"
                             />
                           )}
@@ -3129,7 +3225,7 @@ export function EditorPanel({
                       </div>
 
                       {slotErr && (
-                        <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-900">
+                        <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
                           {slotErr}
                         </p>
                       )}
@@ -3144,7 +3240,7 @@ export function EditorPanel({
                             e.target.value
                           )
                         }
-                        className="w-full rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                        className="w-full rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                       />
                     </div>
                   </div>
@@ -3161,7 +3257,7 @@ export function EditorPanel({
           <div className="space-y-6">
             <div>
               <div className="mb-2 flex items-center justify-between gap-2">
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Términos y Condiciones
                 </h2>
                 <button
@@ -3172,7 +3268,7 @@ export function EditorPanel({
                       terminosCondiciones: DEFAULT_TERMINOS_CONDICIONES,
                     }))
                   }
-                  className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 cursor-pointer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
                 >
                   <RotateCcw className="h-3 w-3" aria-hidden="true" />
                   <span>Restaurar predeterminados</span>
@@ -3191,18 +3287,18 @@ export function EditorPanel({
               />
             </div>
 
-            <div className="border-t border-[#E5E4DF] pt-5">
+            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="font-display text-sm font-semibold text-zinc-900">
+                  <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                     Especificaciones Técnicas Generales y Acabados
                   </h2>
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
                     Bloques diferenciados (Mobiliario General, Línea tipo Aran,
                     Secciones Técnicas).
                   </p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() =>
@@ -3211,15 +3307,40 @@ export function EditorPanel({
                         specBlocks: DEFAULT_SPEC_BLOCKS.map((b) => ({ ...b })),
                       }))
                     }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 cursor-pointer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
                   >
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>Restaurar</span>
                   </button>
                   <button
                     type="button"
+                    onClick={onSyncAranTemplates}
+                    disabled={isSyncingAran}
+                    title={
+                      isAranConnected
+                        ? 'Conectado con hoja ARAN: recargar plantillas desde Google Sheets'
+                        : 'Sin URL o error en script ARAN: revisa la pestaña Integración'
+                    }
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAranConnected, 'outline')}`}
+                  >
+                    {isSyncingAran ? (
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    <span>
+                      {isSyncingAran
+                        ? 'Cargando ARAN...'
+                        : `ARAN (${aranTemplates.length})`}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={addSpecBlock}
-                    className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+                    className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                   >
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                     <span>Agregar bloque</span>
@@ -3227,12 +3348,102 @@ export function EditorPanel({
                 </div>
               </div>
 
+              {/* Barra rápida para agregar un bloque nuevo directamente desde la hoja ARAN */}
+              <div className="mb-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-2 dark:border-zinc-800 dark:bg-zinc-800/50">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label
+                    htmlFor="aran-add-new-block-select"
+                    className="text-xs font-semibold text-zinc-800 dark:text-zinc-200"
+                  >
+                    Agregar bloque nuevo desde hoja &ldquo;ARAN&rdquo;
+                  </label>
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {aranTemplates.length > 0
+                      ? `${aranTemplates.length} fila(s) disponible(s)`
+                      : isSyncingAran
+                        ? 'Consultando Google Sheets...'
+                        : 'Sin filas cargadas'}
+                  </span>
+                </div>
+
+                <select
+                  id="aran-add-new-block-select"
+                  value=""
+                  disabled={aranTemplates.length === 0}
+                  onChange={(e) => addSpecBlockFromAran(e.target.value)}
+                  className={`${inputClass} text-xs disabled:opacity-60`}
+                >
+                  <option value="">
+                    {aranTemplates.length > 0
+                      ? '— Seleccionar "Titulo" de ARAN para crear bloque nuevo —'
+                      : isSyncingAran
+                        ? 'Cargando plantillas desde ARAN...'
+                        : 'No hay plantillas cargadas desde ARAN (puedes crear bloques manuales)'}
+                  </option>
+                  {aranTemplates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.titulo}
+                    </option>
+                  ))}
+                </select>
+
+                {!isAranConnected && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-[11px] text-red-900 dark:border-red-800 dark:bg-red-950/60 dark:text-red-200">
+                    <span className="flex items-center gap-1.5">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      <span>
+                        {aranLastMessage ||
+                          'Falta configurar la URL del script "ARAN" en Integración.'}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onGoToIntegration}
+                      className="rounded border border-red-400 bg-white px-2 py-0.5 font-semibold text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/50 dark:text-red-100 dark:hover:bg-red-900 cursor-pointer"
+                    >
+                      Ir a Integración
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-4">
                 {data.specBlocks.map((block) => (
                   <div
                     key={block.id}
-                    className="rounded-lg border border-[#E5E4DF] p-4"
+                    className="rounded-lg border border-[#E5E4DF] p-4 dark:border-zinc-800 dark:bg-zinc-800/30"
                   >
+                    <div className="mb-3 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-2.5 dark:border-zinc-700/80 dark:bg-zinc-900/60">
+                      <label
+                        htmlFor={`aran-block-select-${block.id}`}
+                        className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
+                      >
+                        Cargar plantilla desde hoja &ldquo;ARAN&rdquo; (opcional)
+                      </label>
+                      <select
+                        id={`aran-block-select-${block.id}`}
+                        value={selectedAranByBlockId[block.id] ?? ''}
+                        disabled={aranTemplates.length === 0}
+                        onChange={(e) =>
+                          applyAranTemplateToBlock(block.id, e.target.value)
+                        }
+                        className={`${inputClass} py-1.5 text-xs disabled:opacity-60`}
+                      >
+                        <option value="">
+                          {aranTemplates.length > 0
+                            ? '— Elegir "Titulo" de ARAN para rellenar este bloque —'
+                            : isSyncingAran
+                              ? 'Cargando opciones desde ARAN...'
+                              : 'Sin filas de ARAN cargadas (edición manual libre)'}
+                        </option>
+                        {aranTemplates.map((tpl) => (
+                          <option key={tpl.id} value={tpl.id}>
+                            {tpl.titulo}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
@@ -3267,7 +3478,7 @@ export function EditorPanel({
                         onClick={() => removeSpecBlock(block.id)}
                         title="Eliminar bloque"
                         aria-label="Eliminar bloque técnico"
-                        className="mt-5 rounded p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                        className="mt-5 rounded p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -3293,14 +3504,14 @@ export function EditorPanel({
         )}
 
         {/* ================================================================
-            TAB 4: CUENTA BANCARIA, DESGLOSE DE PAGOS Y FIRMAS
+            TAB 5: CUENTA BANCARIA, DESGLOSE DE PAGOS Y FIRMAS
             ================================================================ */}
         {activeTab === 'banco' && (
           <div className="space-y-6">
             {/* Cuenta Bancaria */}
             <div>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-sm font-semibold text-zinc-900">
+                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Cuenta Bancaria
                 </h2>
                 <div className="flex items-center gap-3">
@@ -3312,7 +3523,7 @@ export function EditorPanel({
                         bankAccount: { ...DEFAULT_BANK_ACCOUNT },
                       }))
                     }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 cursor-pointer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
                   >
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>Restaurar</span>
@@ -3325,7 +3536,7 @@ export function EditorPanel({
                         'Cuenta bancaria guardada como predeterminada.'
                       );
                     }}
-                    className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+                    className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                   >
                     Guardar como predeterminada
                   </button>
@@ -3395,13 +3606,13 @@ export function EditorPanel({
             </div>
 
             {/* Desglose de Pagos */}
-            <div className="border-t border-[#E5E4DF] pt-5">
+            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="font-display text-sm font-semibold text-zinc-900">
+                  <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                     Desglose de Pagos
                   </h2>
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
                     Las filas en 0% se omiten automáticamente en la vista final
                     y PDF.
                   </p>
@@ -3417,7 +3628,7 @@ export function EditorPanel({
                         })),
                       }))
                     }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 cursor-pointer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
                   >
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>60 / 30 / 10</span>
@@ -3425,7 +3636,7 @@ export function EditorPanel({
                   <button
                     type="button"
                     onClick={addPaymentRow}
-                    className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 cursor-pointer"
+                    className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
                   >
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                     <span>Agregar fila</span>
@@ -3437,7 +3648,7 @@ export function EditorPanel({
                 {totals.paymentRows.map((row) => (
                   <div
                     key={row.id}
-                    className="grid grid-cols-1 items-center gap-2 rounded-md border border-[#E5E4DF] p-2.5 sm:grid-cols-[1fr_92px_125px_32px]"
+                    className="grid grid-cols-1 items-center gap-2 rounded-md border border-[#E5E4DF] p-2.5 sm:grid-cols-[1fr_92px_125px_32px] dark:border-zinc-800 dark:bg-zinc-800/30"
                   >
                     <input
                       type="text"
@@ -3466,18 +3677,18 @@ export function EditorPanel({
                         aria-label="Porcentaje"
                         className={`${inputClass} pr-7 text-right font-mono tabular-nums`}
                       />
-                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400">
+                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-zinc-400 dark:text-zinc-500">
                         %
                       </span>
                     </div>
-                    <div className="rounded-md bg-[#FAF9F6] px-3 py-2 text-right font-mono text-xs font-semibold text-zinc-800 tabular-nums">
+                    <div className="rounded-md bg-[#FAF9F6] px-3 py-2 text-right font-mono text-xs font-semibold text-zinc-800 tabular-nums dark:bg-zinc-800 dark:text-zinc-200">
                       {formatMoney(row.monto, data.clientProject.moneda)}
                     </div>
                     <button
                       type="button"
                       onClick={() => removePaymentRow(row.id)}
                       aria-label="Eliminar fila de pago"
-                      className="flex h-8 w-8 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                      className="flex h-8 w-8 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -3489,19 +3700,19 @@ export function EditorPanel({
               <div
                 className={`mt-3 flex items-center justify-between rounded-md border px-3.5 py-2 text-xs ${
                   Math.abs(totals.totalPorcentajePagos - 100) < 0.01
-                    ? 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700'
-                    : 'border-amber-300 bg-amber-50 text-amber-900'
+                    ? 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700 dark:border-zinc-800 dark:bg-zinc-800/50 dark:text-zinc-300'
+                    : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200'
                 }`}
               >
                 <span className="inline-flex items-center gap-1.5 font-medium">
                   {Math.abs(totals.totalPorcentajePagos - 100) < 0.01 ? (
                     <CheckCircle2
-                      className="h-3.5 w-3.5 text-emerald-700"
+                      className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
                       aria-hidden="true"
                     />
                   ) : (
                     <AlertCircle
-                      className="h-3.5 w-3.5 text-amber-700"
+                      className="h-3.5 w-3.5 text-amber-700 dark:text-amber-400"
                       aria-hidden="true"
                     />
                   )}
@@ -3521,8 +3732,8 @@ export function EditorPanel({
             </div>
 
             {/* Notas Finales y Firmas */}
-            <div className="border-t border-[#E5E4DF] pt-5 space-y-4">
-              <h2 className="font-display text-sm font-semibold text-zinc-900">
+            <div className="border-t border-[#E5E4DF] pt-5 space-y-4 dark:border-zinc-800">
+              <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 Notas Finales y Bloque de Firmas
               </h2>
 

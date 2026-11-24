@@ -1,4 +1,5 @@
 import {
+  DEFAULT_ARAN_APPS_SCRIPT_URL,
   DEFAULT_BANK_ACCOUNT,
   DEFAULT_CLIENTS_APPS_SCRIPT_URL,
   DEFAULT_COMPANY_INFO,
@@ -7,6 +8,7 @@ import {
   INITIAL_CONSECUTIVO,
 } from '../data/defaults';
 import {
+  AranSpecTemplate,
   BankAccountInfo,
   ClientsImportConfig,
   CloudSyncConfig,
@@ -17,6 +19,7 @@ import {
   ProformaData,
   SavedClient,
   SavedProformaRecord,
+  ThemeMode,
 } from '../types/proforma';
 
 const KEYS = {
@@ -34,6 +37,8 @@ const KEYS = {
   CLIENTS: 'olmo_proforma_clients_v1',
   CLIENTS_IMPORT_CONFIG: 'olmo_proforma_clients_import_v1',
   REMOTE_HISTORY_CACHE: 'olmo_proforma_remote_history_v1',
+  ARAN_TEMPLATES_CACHE: 'olmo_proforma_aran_templates_v1',
+  THEME_MODE: 'olmo_proforma_theme_mode_v1',
 };
 
 export function getNextConsecutivo(): number {
@@ -190,6 +195,7 @@ export function loadCloudConfig(): CloudSyncConfig {
         webhookUrl: DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
         autoSyncOnSave: false,
         secretToken: '',
+        aranScriptUrl: DEFAULT_ARAN_APPS_SCRIPT_URL,
       };
     }
     const parsed = JSON.parse(raw) as Partial<CloudSyncConfig>;
@@ -207,12 +213,20 @@ export function loadCloudConfig(): CloudSyncConfig {
       lastSyncedAt: parsed.lastSyncedAt,
       lastStatus: parsed.lastStatus,
       lastMessage: parsed.lastMessage,
+      aranScriptUrl:
+        typeof parsed.aranScriptUrl === 'string'
+          ? parsed.aranScriptUrl
+          : DEFAULT_ARAN_APPS_SCRIPT_URL,
+      aranLastSyncedAt: parsed.aranLastSyncedAt,
+      aranLastStatus: parsed.aranLastStatus,
+      aranLastMessage: parsed.aranLastMessage,
     };
   } catch {
     return {
       webhookUrl: DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
       autoSyncOnSave: false,
       secretToken: '',
+      aranScriptUrl: DEFAULT_ARAN_APPS_SCRIPT_URL,
     };
   }
 }
@@ -505,6 +519,50 @@ export function loadRemoteHistoryCache(): RemoteHistoryCache {
 export function saveRemoteHistoryCache(cache: RemoteHistoryCache): void {
   try {
     localStorage.setItem(KEYS.REMOTE_HISTORY_CACHE, JSON.stringify(cache));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadAranTemplatesCache(): AranSpecTemplate[] {
+  try {
+    const raw = localStorage.getItem(KEYS.ARAN_TEMPLATES_CACHE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is AranSpecTemplate =>
+        Boolean(item) &&
+        typeof item.id === 'string' &&
+        typeof item.titulo === 'string' &&
+        typeof item.subtitulo === 'string' &&
+        typeof item.contenido === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveAranTemplatesCache(templates: AranSpecTemplate[]): void {
+  try {
+    localStorage.setItem(KEYS.ARAN_TEMPLATES_CACHE, JSON.stringify(templates));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadThemeMode(): ThemeMode {
+  try {
+    const raw = localStorage.getItem(KEYS.THEME_MODE);
+    return raw === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+}
+
+export function saveThemeMode(mode: ThemeMode): void {
+  try {
+    localStorage.setItem(KEYS.THEME_MODE, mode);
   } catch {
     // ignore
   }

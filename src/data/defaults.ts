@@ -18,6 +18,9 @@ export const DEFAULT_PROFORMAS_APPS_SCRIPT_URL =
 export const DEFAULT_CLIENTS_APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbw8Ws1QBeHUd0KnO81Ny2mgllT79Fc_H_zG4xUzFmXtjlQ3kIkAGjGkHYR0xLuI4MGWtg/exec';
 
+export const DEFAULT_ARAN_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzbjR0fhi7IZXLglPRBL2PBxuBleK7oGK9X3rHgAc8KiHQTZFkbsB5JRoLnY5vwpHWbyA/exec';
+
 export const DEFAULT_OLMO_MAIN_LOGO: LogoAsset = {
   id: 'default-olmo-bn',
   name: 'OLMO B.N.',

@@ -126,6 +126,13 @@ export interface SavedProformaRecord {
   rawDatosJson?: string;
 }
 
+export interface AranSpecTemplate {
+  id: string;
+  titulo: string;
+  subtitulo: string;
+  contenido: string;
+}
+
 export interface CloudSyncConfig {
   webhookUrl: string;
   autoSyncOnSave: boolean;
@@ -133,6 +140,10 @@ export interface CloudSyncConfig {
   lastSyncedAt?: string;
   lastStatus?: 'ok' | 'error';
   lastMessage?: string;
+  aranScriptUrl?: string;
+  aranLastSyncedAt?: string;
+  aranLastStatus?: 'ok' | 'error';
+  aranLastMessage?: string;
 }
 
 export type ProductEntryMode = 'manual' | 'sheets';
@@ -187,3 +198,4 @@ export type AppSection =
   | 'history'
   | 'integration';
 export type WorkspaceLayoutMode = 'split' | 'editor' | 'preview';
+export type ThemeMode = 'light' | 'dark';

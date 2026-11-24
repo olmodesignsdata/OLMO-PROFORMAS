@@ -1,5 +1,6 @@
 import { createInitialProforma } from '../data/defaults';
 import {
+  AranSpecTemplate,
   CloudSyncConfig,
   ComputedTotals,
   ProductLineItem,
@@ -501,7 +502,20 @@ function extractRowsArrayFromGetResponse(raw: unknown): Record<string, unknown>[
           : 'Google Apps Script devolvió un error al consultar la hoja.'
       );
     }
-    const keys = ['rows', 'proformas', 'records', 'data', 'items', 'clients', 'values'];
+    const keys = [
+      'rows',
+      'proformas',
+      'records',
+      'data',
+      'items',
+      'clients',
+      'values',
+      'aran',
+      'bloques',
+      'blocks',
+      'specs',
+      'templates',
+    ];
     for (const k of keys) {
       if (Array.isArray(obj[k])) {
         candidateList = obj[k] as unknown[];
@@ -1149,4 +1163,128 @@ export async function fetchClientsFromAppsScript(
   });
 
   return clients;
+}
+
+export async function fetchAranSpecTemplatesFromAppsScript(
+  aranScriptUrl: string,
+  secretToken?: string
+): Promise<AranSpecTemplate[]> {
+  const validated = validateHttpUrl(aranScriptUrl);
+  if (typeof validated === 'string') {
+    throw new Error(
+      'Configura primero una URL válida de Google Apps Script (/exec) para la hoja "ARAN" en Integración.'
+    );
+  }
+
+  const getUrl = new URL(validated.toString());
+  if (!getUrl.searchParams.has('sheet')) {
+    getUrl.searchParams.set('sheet', 'ARAN');
+  }
+  if (secretToken?.trim() && !getUrl.searchParams.has('token')) {
+    getUrl.searchParams.set('token', secretToken.trim());
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(getUrl.toString(), {
+      method: 'GET',
+      mode: 'cors',
+      redirect: 'follow',
+    });
+  } catch (err) {
+    throw new Error(
+      err instanceof Error
+        ? `No se pudo consultar la hoja "ARAN" (${err.message}). Verifica que el script esté publicado con acceso "Cualquier usuario".`
+        : 'No se pudo conectar con Google Apps Script para leer la hoja "ARAN".'
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `El Apps Script de "ARAN" respondió con estado HTTP ${response.status}.`
+    );
+  }
+
+  const text = await response.text();
+  const trimmedLower = text.trim().toLowerCase();
+  if (
+    trimmedLower.startsWith('<!doctype html') ||
+    trimmedLower.startsWith('<html')
+  ) {
+    throw new Error(
+      'El script de "ARAN" devolvió una página HTML en lugar de JSON. Verifica que doGet(e) devuelva ContentService JSON con acceso "Cualquier usuario".'
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(
+      'La respuesta del Google Apps Script de "ARAN" no es un JSON válido.'
+    );
+  }
+
+  const rows = extractRowsArrayFromGetResponse(parsed);
+  const templates: AranSpecTemplate[] = [];
+
+  rows.forEach((row, idx) => {
+    const lookup = buildNormalizedRowLookup(row);
+    const titulo = String(
+      pickRowValue(lookup, [
+        'Titulo',
+        'Título',
+        'Titulo del bloque',
+        'Título del bloque',
+        'Nombre',
+        'Bloque',
+        'Seccion',
+        'Sección',
+        'Title',
+        'Concepto',
+      ]) ?? ''
+    ).trim();
+    const subtitulo = String(
+      pickRowValue(lookup, [
+        'Subtitulo',
+        'Subtítulo',
+        'Sub titulo',
+        'Sub título',
+        'Subtitle',
+        'Sub',
+        'Detalle corto',
+        'Resumen',
+      ]) ?? ''
+    ).trim();
+    const contenido = String(
+      pickRowValue(lookup, [
+        'Especificaciones y acabados',
+        'Especificaciones',
+        'Acabados',
+        'Contenido',
+        'Descripcion',
+        'Descripción',
+        'Detalle',
+        'Detalles',
+        'Texto',
+        'Specs',
+        'Content',
+        'Especificacion',
+      ]) ?? ''
+    ).trim();
+
+    if (!titulo && !subtitulo && !contenido) {
+      return;
+    }
+
+    const safeTitulo = titulo || subtitulo || `Bloque ARAN ${idx + 1}`;
+    templates.push({
+      id: `aran-${idx}-${normalizeRowKey(safeTitulo).slice(0, 24) || idx}`,
+      titulo: safeTitulo,
+      subtitulo,
+      contenido,
+    });
+  });
+
+  return templates;
 }

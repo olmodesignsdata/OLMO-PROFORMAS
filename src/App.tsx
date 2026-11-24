@@ -26,8 +26,10 @@ import {
 import { EditorPanel } from './components/EditorPanel';
 import { HistoryView } from './components/HistoryView';
 import { IntegrationView } from './components/IntegrationView';
+import { PdfIcon } from './components/PdfIcon';
 import { ProformaPreview } from './components/ProformaPreview';
 import { TopBar } from './components/TopBar';
+import { getConnectionButtonClasses } from './utils/connectionStyles';
 import {
   createEmptyProductLine,
   createInitialProforma,
@@ -36,6 +38,7 @@ import {
 } from './data/defaults';
 import {
   AppSection,
+  AranSpecTemplate,
   BankAccountInfo,
   ClientsImportConfig,
   ClientsImportStrategy,
@@ -48,9 +51,11 @@ import {
   ProformaData,
   SavedClient,
   SavedProformaRecord,
+  ThemeMode,
   WorkspaceLayoutMode,
 } from './types/proforma';
 import {
+  fetchAranSpecTemplatesFromAppsScript,
   fetchRemoteProformasFromAppsScript,
   parseProformaFromJsonInput,
   sendProformaToWebhook,
@@ -70,6 +75,7 @@ import {
 import {
   deleteProformaFromHistory,
   getNextConsecutivo,
+  loadAranTemplatesCache,
   loadClientsImportConfig,
   loadCloudConfig,
   loadDraftProforma,
@@ -83,7 +89,9 @@ import {
   loadSavedClients,
   loadSavedCompanyDefaults,
   loadSavedProformas,
+  loadThemeMode,
   reserveNextConsecutivo,
+  saveAranTemplatesCache,
   saveBankDefaults,
   saveClientsImportConfig,
   saveCloudConfig,
@@ -96,6 +104,7 @@ import {
   saveProformaToHistory,
   saveRemoteHistoryCache,
   saveSavedClients,
+  saveThemeMode,
   setNextConsecutivo,
 } from './utils/storage';
 
@@ -350,9 +359,14 @@ export default function App() {
     ok: boolean;
     message: string;
   } | null>(null);
+  const [aranTemplates, setAranTemplates] = useState<AranSpecTemplate[]>(() =>
+    loadAranTemplatesCache()
+  );
+  const [isSyncingAran, setIsSyncingAran] = useState(false);
 
   const [activeSection, setActiveSection] = useState<AppSection>('history');
   const [layoutMode, setLayoutMode] = useState<WorkspaceLayoutMode>('split');
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
   const [isSendingToSheet, setIsSendingToSheet] = useState(false);
   const [showNewQuoteConfirm, setShowNewQuoteConfirm] = useState(false);
   const [pendingLoadDraft, setPendingLoadDraft] = useState<{
@@ -376,6 +390,8 @@ export default function App() {
   const latestTotalsRef = useRef(totals);
   const latestHistoryRef = useRef(history);
   const latestFooterLogosRef = useRef(footerLogos);
+  const latestCloudConfigRef = useRef(cloudConfig);
+  const didInitialAranFetchRef = useRef(false);
   const prevFooterSyncContextRef = useRef<{ id: string; type: string }>({
     id: proforma.id,
     type: proforma.proformaType ?? 'mobiliario',
@@ -390,6 +406,12 @@ export default function App() {
   latestTotalsRef.current = totals;
   latestHistoryRef.current = history;
   latestFooterLogosRef.current = footerLogos;
+  latestCloudConfigRef.current = cloudConfig;
+
+  // Aplicar clase .dark en <html> para Modo Oscuro en toda la interfaz de trabajo (sin afectar el documento final/PDF)
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', themeMode === 'dark');
+  }, [themeMode]);
 
   // Preconvertir logos externos (principal y pie de página) a DataURL en memoria para exportación PDF sin bloqueos CORS
   useEffect(() => {
@@ -1265,6 +1287,89 @@ export default function App() {
     saveCloudConfig(next);
   };
 
+  const handleSyncAranTemplates = useCallback(
+    async (
+      silent = false,
+      overrideUrl?: string
+    ): Promise<{ ok: boolean; message: string; count: number }> => {
+      const currentConfig = latestCloudConfigRef.current;
+      const targetUrl = (
+        overrideUrl ??
+        currentConfig.aranScriptUrl ??
+        ''
+      ).trim();
+
+      if (!targetUrl) {
+        const msg =
+          'Falta configurar la URL de Google Apps Script (/exec) para la hoja "ARAN" en Integración.';
+        const nextCfg: CloudSyncConfig = {
+          ...currentConfig,
+          aranScriptUrl: '',
+          aranLastStatus: 'error',
+          aranLastMessage: msg,
+        };
+        setCloudConfig(nextCfg);
+        saveCloudConfig(nextCfg);
+        if (!silent) showToast(msg, true);
+        return { ok: false, message: msg, count: 0 };
+      }
+
+      setIsSyncingAran(true);
+      try {
+        const rows = await fetchAranSpecTemplatesFromAppsScript(
+          targetUrl,
+          currentConfig.secretToken
+        );
+        const syncedAt = new Date().toISOString();
+        setAranTemplates(rows);
+        saveAranTemplatesCache(rows);
+
+        const msg =
+          rows.length > 0
+            ? `Se cargaron ${rows.length} plantilla(s) desde la hoja "ARAN".`
+            : 'Conexión correcta con la hoja "ARAN", pero aún no tiene filas con datos.';
+        const latest = latestCloudConfigRef.current;
+        const nextCfg: CloudSyncConfig = {
+          ...latest,
+          aranScriptUrl: targetUrl,
+          aranLastSyncedAt: syncedAt,
+          aranLastStatus: 'ok',
+          aranLastMessage: msg,
+        };
+        setCloudConfig(nextCfg);
+        saveCloudConfig(nextCfg);
+        if (!silent) showToast(msg);
+        return { ok: true, message: msg, count: rows.length };
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'No se pudo consultar la hoja "ARAN".';
+        const latest = latestCloudConfigRef.current;
+        const nextCfg: CloudSyncConfig = {
+          ...latest,
+          aranLastStatus: 'error',
+          aranLastMessage: msg,
+        };
+        setCloudConfig(nextCfg);
+        saveCloudConfig(nextCfg);
+        if (!silent) showToast(msg, true);
+        return { ok: false, message: msg, count: 0 };
+      } finally {
+        setIsSyncingAran(false);
+      }
+    },
+    [showToast]
+  );
+
+  useEffect(() => {
+    if (didInitialAranFetchRef.current) return;
+    didInitialAranFetchRef.current = true;
+    if (cloudConfig.aranScriptUrl?.trim()) {
+      void handleSyncAranTemplates(true);
+    }
+  }, [cloudConfig.aranScriptUrl, handleSyncAranTemplates]);
+
   const handleSyncHistoryFromSheet = async () => {
     if (!cloudConfig.webhookUrl.trim()) {
       const msg =
@@ -1318,14 +1423,24 @@ export default function App() {
     });
   };
 
+  const handleChangeThemeMode = (next: ThemeMode) => {
+    setThemeMode(next);
+    saveThemeMode(next);
+  };
+
+  const isSheetWebhookConnected =
+    Boolean(cloudConfig.webhookUrl.trim()) && cloudConfig.lastStatus !== 'error';
+
   return (
-    <div className="min-h-screen bg-[#F6F5F2] text-zinc-900">
+    <div className="min-h-screen bg-[#F3F2EE] text-zinc-900 transition-colors duration-150 dark:bg-zinc-950 dark:text-zinc-100">
       <TopBar
         activeSection={activeSection}
         onSelectSection={setActiveSection}
         onDownloadPDF={handleDownloadPDF}
         historyCount={history.length}
         clientsCount={savedClients.length}
+        themeMode={themeMode}
+        onChangeThemeMode={handleChangeThemeMode}
       />
 
       {/* Notificación flotante sobria */}
@@ -1333,11 +1448,11 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="no-print fixed bottom-5 right-5 z-40 flex max-w-md items-center gap-2.5 rounded-lg border border-[#E5E4DF] bg-white px-4 py-3 text-xs font-medium text-zinc-900 shadow-lg"
+          className="no-print fixed bottom-5 right-5 z-40 flex max-w-md items-center gap-2.5 rounded-lg border border-[#E5E4DF] bg-white px-4 py-3 text-xs font-medium text-zinc-900 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
         >
           <CheckCircle2
             className={`h-4 w-4 shrink-0 ${
-              toast.isError ? 'text-amber-600' : 'text-emerald-700'
+              toast.isError ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400'
             }`}
             aria-hidden="true"
           />
@@ -1348,14 +1463,14 @@ export default function App() {
       <main className="mx-auto max-w-[1480px] px-4 py-5 sm:px-6">
         {/* Barra de acciones del espacio de trabajo (visible en Editor y Vista Previa) */}
         {(activeSection === 'editor' || activeSection === 'preview') && (
-          <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#E5E4DF] bg-white px-4 py-3">
+          <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
             {/* Metadatos unboxed con separadores tipográficos e indicador discreto de guardado local */}
-            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-              <span className="font-mono font-semibold text-zinc-900 tabular-nums">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
                 Proforma Nº {proforma.consecutivo}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="max-w-[220px] truncate font-medium text-zinc-800">
+              <span className="max-w-[220px] truncate font-medium text-zinc-800 dark:text-zinc-200">
                 {proforma.clientProject.cliente || 'Cliente sin definir'}
               </span>
               <span aria-hidden="true">·</span>
@@ -1363,7 +1478,7 @@ export default function App() {
                 {totals.unidadResumen}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono font-semibold text-[#8C5A32] tabular-nums">
+              <span className="font-mono font-semibold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
                 Total: {formatMoney(totals.total, proforma.clientProject.moneda)}
               </span>
               <span aria-hidden="true">·</span>
@@ -1371,10 +1486,10 @@ export default function App() {
                 title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
                 className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
                   autosaveStatus === 'error'
-                    ? 'bg-red-50 text-red-700'
+                    ? 'bg-red-50 text-red-700 dark:bg-red-950/70 dark:text-red-300'
                     : autosaveStatus === 'saving'
-                      ? 'bg-amber-50 text-amber-800'
-                      : 'bg-emerald-50/80 text-emerald-800'
+                      ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                      : 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
                 }`}
               >
                 {autosaveStatus === 'saving' ? (
@@ -1397,14 +1512,14 @@ export default function App() {
             {/* Botones de acción del documento */}
             <div className="flex flex-wrap items-center gap-2">
               {activeSection === 'editor' && (
-                <div className="hidden xl:flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 mr-1">
+                <div className="hidden xl:flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 mr-1 dark:border-zinc-700 dark:bg-zinc-800">
                   <button
                     type="button"
                     onClick={() => setLayoutMode('split')}
                     className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
                       layoutMode === 'split'
-                        ? 'bg-white text-zinc-900 shadow-xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
+                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
+                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                     }`}
                   >
                     <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1415,8 +1530,8 @@ export default function App() {
                     onClick={() => setLayoutMode('editor')}
                     className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
                       layoutMode === 'editor'
-                        ? 'bg-white text-zinc-900 shadow-xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
+                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
+                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                     }`}
                   >
                     <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1426,7 +1541,7 @@ export default function App() {
               )}
 
               {/* Deshacer / Rehacer */}
-              <div className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-white">
+              <div className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-white dark:border-zinc-700 dark:bg-zinc-800">
                 <button
                   type="button"
                   onClick={handleUndo}
@@ -1436,12 +1551,12 @@ export default function App() {
                       ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
                       : 'No hay cambios anteriores para deshacer'
                   }
-                  className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
                   <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Deshacer</span>
                 </button>
-                <span className="h-4 w-px bg-[#E5E4DF]" aria-hidden="true" />
+                <span className="h-4 w-px bg-[#E5E4DF] dark:bg-zinc-700" aria-hidden="true" />
                 <button
                   type="button"
                   onClick={handleRedo}
@@ -1451,7 +1566,7 @@ export default function App() {
                       ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y`
                       : 'No hay cambios posteriores para rehacer'
                   }
-                  className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
                   <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Rehacer</span>
@@ -1461,7 +1576,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleRequestNewProforma}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
                 <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Nueva Cotización</span>
@@ -1471,7 +1586,7 @@ export default function App() {
                 type="button"
                 onClick={handleSaveNowLocal}
                 title="Guardar borrador y respaldo en el historial local de inmediato (sin depender de internet)"
-                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer dark:border-emerald-700/70 dark:bg-emerald-950/60 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
               >
                 <HardDrive className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Guardar ahora</span>
@@ -1480,7 +1595,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSaveToHistory}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
               >
                 <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Guardar en Historial</span>
@@ -1508,9 +1623,9 @@ export default function App() {
                   aria-expanded={showJsonDraftMenu}
                   aria-haspopup="menu"
                   title="Exportar o importar un borrador completo (.json) como respaldo portátil entre computadoras"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
-                  <FileJson className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                  <FileJson className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
                   <span>Exportar / Importar Borrador (.json)</span>
                   <ChevronDown
                     className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
@@ -1523,7 +1638,7 @@ export default function App() {
                 {showJsonDraftMenu && (
                   <div
                     role="menu"
-                    className="absolute right-0 z-30 mt-1.5 w-60 rounded-lg border border-[#DCDAD3] bg-white p-1.5 shadow-lg"
+                    className="absolute right-0 z-30 mt-1.5 w-60 rounded-lg border border-[#DCDAD3] bg-white p-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
                   >
                     <button
                       type="button"
@@ -1535,12 +1650,12 @@ export default function App() {
                           `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
                         );
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
                     >
-                      <Download className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                      <Download className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
                       <div>
                         <div>Exportar borrador (.json)</div>
-                        <div className="text-[10.5px] font-normal text-zinc-500">
+                        <div className="text-[10.5px] font-normal text-zinc-500 dark:text-zinc-400">
                           Descarga la proforma activa completa
                         </div>
                       </div>
@@ -1552,12 +1667,12 @@ export default function App() {
                         setShowJsonDraftMenu(false);
                         jsonImportInputRef.current?.click();
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
                     >
-                      <Upload className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                      <Upload className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
                       <div>
                         <div>Importar borrador (.json)</div>
-                        <div className="text-[10.5px] font-normal text-zinc-500">
+                        <div className="text-[10.5px] font-normal text-zinc-500 dark:text-zinc-400">
                           Continúa un archivo enviado de otra PC
                         </div>
                       </div>
@@ -1569,8 +1684,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => exportProformaToCSV(proforma, totals)}
-                title="Exportar cotización en formato CSV compatible con Excel"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                title="Exportar cotización en formato CSV compatible con Excel (listo para descargar)"
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(true, 'outline')}`}
               >
                 <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>CSV / Excel</span>
@@ -1580,8 +1695,12 @@ export default function App() {
                 type="button"
                 onClick={handleSendProformaToSheet}
                 disabled={isSendingToSheet}
-                title="Enviar los datos de la proforma al Google Sheet configurado en Integración"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#8C5A32] bg-[#FAF6F1] px-3 py-1.5 text-xs font-semibold text-[#6F4423] hover:bg-[#F3ECE2] disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                title={
+                  isSheetWebhookConnected
+                    ? 'Conectado: enviar los datos de la proforma al Google Sheet configurado'
+                    : 'Sin URL o último envío con error: revisa Integración antes de enviar'
+                }
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isSheetWebhookConnected, 'outline')}`}
               >
                 {isSendingToSheet ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -1598,9 +1717,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleDownloadPDF}
-                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-black bg-black px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700"
               >
-                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <PdfIcon className="h-4 w-4 text-white" />
                 <span>Guardar / Descargar PDF</span>
               </button>
             </div>
@@ -1618,9 +1737,9 @@ export default function App() {
           >
             <section
               aria-label="Formulario de captura de proforma"
-              className={`no-print ${
+              className={`no-print olmo-editor-scroll ${
                 layoutMode === 'split'
-                  ? 'xl:col-span-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto'
+                  ? 'xl:col-span-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1'
                   : ''
               }`}
             >
@@ -1649,6 +1768,13 @@ export default function App() {
                 onDeleteProductTemplate={handleDeleteProductTemplate}
                 onSaveClientToDirectory={handleSaveClientFromEditor}
                 onGoToClientsDirectory={() => setActiveSection('clients')}
+                aranTemplates={aranTemplates}
+                aranScriptUrl={cloudConfig.aranScriptUrl ?? ''}
+                aranLastStatus={cloudConfig.aranLastStatus}
+                aranLastMessage={cloudConfig.aranLastMessage}
+                isSyncingAran={isSyncingAran}
+                onSyncAranTemplates={() => void handleSyncAranTemplates(false)}
+                onGoToIntegration={() => setActiveSection('integration')}
               />
             </section>
 
@@ -1701,6 +1827,7 @@ export default function App() {
             activeProformaId={proforma.id}
             activeConsecutivo={proforma.consecutivo}
             hasAppsScriptUrl={Boolean(cloudConfig.webhookUrl.trim())}
+            hasCloudSendError={cloudConfig.lastStatus === 'error'}
             isSyncingSheet={isSyncingRemoteHistory}
             isSendingToSheet={isSendingToSheet}
             lastSheetSyncAt={lastRemoteHistorySyncAt}
@@ -1724,6 +1851,9 @@ export default function App() {
             totals={totals}
             onSaveConfig={handleSaveCloudConfig}
             onDownloadPDF={handleDownloadPDF}
+            aranTemplatesCount={aranTemplates.length}
+            isSyncingAran={isSyncingAran}
+            onSyncAranTemplates={(url) => handleSyncAranTemplates(false, url)}
           />
         )}
       </main>
@@ -1733,21 +1863,21 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="new-quote-dialog-title"
-          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px]"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
         >
-          <div className="w-full max-w-md rounded-lg border border-[#E5E4DF] bg-white p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
             <div className="flex items-start gap-3">
-              <div className="rounded-md bg-amber-50 p-2 text-amber-700">
+              <div className="rounded-md bg-amber-50 p-2 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300">
                 <AlertTriangle className="h-5 w-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
                 <h2
                   id="new-quote-dialog-title"
-                  className="font-display text-base font-semibold text-zinc-900"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
                 >
                   ¿Iniciar una nueva cotización limpia?
                 </h2>
-                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600">
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
                   La proforma actual (Nº {proforma.consecutivo}) tiene cambios sin guardar en el historial. Al continuar se reiniciará el editor con el siguiente consecutivo disponible, sin afectar las cotizaciones ya guardadas en el Historial.
                 </p>
               </div>
@@ -1757,14 +1887,14 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setShowNewQuoteConfirm(false)}
-                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={handleSaveAndStartNewProforma}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
               >
                 <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Guardar y crear nueva</span>
@@ -1772,7 +1902,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={executeNewProforma}
-                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
               >
                 <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Sí, nueva cotización</span>
@@ -1786,25 +1916,25 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="load-draft-dialog-title"
-          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px]"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
         >
-          <div className="w-full max-w-md rounded-lg border border-[#E5E4DF] bg-white p-5 shadow-xl">
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
             <div className="flex items-start gap-3">
-              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32]">
+              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32] dark:bg-zinc-800 dark:text-[#D59B69]">
                 <FileJson className="h-5 w-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
                 <h2
                   id="load-draft-dialog-title"
-                  className="font-display text-base font-semibold text-zinc-900"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
                 >
                   ¿Cargar Proforma Nº {pendingLoadDraft.data.consecutivo} en el editor?
                 </h2>
-                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600">
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
                   Se reemplazará el borrador actual en el editor (Nº {proforma.consecutivo}) con todos los datos completos de esta cotización ({pendingLoadDraft.data.clientProject.cliente || 'Cliente sin definir'} · {pendingLoadDraft.data.items.length} ítem(s)) para que puedas seguir editándola y exportarla.
                 </p>
-                <p className="mt-1.5 text-[11px] font-medium text-zinc-500">
-                  Origen: <span className="text-zinc-800">{pendingLoadDraft.sourceLabel}</span>
+                <p className="mt-1.5 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                  Origen: <span className="text-zinc-800 dark:text-zinc-200">{pendingLoadDraft.sourceLabel}</span>
                 </p>
               </div>
             </div>
@@ -1813,7 +1943,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setPendingLoadDraft(null)}
-                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
                 Cancelar
               </button>
@@ -1821,7 +1951,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void handleSaveCurrentAndLoadPendingDraft()}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
                 >
                   <Save className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Guardar actual y cargar</span>
@@ -1830,7 +1960,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={executeLoadPendingDraft}
-                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
               >
                 <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Sí, cargar y editar</span>

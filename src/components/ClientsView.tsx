@@ -32,6 +32,7 @@ import {
   fetchClientsFromAppsScript,
   sendClientToGoogleSheet,
 } from '../utils/cloudSync';
+import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import {
   ClientImportRow,
   DEFAULT_CLIENTS_SHEET_NAME,
@@ -92,6 +93,8 @@ export function ClientsView({
   onGoToEditor,
   onNotify,
 }: ClientsViewProps) {
+  const cardSurface =
+    'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
   const [query, setQuery] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -489,17 +492,31 @@ export function ClientsView({
   };
 
   const inputClass =
-    'w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15';
-  const labelClass = 'mb-1.5 block text-xs font-medium text-zinc-600';
+    'w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition-colors focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500';
+  const labelClass = 'mb-1.5 block text-xs font-medium text-zinc-600 dark:text-zinc-400';
+
+  const isDirectorySheetReady =
+    (Boolean(importConfig.sheetUrl.trim()) ||
+      Boolean(importConfig.appsScriptUrl.trim())) &&
+    syncBanner?.ok !== false &&
+    importFeedback?.ok !== false;
+  const isGoogleSheetImportReady =
+    Boolean(importConfig.sheetUrl.trim()) && importFeedback?.ok !== false;
+  const isRemoteSheetChoiceReady = Boolean(importConfig.sheetName.trim());
+  const isExcelFileReady =
+    (Boolean(loadedExcel) || Boolean(selectedCsvFile)) &&
+    importFeedback?.ok !== false;
+  const isAppsScriptPushReady =
+    Boolean(importConfig.appsScriptUrl.trim()) && syncBanner?.ok !== false;
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             Directorio de Clientes
           </h1>
-          <p className="mt-1 text-sm text-zinc-600">
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             Guarda clientes frecuentes en este navegador para completar
             automáticamente futuras proformas y editar libremente cualquier dato
             puntual.
@@ -509,7 +526,7 @@ export function ClientsView({
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="relative w-full sm:w-64">
             <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
               aria-hidden="true"
             />
             <input
@@ -517,7 +534,7 @@ export function ClientsView({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Buscar cliente, contacto o correo..."
-              className="w-full rounded-md border border-[#DCDAD3] bg-white py-2 pl-9 pr-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+              className="w-full rounded-md border border-[#DCDAD3] bg-white py-2 pl-9 pr-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
             />
           </div>
 
@@ -526,10 +543,10 @@ export function ClientsView({
             onClick={handleDirectRefresh}
             disabled={importingSource !== null}
             title="Volver a consultar automáticamente la fuente de Google Sheets guardada"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isDirectorySheetReady, 'outline')}`}
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 text-[#8C5A32] ${
+              className={`h-3.5 w-3.5 ${
                 importingSource === 'refresh' ? 'animate-spin' : ''
               }`}
               aria-hidden="true"
@@ -542,11 +559,7 @@ export function ClientsView({
           <button
             type="button"
             onClick={() => setIsImportOpen((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-              isImportOpen
-                ? 'border-[#8C5A32] bg-[#FAF9F6] text-[#8C5A32]'
-                : 'border-[#DCDAD3] bg-white text-zinc-800 hover:bg-zinc-50'
-            }`}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isDirectorySheetReady, 'outline')}`}
           >
             <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Importar / Conectar Sheet</span>
@@ -555,7 +568,7 @@ export function ClientsView({
           <button
             type="button"
             onClick={openNewForm}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Nuevo Cliente</span>
@@ -567,19 +580,19 @@ export function ClientsView({
         <div
           className={`flex items-start justify-between gap-3 rounded-md border px-4 py-2.5 text-xs ${
             syncBanner.ok
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-              : 'border-red-200 bg-red-50 text-red-900'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800/80 dark:bg-emerald-950/60 dark:text-emerald-200'
+              : 'border-red-200 bg-red-50 text-red-900 dark:border-red-800/80 dark:bg-red-950/60 dark:text-red-200'
           }`}
         >
           <div className="flex items-start gap-2">
             {syncBanner.ok ? (
               <CheckCircle2
-                className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700"
+                className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
                 aria-hidden="true"
               />
             ) : (
               <AlertCircle
-                className="mt-0.5 h-4 w-4 shrink-0 text-red-700"
+                className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-400"
                 aria-hidden="true"
               />
             )}
@@ -599,33 +612,33 @@ export function ClientsView({
       {isImportOpen && (
         <section
           aria-label="Importar o actualizar clientes desde Google Sheets o Excel"
-          className="rounded-lg border border-[#DCDAD3] bg-white p-5 shadow-xs space-y-4"
+          className={`p-5 space-y-4 ${cardSurface}`}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E4DF] pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E4DF] pb-3 dark:border-zinc-800">
             <div>
-              <h2 className="font-display text-sm font-semibold text-zinc-900">
+              <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 Importar / Actualizar Cartera de Clientes
               </h2>
-              <p className="mt-0.5 text-xs text-zinc-500">
-                Columnas admitidas: <span className="font-medium text-zinc-700">Cliente, Contacto, Telefono, Correo y Ubicacion</span>. Las filas vacías o sin nombre de cliente se ignoran automáticamente.
+              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                Columnas admitidas: <span className="font-medium text-zinc-700 dark:text-zinc-300">Cliente, Contacto, Telefono, Correo y Ubicacion</span>. Las filas vacías o sin nombre de cliente se ignoran automáticamente.
               </p>
             </div>
             <button
               type="button"
               onClick={() => setIsImportOpen(false)}
               aria-label="Cerrar panel de importación"
-              className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 cursor-pointer"
+              className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
           {/* Modo de importación */}
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3">
-            <span className="text-xs font-semibold text-zinc-700 mr-1">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 dark:border-zinc-800 dark:bg-zinc-800/60">
+            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 mr-1">
               Al importar:
             </span>
-            <label className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-800 cursor-pointer">
+            <label className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 cursor-pointer">
               <input
                 type="radio"
                 name="clients-import-strategy"
@@ -637,7 +650,7 @@ export function ClientsView({
               />
               <span>Agregar / Actualizar por nombre de cliente</span>
             </label>
-            <label className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-800 cursor-pointer">
+            <label className="inline-flex items-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 cursor-pointer">
               <input
                 type="radio"
                 name="clients-import-strategy"
@@ -653,16 +666,16 @@ export function ClientsView({
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {/* Opción A: Google Sheets */}
-            <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900">
-                <Link2 className="h-4 w-4 text-[#8C5A32]" aria-hidden="true" />
+            <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3 dark:border-zinc-800 dark:bg-zinc-800/40">
+              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                <Link2 className="h-4 w-4 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                 <span>Desde enlace de Google Sheets</span>
               </div>
 
               <div>
                 <label
                   htmlFor="clients-gsheet-url"
-                  className="mb-1 block text-[11px] font-medium text-zinc-600"
+                  className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                 >
                   Enlace de la hoja (normal o publicado como CSV)
                 </label>
@@ -677,7 +690,7 @@ export function ClientsView({
                       sheetUrl: e.target.value,
                     })
                   }
-                  className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                  className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                 />
               </div>
 
@@ -685,7 +698,7 @@ export function ClientsView({
                 <div>
                   <label
                     htmlFor="clients-gsheet-tab"
-                    className="mb-1 block text-[11px] font-medium text-zinc-600"
+                    className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                   >
                     Nombre de pestaña (por defecto CLIENTES)
                   </label>
@@ -700,7 +713,7 @@ export function ClientsView({
                         sheetName: e.target.value,
                       })
                     }
-                    className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                    className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                   />
                 </div>
 
@@ -708,7 +721,7 @@ export function ClientsView({
                   type="button"
                   onClick={handleImportFromGoogleSheets}
                   disabled={importingSource !== null}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+                  className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isGoogleSheetImportReady, 'solid')}`}
                 >
                   {importingSource === 'sheets' ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -724,10 +737,10 @@ export function ClientsView({
               </div>
 
               {remoteSheetsList && remoteSheetsList.sheets.length > 0 && (
-                <div className="rounded border border-amber-200 bg-amber-50/70 p-2.5 space-y-2">
+                <div className="rounded border border-amber-200 bg-amber-50/70 p-2.5 space-y-2 dark:border-amber-800/80 dark:bg-amber-950/50">
                   <label
                     htmlFor="clients-remote-sheet-select"
-                    className="block text-[11px] font-semibold text-amber-900"
+                    className="block text-[11px] font-semibold text-amber-900 dark:text-amber-200"
                   >
                     Elige la pestaña disponible en tu Google Sheet:
                   </label>
@@ -741,7 +754,7 @@ export function ClientsView({
                           sheetName: e.target.value,
                         })
                       }
-                      className="flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900"
+                      className="flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                     >
                       {remoteSheetsList.sheets.map((s) => (
                         <option key={s} value={s}>
@@ -752,7 +765,7 @@ export function ClientsView({
                     <button
                       type="button"
                       onClick={handleImportSelectedRemoteSheet}
-                      className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+                      className={`rounded px-3 py-1.5 text-xs font-semibold cursor-pointer ${getConnectionButtonClasses(isRemoteSheetChoiceReady, 'solid')}`}
                     >
                       Cargar esta hoja
                     </button>
@@ -762,9 +775,9 @@ export function ClientsView({
             </div>
 
             {/* Opción B: Archivo Excel / CSV */}
-            <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900">
-                <Upload className="h-4 w-4 text-[#8C5A32]" aria-hidden="true" />
+            <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3 dark:border-zinc-800 dark:bg-zinc-800/40">
+              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                <Upload className="h-4 w-4 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
                 <span>Desde archivo Excel (.xlsx / .xls) o CSV</span>
               </div>
 
@@ -782,13 +795,13 @@ export function ClientsView({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 cursor-pointer"
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${getConnectionButtonClasses(isExcelFileReady, 'outline')}`}
                 >
                   <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>Seleccionar archivo (.xlsx / .xls / .csv)</span>
                 </button>
                 {(loadedExcel || selectedCsvFile) && (
-                  <span className="text-xs font-medium text-zinc-700 truncate max-w-[230px]">
+                  <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300 truncate max-w-[230px]">
                     {loadedExcel?.fileName ?? selectedCsvFile?.name}
                   </span>
                 )}
@@ -798,7 +811,7 @@ export function ClientsView({
                 <div>
                   <label
                     htmlFor="clients-excel-sheet-select"
-                    className="mb-1 block text-[11px] font-medium text-zinc-600"
+                    className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                   >
                     Seleccionar hoja del archivo ({loadedExcel.sheetNames.length}{' '}
                     disponible(s))
@@ -807,7 +820,7 @@ export function ClientsView({
                     id="clients-excel-sheet-select"
                     value={selectedExcelSheet}
                     onChange={(e) => setSelectedExcelSheet(e.target.value)}
-                    className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                    className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500"
                   >
                     {loadedExcel.sheetNames.map((name) => (
                       <option key={name} value={name}>
@@ -826,7 +839,7 @@ export function ClientsView({
                     importingSource !== null ||
                     (!loadedExcel && !selectedCsvFile)
                   }
-                  className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isExcelFileReady, 'solid')}`}
                 >
                   {importingSource === 'file' ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -844,11 +857,11 @@ export function ClientsView({
           </div>
 
           {/* Opción C: Guardado directo hacia Google Sheets (Apps Script) */}
-          <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3">
+          <div className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6]/60 p-4 space-y-3 dark:border-zinc-800 dark:bg-zinc-800/40">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900">
+              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                 <CloudUpload
-                  className="h-4 w-4 text-[#8C5A32]"
+                  className="h-4 w-4 text-[#8C5A32] dark:text-amber-400"
                   aria-hidden="true"
                 />
                 <span>
@@ -857,14 +870,16 @@ export function ClientsView({
               </div>
               <span
                 className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
-                  importConfig.appsScriptUrl.trim()
-                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-800'
-                    : 'border border-zinc-200 bg-white text-zinc-500'
+                  isAppsScriptPushReady
+                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                    : 'border border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/70 dark:text-red-300'
                 }`}
               >
-                {importConfig.appsScriptUrl.trim()
-                  ? 'Apps Script guardado'
-                  : 'Opcional'}
+                {!importConfig.appsScriptUrl.trim()
+                  ? 'Sin URL configurada'
+                  : isAppsScriptPushReady
+                    ? 'Apps Script guardado'
+                    : 'Error de conexión'}
               </span>
             </div>
 
@@ -873,7 +888,7 @@ export function ClientsView({
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                   <label
                     htmlFor="clients-apps-script-url"
-                    className="block text-[11px] font-medium text-zinc-600"
+                    className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                   >
                     URL de Google Apps Script (/exec) para guardar en pestaña CLIENTES (guardada en el navegador)
                   </label>
@@ -887,7 +902,7 @@ export function ClientsView({
                           appsScriptUrl: DEFAULT_CLIENTS_APPS_SCRIPT_URL,
                         })
                       }
-                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#8C5A32] hover:bg-[#F3ECE2] cursor-pointer"
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#8C5A32] hover:bg-[#F3ECE2] dark:text-amber-400 dark:hover:bg-zinc-700 cursor-pointer"
                     >
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                       <span>Restaurar predeterminada</span>
@@ -905,11 +920,11 @@ export function ClientsView({
                       appsScriptUrl: e.target.value,
                     })
                   }
-                  className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15"
+                  className="w-full rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 font-mono text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
                 />
               </div>
 
-              <label className="lg:col-span-5 flex items-start gap-2 rounded border border-[#DCDAD3] bg-white px-3 py-2 text-xs text-zinc-700 cursor-pointer">
+              <label className="lg:col-span-5 flex items-start gap-2 rounded border border-[#DCDAD3] bg-white px-3 py-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={importConfig.autoSyncToSheet}
@@ -932,18 +947,18 @@ export function ClientsView({
             <div
               className={`flex items-start gap-2 rounded-md border px-3.5 py-2.5 text-xs ${
                 importFeedback.ok
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                  : 'border-red-200 bg-red-50 text-red-900'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800/80 dark:bg-emerald-950/60 dark:text-emerald-200'
+                  : 'border-red-200 bg-red-50 text-red-900 dark:border-red-800/80 dark:bg-red-950/60 dark:text-red-200'
               }`}
             >
               {importFeedback.ok ? (
                 <CheckCircle2
-                  className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
                   aria-hidden="true"
                 />
               ) : (
                 <AlertCircle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-red-700"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-400"
                   aria-hidden="true"
                 />
               )}
@@ -956,24 +971,24 @@ export function ClientsView({
       {isFormOpen && (
         <form
           onSubmit={handleSubmit}
-          className="rounded-lg border border-[#DCDAD3] bg-white p-5 shadow-xs space-y-4"
+          className={`p-5 space-y-4 ${cardSurface}`}
         >
-          <div className="flex items-center justify-between border-b border-[#E5E4DF] pb-3">
-            <h2 className="font-display text-sm font-semibold text-zinc-900">
+          <div className="flex items-center justify-between border-b border-[#E5E4DF] pb-3 dark:border-zinc-800">
+            <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
               {editingId ? 'Editar Cliente Guardado' : 'Agregar Nuevo Cliente'}
             </h2>
             <button
               type="button"
               onClick={closeForm}
               aria-label="Cerrar formulario"
-              className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 cursor-pointer"
+              className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
           {formError && (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
               {formError}
             </div>
           )}
@@ -981,7 +996,7 @@ export function ClientsView({
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label htmlFor="dir-cliente" className={labelClass}>
-                Cliente <span className="text-[#8C5A32]">*</span>
+                Cliente <span className="text-[#8C5A32] dark:text-amber-400">*</span>
               </label>
               <input
                 id="dir-cliente"
@@ -1066,7 +1081,7 @@ export function ClientsView({
             <button
               type="button"
               onClick={closeForm}
-              className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+              className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
             >
               Cancelar
             </button>
@@ -1074,13 +1089,13 @@ export function ClientsView({
               type="button"
               disabled={isSubmittingToSheet}
               onClick={() => void saveClientAndOptionallySync(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-50 cursor-pointer"
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAppsScriptPushReady, 'outline')}`}
             >
               {isSubmittingToSheet ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <CloudUpload
-                  className="h-3.5 w-3.5 text-[#8C5A32]"
+                  className="h-3.5 w-3.5"
                   aria-hidden="true"
                 />
               )}
@@ -1093,7 +1108,7 @@ export function ClientsView({
             <button
               type="submit"
               disabled={isSubmittingToSheet}
-              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
             >
               <Check className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{editingId ? 'Guardar Cambios' : 'Guardar Cliente'}</span>
@@ -1103,15 +1118,15 @@ export function ClientsView({
       )}
 
       {clients.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-white px-6 py-14 text-center">
+        <div className="rounded-xl border border-dashed border-[#DCDAD3] bg-white px-6 py-14 text-center dark:border-zinc-700 dark:bg-zinc-900">
           <Users
-            className="mx-auto h-8 w-8 text-zinc-300"
+            className="mx-auto h-8 w-8 text-zinc-300 dark:text-zinc-600"
             aria-hidden="true"
           />
-          <p className="mt-3 font-display text-base font-semibold text-zinc-900">
+          <p className="mt-3 font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
             Aún no hay clientes guardados en el directorio
           </p>
-          <p className="mx-auto mt-1.5 max-w-md text-sm text-zinc-500">
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-zinc-500 dark:text-zinc-400">
             Agrega clientes aquí o usa el botón &ldquo;Guardar en
             directorio&rdquo; dentro de &ldquo;Datos del Cliente y
             Proyecto&rdquo; para reutilizarlos con un clic.
@@ -1120,7 +1135,7 @@ export function ClientsView({
             <button
               type="button"
               onClick={openNewForm}
-              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
             >
               <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Agregar Primer Cliente</span>
@@ -1128,23 +1143,23 @@ export function ClientsView({
             <button
               type="button"
               onClick={onGoToEditor}
-              className="rounded-md border border-[#DCDAD3] bg-white px-4 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+              className="rounded-md border border-[#DCDAD3] bg-white px-4 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
             >
               Volver al Editor
             </button>
           </div>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-lg border border-[#E5E4DF] bg-white px-6 py-12 text-center">
-          <p className="text-sm font-medium text-zinc-700">
+        <div className="rounded-xl border border-[#E5E4DF] bg-white px-6 py-12 text-center dark:border-zinc-800 dark:bg-zinc-900">
+          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
             No se encontraron clientes que coincidan con &ldquo;{query}&rdquo;.
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-[#E5E4DF] bg-white">
+        <div className={`overflow-x-auto ${cardSurface}`}>
           <table className="w-full border-collapse text-left text-sm">
             <thead>
-              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600">
+              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
                 <th className="px-4 py-3">Cliente</th>
                 <th className="px-4 py-3">Contacto</th>
                 <th className="px-4 py-3">Teléfono / Correo</th>
@@ -1152,27 +1167,27 @@ export function ClientsView({
                 <th className="px-4 py-3 text-right">Acciones</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#E5E4DF]">
+            <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
               {filtered.map((client) => {
                 const isConfirmingDelete = confirmDeleteId === client.id;
                 return (
                   <tr
                     key={client.id}
-                    className="transition-colors hover:bg-[#FAF9F6]/70"
+                    className="transition-colors hover:bg-[#FAF9F6]/70 dark:hover:bg-zinc-800/60"
                   >
-                    <td className="px-4 py-3.5 font-semibold text-zinc-900">
+                    <td className="px-4 py-3.5 font-semibold text-zinc-900 dark:text-zinc-100">
                       {client.cliente}
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-zinc-700">
+                    <td className="px-4 py-3.5 text-xs text-zinc-700 dark:text-zinc-300">
                       {client.contacto || (
-                        <span className="text-zinc-400">—</span>
+                        <span className="text-zinc-400 dark:text-zinc-500">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-zinc-600 space-y-0.5">
+                    <td className="px-4 py-3.5 text-xs text-zinc-600 dark:text-zinc-400 space-y-0.5">
                       {client.telefono && (
                         <div className="flex items-center gap-1.5">
                           <Phone
-                            className="h-3 w-3 shrink-0 text-zinc-400"
+                            className="h-3 w-3 shrink-0 text-zinc-400 dark:text-zinc-500"
                             aria-hidden="true"
                           />
                           <span>{client.telefono}</span>
@@ -1181,27 +1196,27 @@ export function ClientsView({
                       {client.correo && (
                         <div className="flex items-center gap-1.5">
                           <Mail
-                            className="h-3 w-3 shrink-0 text-zinc-400"
+                            className="h-3 w-3 shrink-0 text-zinc-400 dark:text-zinc-500"
                             aria-hidden="true"
                           />
                           <span>{client.correo}</span>
                         </div>
                       )}
                       {!client.telefono && !client.correo && (
-                        <span className="text-zinc-400">—</span>
+                        <span className="text-zinc-400 dark:text-zinc-500">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3.5 text-xs text-zinc-600">
+                    <td className="px-4 py-3.5 text-xs text-zinc-600 dark:text-zinc-400">
                       {client.ubicacion ? (
                         <span className="inline-flex items-center gap-1.5">
                           <MapPin
-                            className="h-3 w-3 shrink-0 text-zinc-400"
+                            className="h-3 w-3 shrink-0 text-zinc-400 dark:text-zinc-500"
                             aria-hidden="true"
                           />
                           <span>{client.ubicacion}</span>
                         </span>
                       ) : (
-                        <span className="text-zinc-400">—</span>
+                        <span className="text-zinc-400 dark:text-zinc-500">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3.5">
@@ -1210,10 +1225,10 @@ export function ClientsView({
                           type="button"
                           onClick={() => onUseClientInProforma(client)}
                           title="Completar datos de la proforma actual con este cliente"
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
                         >
                           <FilePlus2
-                            className="h-3.5 w-3.5 text-[#8C5A32]"
+                            className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                             aria-hidden="true"
                           />
                           <span>Usar</span>
@@ -1222,7 +1237,7 @@ export function ClientsView({
                           type="button"
                           onClick={() => openEditForm(client)}
                           title="Editar cliente"
-                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
                         >
                           <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
                           <span>Editar</span>
@@ -1233,7 +1248,7 @@ export function ClientsView({
                           disabled={pushingClientId === client.id}
                           title="Enviar / actualizar cliente en pestaña CLIENTES de Google Sheet"
                           aria-label={`Enviar ${client.cliente} a Google Sheet`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-[#8C5A32] disabled:opacity-50 cursor-pointer"
+                          className={`rounded p-1.5 transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAppsScriptPushReady, 'icon')}`}
                         >
                           {pushingClientId === client.id ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1246,7 +1261,7 @@ export function ClientsView({
                           onClick={() => onDuplicateClient(client)}
                           title="Duplicar cliente"
                           aria-label={`Duplicar ${client.cliente}`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
+                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
                         >
                           <CopyPlus className="h-3.5 w-3.5" />
                         </button>
@@ -1259,14 +1274,14 @@ export function ClientsView({
                                 onDeleteClient(client.id);
                                 setConfirmDeleteId(null);
                               }}
-                              className="rounded border border-red-300 bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 cursor-pointer"
+                              className="rounded border border-red-300 bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 dark:border-red-700 cursor-pointer"
                             >
                               Eliminar
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteId(null)}
-                              className="rounded border border-[#E5E4DF] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 cursor-pointer"
+                              className="rounded border border-[#E5E4DF] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
                             >
                               No
                             </button>
@@ -1277,7 +1292,7 @@ export function ClientsView({
                             onClick={() => setConfirmDeleteId(client.id)}
                             title="Eliminar cliente"
                             aria-label={`Eliminar ${client.cliente}`}
-                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 cursor-pointer"
+                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>

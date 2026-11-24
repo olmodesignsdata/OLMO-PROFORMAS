@@ -81,9 +81,9 @@ export function ProformaPreview({
   return (
     <div className="flex flex-col">
       {/* Barra de controles de vista previa */}
-      <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#E5E4DF] bg-white px-4 py-2.5">
+      <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E3E1DA] bg-white px-4 py-2.5 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1.5 text-xs font-medium text-zinc-500">
+          <span className="mr-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
             Ir a página:
           </span>
           {navButtons.map((btn) => (
@@ -91,7 +91,7 @@ export function ProformaPreview({
               key={btn.id}
               type="button"
               onClick={() => scrollToPage(btn.id)}
-              className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+              className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
             >
               {btn.label}
             </button>
@@ -99,7 +99,7 @@ export function ProformaPreview({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5">
+          <div className="flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800">
             {[80, 90, 100].map((val) => (
               <button
                 key={val}
@@ -107,8 +107,8 @@ export function ProformaPreview({
                 onClick={() => setZoom(val)}
                 className={`rounded px-2 py-1 font-mono text-[11px] font-medium transition-colors cursor-pointer ${
                   zoom === val
-                    ? 'bg-white text-zinc-900 shadow-xs'
-                    : 'text-zinc-500 hover:text-zinc-900'
+                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
                 }`}
               >
                 {val}%
@@ -119,7 +119,7 @@ export function ProformaPreview({
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E4DF] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E4DF] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
           >
             <Printer className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Imprimir</span>
