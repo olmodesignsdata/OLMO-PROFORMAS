@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   CloudUpload,
   Columns2,
   Download,
@@ -13,8 +14,9 @@ import {
   Redo2,
   Save,
   Undo2,
+  Upload,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProformaUndoRedo } from './hooks/useProformaUndoRedo';
 import {
   ClientDraftPayload,
@@ -29,6 +31,8 @@ import { TopBar } from './components/TopBar';
 import {
   createEmptyProductLine,
   createInitialProforma,
+  GRIFERIA_AUTO_FOOTER_LOGOS,
+  isAutoGriferiaFooterLogo,
 } from './data/defaults';
 import {
   AppSection,
@@ -48,6 +52,7 @@ import {
 } from './types/proforma';
 import {
   fetchRemoteProformasFromAppsScript,
+  parseProformaFromJsonInput,
   sendProformaToWebhook,
 } from './utils/cloudSync';
 import {
@@ -350,6 +355,11 @@ export default function App() {
   const [layoutMode, setLayoutMode] = useState<WorkspaceLayoutMode>('split');
   const [isSendingToSheet, setIsSendingToSheet] = useState(false);
   const [showNewQuoteConfirm, setShowNewQuoteConfirm] = useState(false);
+  const [pendingLoadDraft, setPendingLoadDraft] = useState<{
+    data: ProformaData;
+    sourceLabel: string;
+  } | null>(null);
+  const [showJsonDraftMenu, setShowJsonDraftMenu] = useState(false);
   const [toast, setToast] = useState<{ text: string; isError?: boolean } | null>(
     null
   );
@@ -365,6 +375,13 @@ export default function App() {
   const latestProformaRef = useRef(proforma);
   const latestTotalsRef = useRef(totals);
   const latestHistoryRef = useRef(history);
+  const latestFooterLogosRef = useRef(footerLogos);
+  const prevFooterSyncContextRef = useRef<{ id: string; type: string }>({
+    id: proforma.id,
+    type: proforma.proformaType ?? 'mobiliario',
+  });
+  const jsonMenuRef = useRef<HTMLDivElement | null>(null);
+  const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
   const isInitialAutosaveMountRef = useRef(true);
   const hasEditedSinceLoadRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
@@ -372,12 +389,84 @@ export default function App() {
   latestProformaRef.current = proforma;
   latestTotalsRef.current = totals;
   latestHistoryRef.current = history;
+  latestFooterLogosRef.current = footerLogos;
 
-  // Preconvertir el logo principal externo a DataURL en memoria para garantizar exportación PDF sin bloqueos CORS
+  // Preconvertir logos externos (principal y pie de página) a DataURL en memoria para exportación PDF sin bloqueos CORS
   useEffect(() => {
     if (!mainLogo.dataUrl || mainLogo.dataUrl.startsWith('data:')) return;
     void rasterizeLogoForPdf(mainLogo);
   }, [mainLogo]);
+
+  useEffect(() => {
+    footerLogos.forEach((logo) => {
+      if (logo?.dataUrl && !logo.dataUrl.startsWith('data:')) {
+        void rasterizeLogoForPdf(logo);
+      }
+    });
+  }, [footerLogos]);
+
+  // Cargar o limpiar automáticamente los logos del pie de página según el Tipo de Proforma ("Grifería y Losa Sanitaria")
+  useEffect(() => {
+    const currentType = proforma.proformaType ?? 'mobiliario';
+    const prevCtx = prevFooterSyncContextRef.current;
+    if (prevCtx.id === proforma.id && prevCtx.type === currentType) {
+      return;
+    }
+    prevFooterSyncContextRef.current = { id: proforma.id, type: currentType };
+
+    const currentFooter = latestFooterLogosRef.current;
+    let changed = false;
+    let updated: Array<LogoAsset | null>;
+
+    if (currentType === 'griferia') {
+      updated = [0, 1, 2].map((idx) => {
+        const existing = currentFooter[idx] ?? null;
+        if (idx < 2 && !existing) {
+          changed = true;
+          return { ...GRIFERIA_AUTO_FOOTER_LOGOS[idx] };
+        }
+        return existing;
+      });
+    } else {
+      updated = [0, 1, 2].map((idx) => {
+        const existing = currentFooter[idx] ?? null;
+        if (isAutoGriferiaFooterLogo(existing)) {
+          changed = true;
+          return null;
+        }
+        return existing;
+      });
+    }
+
+    if (changed) {
+      saveFooterLogos(updated);
+      setFooterLogos(updated);
+    }
+  }, [proforma.id, proforma.proformaType]);
+
+  // Cerrar menú desplegable de Borrador (.json) al hacer clic fuera
+  useEffect(() => {
+    if (!showJsonDraftMenu) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (
+        jsonMenuRef.current &&
+        !jsonMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowJsonDraftMenu(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowJsonDraftMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showJsonDraftMenu]);
 
   const persistLocalBackup = useCallback(
     (forceHistoryBackup: boolean): string | null => {
@@ -505,7 +594,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (activeSection !== 'editor' && activeSection !== 'preview') return;
-      if (showNewQuoteConfirm) return;
+      if (showNewQuoteConfirm || pendingLoadDraft) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (isTextEditingElement(event.target)) return;
 
@@ -531,6 +620,7 @@ export default function App() {
   }, [
     activeSection,
     showNewQuoteConfirm,
+    pendingLoadDraft,
     canUndo,
     canRedo,
     handleUndo,
@@ -886,14 +976,66 @@ export default function App() {
   };
 
   const handleOpenRecord = (record: SavedProformaRecord) => {
-    hasEditedSinceLoadRef.current = false;
-    resetProforma(
+    const parsedFromDatosJson = record.rawDatosJson
+      ? parseProformaFromJsonInput(record.rawDatosJson, record.consecutivo)
+      : null;
+
+    const candidateData =
+      parsedFromDatosJson ??
       normalizeProformaClientContact(
         JSON.parse(JSON.stringify(record.data)) as ProformaData
-      )
+      );
+
+    const sourceLabel =
+      record.source === 'sheet'
+        ? record.rawDatosJson
+          ? 'Google Sheets (Datos_JSON completo)'
+          : 'Google Sheets (PROFORMAS)'
+        : 'Historial local';
+
+    setPendingLoadDraft({
+      data: candidateData,
+      sourceLabel,
+    });
+  };
+
+  const handleImportDraftFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const parsed = parseProformaFromJsonInput(text, proforma.consecutivo);
+      if (!parsed) {
+        showToast(
+          'El archivo seleccionado no contiene un borrador válido de OLMO Proformas (.json).',
+          true
+        );
+        return;
+      }
+      setPendingLoadDraft({
+        data: normalizeProformaClientContact(parsed),
+        sourceLabel: `Archivo portátil "${file.name}"`,
+      });
+    } catch {
+      showToast('No se pudo leer el archivo .json seleccionado.', true);
+    }
+  };
+
+  const executeLoadPendingDraft = () => {
+    if (!pendingLoadDraft) return;
+    const loaded = normalizeProformaClientContact(
+      JSON.parse(JSON.stringify(pendingLoadDraft.data)) as ProformaData
     );
+    hasEditedSinceLoadRef.current = false;
+    resetProforma(loaded);
+    setPendingLoadDraft(null);
     setActiveSection('editor');
-    showToast(`Proforma Nº ${record.consecutivo} cargada en el editor.`);
+    showToast(
+      `Proforma Nº ${loaded.consecutivo} cargada en el editor para continuar editando.`
+    );
+  };
+
+  const handleSaveCurrentAndLoadPendingDraft = async () => {
+    await handleSaveToHistory();
+    executeLoadPendingDraft();
   };
 
   const handleDuplicateRecord = (record: SavedProformaRecord) => {
@@ -1344,15 +1486,85 @@ export default function App() {
                 <span>Guardar en Historial</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => exportProformaToJSON(proforma, totals)}
-                title="Exportar cotización en formato JSON"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FileJson className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>JSON</span>
-              </button>
+              <input
+                ref={jsonImportInputRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) {
+                    void handleImportDraftFile(file);
+                  }
+                }}
+                className="hidden"
+                aria-label="Importar borrador JSON desde archivo"
+              />
+
+              <div ref={jsonMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowJsonDraftMenu((open) => !open)}
+                  aria-expanded={showJsonDraftMenu}
+                  aria-haspopup="menu"
+                  title="Exportar o importar un borrador completo (.json) como respaldo portátil entre computadoras"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <FileJson className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                  <span>Exportar / Importar Borrador (.json)</span>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
+                      showJsonDraftMenu ? 'rotate-180' : ''
+                    }`}
+                    aria-hidden="true"
+                  />
+                </button>
+
+                {showJsonDraftMenu && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-30 mt-1.5 w-60 rounded-lg border border-[#DCDAD3] bg-white p-1.5 shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowJsonDraftMenu(false);
+                        exportProformaToJSON(proforma, totals);
+                        showToast(
+                          `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
+                        );
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer"
+                    >
+                      <Download className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                      <div>
+                        <div>Exportar borrador (.json)</div>
+                        <div className="text-[10.5px] font-normal text-zinc-500">
+                          Descarga la proforma activa completa
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowJsonDraftMenu(false);
+                        jsonImportInputRef.current?.click();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer"
+                    >
+                      <Upload className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                      <div>
+                        <div>Importar borrador (.json)</div>
+                        <div className="text-[10.5px] font-normal text-zinc-500">
+                          Continúa un archivo enviado de otra PC
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
 
               <button
                 type="button"
@@ -1499,6 +1711,7 @@ export default function App() {
             onDeleteRecord={handleDeleteRecord}
             onGoToEditor={() => setActiveSection('editor')}
             onNewProforma={handleRequestNewProforma}
+            onImportDraftFile={(file) => void handleImportDraftFile(file)}
           />
         )}
 
@@ -1561,6 +1774,64 @@ export default function App() {
               >
                 <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Sí, nueva cotización</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingLoadDraft && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="load-draft-dialog-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px]"
+        >
+          <div className="w-full max-w-md rounded-lg border border-[#E5E4DF] bg-white p-5 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32]">
+                <FileJson className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h2
+                  id="load-draft-dialog-title"
+                  className="font-display text-base font-semibold text-zinc-900"
+                >
+                  ¿Cargar Proforma Nº {pendingLoadDraft.data.consecutivo} en el editor?
+                </h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600">
+                  Se reemplazará el borrador actual en el editor (Nº {proforma.consecutivo}) con todos los datos completos de esta cotización ({pendingLoadDraft.data.clientProject.cliente || 'Cliente sin definir'} · {pendingLoadDraft.data.items.length} ítem(s)) para que puedas seguir editándola y exportarla.
+                </p>
+                <p className="mt-1.5 text-[11px] font-medium text-zinc-500">
+                  Origen: <span className="text-zinc-800">{pendingLoadDraft.sourceLabel}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingLoadDraft(null)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              {hasUnsavedProformaChanges(proforma, history) && (
+                <button
+                  type="button"
+                  onClick={() => void handleSaveCurrentAndLoadPendingDraft()}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 cursor-pointer"
+                >
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Guardar actual y cargar</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={executeLoadPendingDraft}
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer"
+              >
+                <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Sí, cargar y editar</span>
               </button>
             </div>
           </div>

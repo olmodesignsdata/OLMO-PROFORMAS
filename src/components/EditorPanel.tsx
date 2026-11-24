@@ -1578,6 +1578,7 @@ export function EditorPanel({
                             <ResilientImage
                               src={slotLogo.dataUrl}
                               alt={slotLogo.name || `Logo pie ${slotIdx + 1}`}
+                              crossOrigin="anonymous"
                               className="max-h-9 max-w-full w-auto h-auto object-contain"
                               fallback={
                                 <span className="text-[10px] text-amber-700">

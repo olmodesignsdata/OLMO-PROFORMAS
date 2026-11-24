@@ -26,6 +26,29 @@ export const DEFAULT_OLMO_MAIN_LOGO: LogoAsset = {
   height: 92,
 };
 
+export const GRIFERIA_AUTO_FOOTER_LOGOS: [LogoAsset, LogoAsset] = [
+  {
+    id: 'auto-griferia-footer-1',
+    name: 'Marca Grifería 1',
+    dataUrl:
+      'https://lh3.googleusercontent.com/d/12aeuImigwxoyXHbcTUOMgIyf0oJVFOCX',
+  },
+  {
+    id: 'auto-griferia-footer-2',
+    name: 'Marca Grifería 2',
+    dataUrl:
+      'https://lh3.googleusercontent.com/d/1fUh0lofnga4zL8umsdkmE-Hr9EZ07E1z',
+  },
+];
+
+export function isAutoGriferiaFooterLogo(logo: LogoAsset | null): boolean {
+  return Boolean(
+    logo &&
+      (logo.id === 'auto-griferia-footer-1' ||
+        logo.id === 'auto-griferia-footer-2')
+  );
+}
+
 export const INITIAL_CONSECUTIVO = 2800;
 
 export const PROFORMA_TYPE_OPTIONS: Array<{

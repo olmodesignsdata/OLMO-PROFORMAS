@@ -536,6 +536,7 @@ export function ProformaPreview({
                       <ResilientImage
                         src={logo.dataUrl}
                         alt={logo.name || 'Logo aliado'}
+                        crossOrigin="anonymous"
                         className="max-h-8 max-w-[125px] w-auto h-auto object-contain object-left"
                       />
                     </div>
@@ -644,6 +645,7 @@ export function ProformaPreview({
                           <ResilientImage
                             src={logo.dataUrl}
                             alt={logo.name || 'Logo aliado'}
+                            crossOrigin="anonymous"
                             className="max-h-8 max-w-[125px] w-auto h-auto object-contain object-left"
                           />
                         </div>
@@ -752,6 +754,7 @@ export function ProformaPreview({
                       <ResilientImage
                         src={logo.dataUrl}
                         alt={logo.name || 'Logo aliado'}
+                        crossOrigin="anonymous"
                         className="max-h-8 max-w-[125px] w-auto h-auto object-contain object-left"
                       />
                     </div>
@@ -972,9 +975,10 @@ export function ProformaPreview({
                         key={logo.id}
                         className="flex h-8 max-w-[125px] items-center"
                       >
-                        <img
+                        <ResilientImage
                           src={logo.dataUrl}
                           alt={logo.name || 'Logo aliado'}
+                          crossOrigin="anonymous"
                           className="max-h-8 max-w-[125px] w-auto h-auto object-contain object-left"
                         />
                       </div>

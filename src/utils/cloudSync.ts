@@ -668,6 +668,14 @@ function hydrateProformaFromPartial(
     items,
     visualReferences: Array.isArray(partial.visualReferences)
       ? partial.visualReferences
+          .filter((r) => r && typeof r.imageDataUrl === 'string')
+          .map((r, idx) => ({
+            id: r.id || `vref-sheet-${consecutivo}-${idx}`,
+            slotIndex: typeof r.slotIndex === 'number' ? r.slotIndex : idx,
+            imageDataUrl: String(r.imageDataUrl ?? ''),
+            name: typeof r.name === 'string' ? r.name : undefined,
+            caption: String(r.caption ?? ''),
+          }))
       : [],
     taxRate:
       typeof partial.taxRate === 'number' && Number.isFinite(partial.taxRate)
@@ -705,6 +713,54 @@ function hydrateProformaFromPartial(
   };
 }
 
+/**
+ * Lee y valida un objeto o cadena JSON (Datos_JSON de Google Sheets o borrador .json exportado)
+ * reconstruyendo una ProformaData completa y editable.
+ */
+export function parseProformaFromJsonInput(
+  raw: unknown,
+  fallbackConsecutivo = 2800
+): ProformaData | null {
+  if (!raw) return null;
+  try {
+    let candidate: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (typeof candidate === 'string') {
+      candidate = JSON.parse(candidate);
+    }
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return null;
+    }
+
+    const recordObj = candidate as Record<string, unknown>;
+    const partial =
+      recordObj.proforma &&
+      typeof recordObj.proforma === 'object' &&
+      !Array.isArray(recordObj.proforma)
+        ? (recordObj.proforma as Partial<ProformaData>)
+        : (recordObj as Partial<ProformaData>);
+
+    const looksLikeProforma =
+      typeof partial.consecutivo === 'number' ||
+      Boolean(partial.clientProject && typeof partial.clientProject === 'object') ||
+      Array.isArray(partial.items) ||
+      Boolean(partial.proformaType) ||
+      Boolean(partial.company && typeof partial.company === 'object');
+
+    if (!looksLikeProforma) {
+      return null;
+    }
+
+    const consecutivo =
+      typeof partial.consecutivo === 'number' && partial.consecutivo > 0
+        ? partial.consecutivo
+        : fallbackConsecutivo;
+
+    return hydrateProformaFromPartial(partial, consecutivo);
+  } catch {
+    return null;
+  }
+}
+
 function rowToSavedProformaRecord(
   row: Record<string, unknown>,
   rowIndex: number
@@ -731,19 +787,27 @@ function rowToSavedProformaRecord(
   ]);
 
   let parsedJsonObj: Partial<ProformaData> | null = null;
+  let normalizedRawDatosJson: string | undefined;
   if (rawDatosJson) {
     try {
-      const candidate =
+      let candidate: unknown =
         typeof rawDatosJson === 'string'
           ? JSON.parse(rawDatosJson)
           : rawDatosJson;
-      if (candidate && typeof candidate === 'object') {
+      if (typeof candidate === 'string') {
+        candidate = JSON.parse(candidate);
+      }
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
         const recordObj = candidate as Record<string, unknown>;
         if (recordObj.proforma && typeof recordObj.proforma === 'object') {
           parsedJsonObj = recordObj.proforma as Partial<ProformaData>;
         } else {
           parsedJsonObj = recordObj as Partial<ProformaData>;
         }
+        normalizedRawDatosJson =
+          typeof rawDatosJson === 'string'
+            ? rawDatosJson
+            : JSON.stringify(rawDatosJson);
       }
     } catch {
       parsedJsonObj = null;
@@ -794,6 +858,7 @@ function rowToSavedProformaRecord(
       data: hydrated,
       total: totals.total > 0 ? totals.total : colTotal,
       source: 'sheet',
+      rawDatosJson: normalizedRawDatosJson,
     };
   }
 

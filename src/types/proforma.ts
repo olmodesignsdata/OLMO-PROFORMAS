@@ -123,6 +123,7 @@ export interface SavedProformaRecord {
   data: ProformaData;
   total: number;
   source?: 'local' | 'sheet' | 'both';
+  rawDatosJson?: string;
 }
 
 export interface CloudSyncConfig {

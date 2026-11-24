@@ -4,19 +4,21 @@ import {
   Cloud,
   CopyPlus,
   Download,
+  Edit3,
   FileJson,
   FilePlus2,
   FileSpreadsheet,
   Filter,
-  FolderOpen,
   PenLine,
   RefreshCw,
   Search,
   Settings2,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ChangeEvent, useMemo, useRef, useState } from 'react';
+import { GRIFERIA_AUTO_FOOTER_LOGOS } from '../data/defaults';
 import { ComputedTotals, SavedProformaRecord } from '../types/proforma';
 import {
   computeProformaTotals,
@@ -45,6 +47,7 @@ interface HistoryViewProps {
   onDeleteRecord: (id: string) => void;
   onGoToEditor: () => void;
   onNewProforma: () => void;
+  onImportDraftFile?: (file: File) => void;
 }
 
 type HistoryFilterSource = 'all' | 'local' | 'sheet';
@@ -103,7 +106,9 @@ export function HistoryView({
   onDeleteRecord,
   onGoToEditor,
   onNewProforma,
+  onImportDraftFile,
 }: HistoryViewProps) {
+  const importFileRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<HistoryFilterSource>('all');
   const [clientFilter, setClientFilter] = useState('');
@@ -325,6 +330,32 @@ export function HistoryView({
             <PenLine className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
             <span>Ir al Editor (Nº {activeConsecutivo})</span>
           </button>
+
+          {onImportDraftFile && (
+            <>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) onImportDraftFile(file);
+                }}
+                className="hidden"
+                aria-label="Importar borrador JSON"
+              />
+              <button
+                type="button"
+                onClick={() => importFileRef.current?.click()}
+                title="Importar archivo de borrador (.json) enviado desde otra computadora"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Upload className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                <span>Importar Borrador (.json)</span>
+              </button>
+            </>
+          )}
 
           <button
             type="button"
@@ -733,11 +764,11 @@ export function HistoryView({
                         <button
                           type="button"
                           onClick={() => onOpenRecord(rec)}
-                          title="Abrir en editor"
-                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap cursor-pointer"
+                          title="Leer Datos_JSON y cargar todos los datos editables en el formulario principal"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 hover:text-zinc-900 whitespace-nowrap cursor-pointer"
                         >
-                          <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
-                          <span>Abrir</span>
+                          <Edit3 className="h-3.5 w-3.5 text-[#8C5A32]" aria-hidden="true" />
+                          <span>Cargar / Editar</span>
                         </button>
                         <button
                           type="button"
@@ -750,7 +781,16 @@ export function HistoryView({
                         </button>
                         <button
                           type="button"
-                          onClick={() => generateProformaPDF(rec.data, totals)}
+                          onClick={() =>
+                            generateProformaPDF(
+                              rec.data,
+                              totals,
+                              undefined,
+                              rec.data.proformaType === 'griferia'
+                                ? [...GRIFERIA_AUTO_FOOTER_LOGOS, null]
+                                : []
+                            )
+                          }
                           title="Descargar PDF"
                           aria-label={`Descargar PDF Proforma ${rec.consecutivo}`}
                           className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer"
