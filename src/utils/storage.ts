@@ -50,6 +50,7 @@ const KEYS = {
   NOTIFICATIONS_ENABLED: 'olmo_proforma_notifications_enabled_v1',
   NOTIFICATION_STATE: 'olmo_proforma_notification_state_v1',
   THEME_MODE: 'olmo_proforma_theme_mode_v1',
+  HISTORY_SIDE_PREVIEW_ENABLED: 'olmo_proforma_history_side_preview_v1',
 };
 
 export function getNextConsecutivo(): number {
@@ -703,6 +704,24 @@ export function loadNotificationState(): NotificationStateRecord {
 export function saveNotificationState(state: NotificationStateRecord): void {
   try {
     localStorage.setItem(KEYS.NOTIFICATION_STATE, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadHistorySidePreviewEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem(KEYS.HISTORY_SIDE_PREVIEW_ENABLED);
+    if (raw === null) return true;
+    return raw !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function saveHistorySidePreviewEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(KEYS.HISTORY_SIDE_PREVIEW_ENABLED, String(enabled));
   } catch {
     // ignore
   }
