@@ -554,7 +554,7 @@ export function ClientsView({
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="space-y-3">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             Directorio de Clientes
@@ -564,6 +564,16 @@ export function ClientsView({
             automáticamente futuras proformas y editar libremente cualquier dato
             puntual.
           </p>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={openNewForm}
+              className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden="true" />
+              <span>Nuevo Cliente</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -614,15 +624,6 @@ export function ClientsView({
           >
             <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Importar / Conectar Sheet</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={openNewForm}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Nuevo Cliente</span>
           </button>
         </div>
       </div>

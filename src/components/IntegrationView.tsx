@@ -2,12 +2,9 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
-  CloudUpload,
   Copy,
   Link2,
-  Loader2,
   Lock,
-  RefreshCw,
   RotateCcw,
   Save,
   Trash2,
@@ -27,24 +24,15 @@ import {
 import {
   buildCloudPayload,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
-  sendProformaToWebhook,
 } from '../utils/cloudSync';
-import { getConnectionButtonClasses } from '../utils/connectionStyles';
-import { buildPdfFileName } from '../utils/formatters';
-import { PdfIcon } from './PdfIcon';
 
 interface IntegrationViewProps {
   config: CloudSyncConfig;
   proforma: ProformaData;
   totals: ComputedTotals;
   onSaveConfig: (next: CloudSyncConfig) => void;
-  onDownloadPDF: () => Promise<void> | void;
   aranTemplatesCount: number;
   terminosTemplatesCount?: number;
-  isSyncingAran: boolean;
-  onSyncAranTemplates: (
-    overrideUrl?: string
-  ) => Promise<{ ok: boolean; message: string; count: number }>;
   sheetShortcutUrls: SheetShortcutUrls;
   onSaveSheetShortcutUrls: (next: SheetShortcutUrls) => void;
 }
@@ -54,18 +42,14 @@ export function IntegrationView({
   proforma,
   totals,
   onSaveConfig,
-  onDownloadPDF,
   aranTemplatesCount,
   terminosTemplatesCount = 0,
-  isSyncingAran,
-  onSyncAranTemplates,
   sheetShortcutUrls,
   onSaveSheetShortcutUrls,
 }: IntegrationViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
   const [draftConfig, setDraftConfig] = useState<CloudSyncConfig>(config);
-  const [sending, setSending] = useState(false);
   const [feedback, setFeedback] = useState<{
     ok: boolean;
     message: string;
@@ -171,57 +155,6 @@ export function IntegrationView({
     });
   };
 
-  const handleTestAranConnection = async () => {
-    const cleanedUrl = (draftConfig.aranScriptUrl ?? '').trim();
-    const cleaned: CloudSyncConfig = {
-      ...draftConfig,
-      aranScriptUrl: cleanedUrl,
-    };
-    setDraftConfig(cleaned);
-    onSaveConfig(cleaned);
-
-    setFeedback(null);
-    const result = await onSyncAranTemplates(cleanedUrl);
-    setFeedback({
-      ok: result.ok,
-      message: result.message,
-    });
-  };
-
-  const handleSendProformaToSheet = async () => {
-    const cleaned: CloudSyncConfig = {
-      ...draftConfig,
-      webhookUrl: draftConfig.webhookUrl.trim(),
-      secretToken: draftConfig.secretToken.trim(),
-    };
-    setDraftConfig(cleaned);
-    onSaveConfig(cleaned);
-
-    if (!cleaned.webhookUrl) {
-      setFeedback({
-        ok: false,
-        message:
-          'Falta configurar la URL de Google Apps Script (/exec) antes de enviar la proforma al Google Sheet.',
-      });
-      return;
-    }
-
-    setSending(true);
-    setFeedback(null);
-    const result = await sendProformaToWebhook(cleaned, proforma, totals);
-    setSending(false);
-    setFeedback(result);
-
-    const updatedConfig: CloudSyncConfig = {
-      ...cleaned,
-      lastSyncedAt: result.ok ? new Date().toISOString() : cleaned.lastSyncedAt,
-      lastStatus: result.ok ? 'ok' : 'error',
-      lastMessage: result.message,
-    };
-    setDraftConfig(updatedConfig);
-    onSaveConfig(updatedConfig);
-  };
-
   const handleCopyScript = async () => {
     try {
       await navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_TEMPLATE);
@@ -231,13 +164,6 @@ export function IntegrationView({
       // Fallback silencioso si clipboard no está disponible
     }
   };
-
-  const expectedPdfName = buildPdfFileName(
-    proforma.consecutivo,
-    proforma.clientProject.proyecto,
-    'pdf',
-    proforma.clientProject.cliente
-  );
 
   const samplePayload = buildCloudPayload(
     proforma,
@@ -704,7 +630,7 @@ export function IntegrationView({
               <button
                 type="button"
                 onClick={handleSaveSettings}
-                disabled={isLocked || sending}
+                disabled={isLocked}
                 className={`inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] px-3.5 py-2 text-xs font-semibold dark:border-zinc-700 ${
                   isLocked
                     ? 'cursor-not-allowed bg-zinc-100 text-zinc-500 dark:bg-zinc-800/70 dark:text-zinc-400'
@@ -739,96 +665,6 @@ export function IntegrationView({
               <span>{feedback.message}</span>
             </div>
           )}
-
-          <div className="flex flex-wrap items-center gap-2.5 border-t border-[#E5E4DF] pt-4 dark:border-zinc-800">
-            <button
-              type="button"
-              onClick={handleSendProformaToSheet}
-              disabled={sending}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isWebhookConnected, 'solid')}`}
-            >
-              {sending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
-              )}
-              <span>
-                {sending
-                  ? 'Enviando al Sheet...'
-                  : `Enviar Proforma Nº ${proforma.consecutivo} al Sheet`}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void handleTestAranConnection()}
-              disabled={isSyncingAran}
-              title={
-                isAranConnected
-                  ? 'Conectado: consultar y recargar ESPECIFICACIONES y TERMINOS_Y_CONDICIONES desde Google Sheets'
-                  : 'Sin URL o error de conexión en ESPECIFICACIONES: revisa la URL del script'
-              }
-              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAranConnected, 'outline')}`}
-            >
-              {isSyncingAran ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              )}
-              <span>
-                {isSyncingAran
-                  ? 'Cargando Especificaciones...'
-                  : 'Cargar / Probar Especificaciones'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void onDownloadPDF()}
-              title={`Generar y descargar "${expectedPdfName}"`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-black bg-black px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:border-zinc-700 dark:bg-black dark:hover:bg-zinc-900 cursor-pointer"
-            >
-              <PdfIcon className="h-4 w-4" />
-              <span>Descargar PDF</span>
-            </button>
-          </div>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-            Nombre estándar del archivo PDF:{' '}
-            <code className="rounded bg-[#FAF9F6] px-1.5 py-0.5 font-mono text-zinc-800 border border-[#E5E4DF] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-              {expectedPdfName}
-            </code>
-          </p>
-
-          {/* Guía de 4 pasos */}
-          <div className="border-t border-[#E5E4DF] pt-4 dark:border-zinc-800">
-            <h3 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-              Guía rápida para conectar con Google Sheets
-            </h3>
-            <ol className="mt-2 space-y-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400 list-decimal list-inside">
-              <li>
-                Abre tu Google Sheet y ve a{' '}
-                <strong className="text-zinc-800 dark:text-zinc-200">
-                  Extensiones &gt; Apps Script
-                </strong>
-                .
-              </li>
-              <li>
-                Reemplaza el contenido de <code className="font-mono">Code.gs</code>{' '}
-                con el script de la derecha y guarda.
-              </li>
-              <li>
-                Haz clic en{' '}
-                <strong className="text-zinc-800 dark:text-zinc-200">
-                  Implementar &gt; Nueva implementación &gt; Aplicación web
-                </strong>{' '}
-                (acceso: <em>Cualquier usuario</em>).
-              </li>
-              <li>
-                Copia la URL final <code className="font-mono">/exec</code> y
-                pégala arriba.
-              </li>
-            </ol>
-          </div>
         </div>
 
         {/* Script listo para copiar + Payload JSON */}

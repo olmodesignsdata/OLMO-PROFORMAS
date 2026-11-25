@@ -12,15 +12,13 @@ import {
   FileSpreadsheet,
   Filter,
   Loader2,
-  PenLine,
   RefreshCw,
   Search,
   Settings2,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
-import { ChangeEvent, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   DEFAULT_PROFORMAS_SHEET_URL,
   getProformaTypeMeta,
@@ -64,7 +62,6 @@ interface HistoryViewProps {
   onDeleteRecord: (id: string) => void;
   onGoToEditor: () => void;
   onNewProforma: () => void;
-  onImportDraftFile?: (file: File) => void;
   proformasSheetUrl?: string;
 }
 
@@ -160,7 +157,6 @@ export function HistoryView({
   onDeleteRecord,
   onGoToEditor,
   onNewProforma,
-  onImportDraftFile,
   hasCloudSendError = false,
   proformasSheetUrl = '',
 }: HistoryViewProps) {
@@ -169,7 +165,6 @@ export function HistoryView({
   const isSheetSyncReady =
     hasAppsScriptUrl && sheetSyncFeedback?.ok !== false;
   const isCloudSendReady = hasAppsScriptUrl && !hasCloudSendError;
-  const importFileRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<HistoryFilterSource>('all');
   const [clientFilter, setClientFilter] = useState('');
@@ -351,7 +346,7 @@ export function HistoryView({
         sidePreviewEnabled ? 'max-w-[1440px]' : 'max-w-[1200px]'
       }`}
     >
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="space-y-3">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
             Historial de Cotizaciones
@@ -364,6 +359,16 @@ export function HistoryView({
             </strong>{' '}
             (pestaña <span className="font-mono text-xs">PROFORMAS</span>).
           </p>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={onNewProforma}
+              className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <FilePlus2 className="h-4 w-4" aria-hidden="true" />
+              <span>Nueva Cotización</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -413,42 +418,6 @@ export function HistoryView({
 
           <button
             type="button"
-            onClick={onGoToEditor}
-            title="Volver al editor de la cotización activa"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <PenLine className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
-            <span>Ir al Editor (Nº {activeConsecutivo})</span>
-          </button>
-
-          {onImportDraftFile && (
-            <>
-              <input
-                ref={importFileRef}
-                type="file"
-                accept=".json,application/json"
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (file) onImportDraftFile(file);
-                }}
-                className="hidden"
-                aria-label="Importar borrador JSON"
-              />
-              <button
-                type="button"
-                onClick={() => importFileRef.current?.click()}
-                title="Importar archivo de borrador (.json) enviado desde otra computadora"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3.5 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Upload className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400" aria-hidden="true" />
-                <span>Importar Borrador (.json)</span>
-              </button>
-            </>
-          )}
-
-          <button
-            type="button"
             onClick={handleToggleSidePreview}
             aria-pressed={sidePreviewEnabled}
             title={
@@ -472,15 +441,6 @@ export function HistoryView({
                 ? 'Vista previa lateral: Activa'
                 : 'Vista previa lateral: Oculta'}
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onNewProforma}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Nueva Cotización</span>
           </button>
         </div>
       </div>

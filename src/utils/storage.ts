@@ -51,6 +51,7 @@ const KEYS = {
   NOTIFICATION_STATE: 'olmo_proforma_notification_state_v1',
   THEME_MODE: 'olmo_proforma_theme_mode_v1',
   HISTORY_SIDE_PREVIEW_ENABLED: 'olmo_proforma_history_side_preview_v1',
+  INTEGRATION_TAB_ENABLED: 'olmo_proforma_integration_tab_enabled_v1',
 };
 
 export function getNextConsecutivo(): number {
@@ -81,21 +82,55 @@ export function setNextConsecutivo(nextVal: number): number {
   return safe;
 }
 
+export function computeNextConsecutivoFromRecords(
+  localHistory: SavedProformaRecord[],
+  remoteHistory: SavedProformaRecord[] = [],
+  usedConsecutivo?: number
+): number {
+  let highest = 0;
+
+  for (const item of localHistory) {
+    const num = Number(item?.consecutivo);
+    if (Number.isFinite(num) && num > highest) {
+      highest = Math.floor(num);
+    }
+  }
+
+  for (const item of remoteHistory) {
+    const num = Number(item?.consecutivo);
+    if (Number.isFinite(num) && num > highest) {
+      highest = Math.floor(num);
+    }
+  }
+
+  if (
+    typeof usedConsecutivo === 'number' &&
+    Number.isFinite(usedConsecutivo) &&
+    usedConsecutivo > highest
+  ) {
+    highest = Math.floor(usedConsecutivo);
+  }
+
+  if (highest < 1) {
+    return INITIAL_CONSECUTIVO;
+  }
+
+  return highest + 1;
+}
+
 /**
- * Garantiza que el consecutivo almacenado avance si el número actual
- * ya fue asignado o guardado, evitando repeticiones en el mismo navegador.
+ * Garantiza que el consecutivo almacenado avance al número más alto encontrado + 1
+ * (usando 2800 únicamente como respaldo inicial si no existen proformas previas).
  */
-export function reserveNextConsecutivo(usedConsecutivo?: number): number {
-  const currentNext = getNextConsecutivo();
+export function reserveNextConsecutivo(
+  usedConsecutivo?: number,
+  remoteHistory: SavedProformaRecord[] = []
+): number {
   const history = loadSavedProformas();
-  const maxInHistory = history.reduce(
-    (max, item) => Math.max(max, item.consecutivo),
-    INITIAL_CONSECUTIVO - 1
-  );
-  const candidate = Math.max(
-    currentNext,
-    (usedConsecutivo ?? INITIAL_CONSECUTIVO - 1) + 1,
-    maxInHistory + 1
+  const candidate = computeNextConsecutivoFromRecords(
+    history,
+    remoteHistory,
+    usedConsecutivo
   );
   setNextConsecutivo(candidate);
   return candidate;
@@ -712,16 +747,32 @@ export function saveNotificationState(state: NotificationStateRecord): void {
 export function loadHistorySidePreviewEnabled(): boolean {
   try {
     const raw = localStorage.getItem(KEYS.HISTORY_SIDE_PREVIEW_ENABLED);
-    if (raw === null) return true;
-    return raw !== 'false';
+    return raw === 'true';
   } catch {
-    return true;
+    return false;
   }
 }
 
 export function saveHistorySidePreviewEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(KEYS.HISTORY_SIDE_PREVIEW_ENABLED, String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadIntegrationTabEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem(KEYS.INTEGRATION_TAB_ENABLED);
+    return raw === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function saveIntegrationTabEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(KEYS.INTEGRATION_TAB_ENABLED, String(enabled));
   } catch {
     // ignore
   }

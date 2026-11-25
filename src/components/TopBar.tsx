@@ -3,20 +3,38 @@ import {
   Bell,
   BellOff,
   Check,
+  ChevronDown,
+  ChevronRight,
+  CloudUpload,
+  Download,
+  FileJson,
+  FileSpreadsheet,
+  FolderOpen,
   Info,
+  Loader2,
   Moon,
   Plus,
+  SlidersHorizontal,
   Sun,
+  Upload,
   X,
 } from 'lucide-react';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
 import { AppNotification, AppSection, ThemeMode } from '../types/proforma';
+import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import { PdfIcon } from './PdfIcon';
 
 interface TopBarProps {
   activeSection: AppSection;
   onSelectSection: (section: AppSection) => void;
   onDownloadPDF: () => void;
+  onExportCSV: () => void;
+  onSendToSheet: () => void;
+  onImportDraftFile: (file: File) => void;
+  showIntegrationTab: boolean;
+  onToggleIntegrationTab: () => void;
+  isSendingToSheet?: boolean;
+  isSheetWebhookConnected?: boolean;
   historyCount: number;
   clientsCount: number;
   themeMode: ThemeMode;
@@ -33,6 +51,13 @@ export function TopBar({
   activeSection,
   onSelectSection,
   onDownloadPDF,
+  onExportCSV,
+  onSendToSheet,
+  onImportDraftFile,
+  showIntegrationTab,
+  onToggleIntegrationTab,
+  isSendingToSheet = false,
+  isSheetWebhookConnected = false,
   historyCount,
   clientsCount,
   themeMode,
@@ -48,7 +73,13 @@ export function TopBar({
   const [showReminderForm, setShowReminderForm] = useState(false);
   const [reminderTitle, setReminderTitle] = useState('');
   const [reminderMessage, setReminderMessage] = useState('');
+  const [showFileMenu, setShowFileMenu] = useState(false);
+  const [showExportSubmenu, setShowExportSubmenu] = useState(false);
+  const [showImportSubmenu, setShowImportSubmenu] = useState(false);
+  const [showOthersSubmenu, setShowOthersSubmenu] = useState(false);
   const notifPanelRef = useRef<HTMLDivElement | null>(null);
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
+  const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!showNotifPanel) return;
@@ -73,6 +104,42 @@ export function TopBar({
     };
   }, [showNotifPanel]);
 
+  useEffect(() => {
+    if (!showFileMenu) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        fileMenuRef.current &&
+        !fileMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowFileMenu(false);
+        setShowExportSubmenu(false);
+        setShowImportSubmenu(false);
+        setShowOthersSubmenu(false);
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowFileMenu(false);
+        setShowExportSubmenu(false);
+        setShowImportSubmenu(false);
+        setShowOthersSubmenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showFileMenu]);
+
+  useEffect(() => {
+    setShowFileMenu(false);
+    setShowExportSubmenu(false);
+    setShowImportSubmenu(false);
+    setShowOthersSubmenu(false);
+  }, [activeSection]);
+
   const navItems: Array<{ id: AppSection; label: string }> = [
     {
       id: 'history',
@@ -84,7 +151,9 @@ export function TopBar({
       id: 'clients',
       label: clientsCount > 0 ? `CLIENTES (${clientsCount})` : 'CLIENTES',
     },
-    { id: 'integration', label: 'INTEGRACIÓN' },
+    ...(showIntegrationTab
+      ? [{ id: 'integration' as const, label: 'INTEGRACIÓN' }]
+      : []),
     { id: 'dashboard', label: 'ESTADÍSTICA' },
   ];
 
@@ -377,14 +446,312 @@ export function TopBar({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={onDownloadPDF}
-            className="inline-flex items-center gap-2 rounded-lg border border-black bg-black px-4 py-2 text-xs font-semibold text-white shadow-xs transition-colors duration-150 hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8C5A32] focus-visible:ring-offset-2 dark:border-zinc-700"
-          >
-            <PdfIcon className="h-4 w-4 text-white" />
-            <span>Descargar PDF</span>
-          </button>
+          {activeSection !== 'dashboard' && (
+            <div ref={fileMenuRef} className="relative">
+              <input
+                ref={jsonImportInputRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) {
+                    onImportDraftFile(file);
+                  }
+                }}
+                className="hidden"
+                aria-label="Importar borrador JSON desde archivo"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFileMenu((prev) => {
+                    const next = !prev;
+                    if (!next) {
+                      setShowExportSubmenu(false);
+                      setShowImportSubmenu(false);
+                      setShowOthersSubmenu(false);
+                    }
+                    return next;
+                  });
+                }}
+                aria-expanded={showFileMenu}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-xs transition-colors duration-150 hover:bg-zinc-100 whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8C5A32] focus-visible:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+              >
+                <FolderOpen
+                  className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                  aria-hidden="true"
+                />
+                <span>Archivo</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 text-zinc-500 transition-transform ${
+                    showFileMenu ? 'rotate-180' : ''
+                  }`}
+                  aria-hidden="true"
+                />
+              </button>
+
+              {showFileMenu && (
+                <div
+                  role="menu"
+                  aria-label="Menú Archivo"
+                  className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-[#DCDAD3] bg-white p-1.5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <div
+                    className="relative"
+                    onMouseEnter={() => {
+                      setShowExportSubmenu(true);
+                      setShowImportSubmenu(false);
+                      setShowOthersSubmenu(false);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={showExportSubmenu}
+                      onClick={() => {
+                        setShowExportSubmenu((prev) => !prev);
+                        setShowImportSubmenu(false);
+                        setShowOthersSubmenu(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                        showExportSubmenu
+                          ? 'bg-[#FAF6F1] text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                          : 'text-zinc-800 hover:bg-[#FAF9F6] dark:text-zinc-200 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Upload
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                          aria-hidden="true"
+                        />
+                        <span>Exportar</span>
+                      </span>
+                      <ChevronRight
+                        className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
+                          showExportSubmenu ? 'rotate-90 sm:rotate-0' : ''
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+
+                    {showExportSubmenu && (
+                      <div
+                        role="menu"
+                        aria-label="Opciones de Exportar"
+                        className="mt-1 space-y-1.5 pl-2 sm:absolute sm:right-full sm:top-0 sm:mt-0 sm:mr-1.5 sm:w-64 sm:rounded-xl sm:border sm:border-[#DCDAD3] sm:bg-white sm:p-2 sm:pl-2 sm:shadow-xl sm:dark:border-zinc-700 sm:dark:bg-zinc-900"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setShowFileMenu(false);
+                            setShowExportSubmenu(false);
+                            onDownloadPDF();
+                          }}
+                          className="flex w-full items-center gap-2 rounded-md border border-black bg-black px-3 py-2 text-left text-xs font-semibold text-white transition-colors hover:bg-zinc-800 cursor-pointer dark:border-zinc-700"
+                        >
+                          <PdfIcon className="h-4 w-4 shrink-0 text-white" />
+                          <span>Guardar / Descargar PDF</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setShowFileMenu(false);
+                            setShowExportSubmenu(false);
+                            onExportCSV();
+                          }}
+                          title="Exportar cotización en formato CSV compatible con Excel (listo para descargar)"
+                          className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'outline')}`}
+                        >
+                          <FileSpreadsheet
+                            className="h-3.5 w-3.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <span>Exportar CSV / Excel</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={isSendingToSheet}
+                          onClick={() => {
+                            setShowFileMenu(false);
+                            setShowExportSubmenu(false);
+                            onSendToSheet();
+                          }}
+                          title={
+                            isSheetWebhookConnected
+                              ? 'Conectado: enviar los datos de la proforma al Google Sheet configurado'
+                              : 'Sin URL o último envío con error: revisa Integración antes de enviar'
+                          }
+                          className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isSheetWebhookConnected, 'outline')}`}
+                        >
+                          {isSendingToSheet ? (
+                            <Loader2
+                              className="h-3.5 w-3.5 shrink-0 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <CloudUpload
+                              className="h-3.5 w-3.5 shrink-0"
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span>
+                            {isSendingToSheet
+                              ? 'Enviando al Sheet...'
+                              : 'Enviar al Google Sheet'}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div
+                    className="relative mt-1 border-t border-[#E5E4DF] pt-1 dark:border-zinc-800"
+                    onMouseEnter={() => {
+                      setShowImportSubmenu(true);
+                      setShowExportSubmenu(false);
+                      setShowOthersSubmenu(false);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={showImportSubmenu}
+                      onClick={() => {
+                        setShowImportSubmenu((prev) => !prev);
+                        setShowExportSubmenu(false);
+                        setShowOthersSubmenu(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                        showImportSubmenu
+                          ? 'bg-[#FAF6F1] text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                          : 'text-zinc-800 hover:bg-[#FAF9F6] dark:text-zinc-200 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Download
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                          aria-hidden="true"
+                        />
+                        <span>Importar</span>
+                      </span>
+                      <ChevronRight
+                        className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
+                          showImportSubmenu ? 'rotate-90 sm:rotate-0' : ''
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+
+                    {showImportSubmenu && (
+                      <div
+                        role="menu"
+                        aria-label="Opciones de Importar"
+                        className="mt-1 space-y-1.5 pl-2 sm:absolute sm:right-full sm:top-0 sm:mt-0 sm:mr-1.5 sm:w-64 sm:rounded-xl sm:border sm:border-[#DCDAD3] sm:bg-white sm:p-2 sm:pl-2 sm:shadow-xl sm:dark:border-zinc-700 sm:dark:bg-zinc-900"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setShowFileMenu(false);
+                            setShowImportSubmenu(false);
+                            jsonImportInputRef.current?.click();
+                          }}
+                          title="Importar un archivo de borrador (.json) para continuar una proforma"
+                          className="flex w-full items-center gap-2 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-2 text-left text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                        >
+                          <FileJson
+                            className="h-3.5 w-3.5 shrink-0 text-[#8C5A32] dark:text-[#C68B59]"
+                            aria-hidden="true"
+                          />
+                          <span>Importar .JSON</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div
+                    className="relative mt-1 border-t border-[#E5E4DF] pt-1 dark:border-zinc-800"
+                    onMouseEnter={() => {
+                      setShowOthersSubmenu(true);
+                      setShowExportSubmenu(false);
+                      setShowImportSubmenu(false);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={showOthersSubmenu}
+                      onClick={() => {
+                        setShowOthersSubmenu((prev) => !prev);
+                        setShowExportSubmenu(false);
+                        setShowImportSubmenu(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold transition-colors cursor-pointer ${
+                        showOthersSubmenu
+                          ? 'bg-[#FAF6F1] text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                          : 'text-zinc-800 hover:bg-[#FAF9F6] dark:text-zinc-200 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <SlidersHorizontal
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                          aria-hidden="true"
+                        />
+                        <span>Otros</span>
+                      </span>
+                      <ChevronRight
+                        className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
+                          showOthersSubmenu ? 'rotate-90 sm:rotate-0' : ''
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+
+                    {showOthersSubmenu && (
+                      <div
+                        role="menu"
+                        aria-label="Opciones de Otros"
+                        className="mt-1 space-y-1.5 pl-2 sm:absolute sm:right-full sm:top-0 sm:mt-0 sm:mr-1.5 sm:w-72 sm:rounded-xl sm:border sm:border-[#DCDAD3] sm:bg-white sm:p-2 sm:pl-2 sm:shadow-xl sm:dark:border-zinc-700 sm:dark:bg-zinc-900"
+                      >
+                        <button
+                          type="button"
+                          role="menuitemcheckbox"
+                          aria-checked={showIntegrationTab}
+                          onClick={onToggleIntegrationTab}
+                          className="flex w-full items-center justify-between gap-3 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-2 text-left text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                        >
+                          <span>Habilitar pestaña de Integración</span>
+                          <span
+                            className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors ${
+                              showIntegrationTab
+                                ? 'bg-emerald-600 dark:bg-emerald-500'
+                                : 'bg-zinc-300 dark:bg-zinc-600'
+                            }`}
+                          >
+                            <span
+                              className={`h-4 w-4 rounded-full bg-white shadow-xs transition-transform ${
+                                showIntegrationTab ? 'translate-x-4' : 'translate-x-0'
+                              }`}
+                            />
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,13 +1,9 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
-  CloudUpload,
   Columns2,
-  Download,
   FileJson,
   FilePlus2,
-  FileSpreadsheet,
   HardDrive,
   Loader2,
   PanelLeft,
@@ -16,7 +12,7 @@ import {
   Undo2,
   Upload,
 } from 'lucide-react';
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProformaUndoRedo } from './hooks/useProformaUndoRedo';
 import {
   ClientDraftPayload,
@@ -30,7 +26,6 @@ import { IntegrationView } from './components/IntegrationView';
 import { PdfIcon } from './components/PdfIcon';
 import { ProformaPreview } from './components/ProformaPreview';
 import { TopBar } from './components/TopBar';
-import { getConnectionButtonClasses } from './utils/connectionStyles';
 import {
   createEmptyProductLine,
   createInitialProforma,
@@ -85,8 +80,8 @@ import {
   rasterizeLogoForPdf,
 } from './utils/logoUtils';
 import {
+  computeNextConsecutivoFromRecords,
   deleteProformaFromHistory,
-  getNextConsecutivo,
   loadAranTemplatesCache,
   loadClientsImportConfig,
   loadCloudConfig,
@@ -94,6 +89,7 @@ import {
   loadDraftSavedAt,
   loadFooterLogos,
   loadGoogleSheetsConfig,
+  loadIntegrationTabEnabled,
   loadMainLogo,
   loadNotificationsEnabled,
   loadNotificationState,
@@ -115,6 +111,7 @@ import {
   saveDraftProforma,
   saveFooterLogos,
   saveGoogleSheetsConfig,
+  saveIntegrationTabEnabled,
   saveMainLogo,
   saveNotificationsEnabled,
   saveNotificationState,
@@ -231,7 +228,12 @@ function hasProformaUserContent(current: ProformaData): boolean {
   if (hasClientContent) return true;
 
   if (current.signatures.clienteNombre.trim()) return true;
-  if (current.notasFinales.trim()) return true;
+  if (
+    current.notasFinales.trim() &&
+    current.notasFinales.trim() !== DEFAULT_NOTAS_FINALES.trim()
+  ) {
+    return true;
+  }
 
   const hasVisualRefs = (current.visualReferences ?? []).some(
     (ref) => ref.imageDataUrl.trim() || ref.caption.trim()
@@ -305,9 +307,13 @@ function isTextEditingElement(target: EventTarget | null): boolean {
 }
 
 export default function App() {
-  const [nextConsecutivo, setNextConsecutivoState] = useState<number>(() =>
-    getNextConsecutivo()
-  );
+  const [nextConsecutivo, setNextConsecutivoState] = useState<number>(() => {
+    const computed = computeNextConsecutivoFromRecords(
+      loadSavedProformas(),
+      loadRemoteHistoryCache().records
+    );
+    return setNextConsecutivo(computed);
+  });
 
   const {
     proforma,
@@ -320,18 +326,30 @@ export default function App() {
     undo,
     redo,
   } = useProformaUndoRedo(() => {
+    const savedLocal = loadSavedProformas();
+    const computedNext = computeNextConsecutivoFromRecords(
+      savedLocal,
+      loadRemoteHistoryCache().records
+    );
     const draft = loadDraftProforma();
     if (draft) {
       const normalized = normalizeProformaClientContact(draft);
-      if (isUntouchedLegacySampleDraft(normalized)) {
+      const base = isUntouchedLegacySampleDraft(normalized)
+        ? {
+            ...normalized,
+            items: [createEmptyProductLine()],
+          }
+        : normalized;
+      const isSavedLocally = savedLocal.some((rec) => rec.id === base.id);
+      if (!isSavedLocally && !hasProformaUserContent(base)) {
         return {
-          ...normalized,
-          items: [createEmptyProductLine()],
+          ...base,
+          consecutivo: computedNext,
         };
       }
-      return normalized;
+      return base;
     }
-    const initial = createInitialProforma(getNextConsecutivo(), true);
+    const initial = createInitialProforma(computedNext, true);
     initial.company = loadSavedCompanyDefaults();
     initial.bankAccount = loadSavedBankDefaults();
     return initial;
@@ -407,6 +425,9 @@ export default function App() {
   } | null>(null);
 
   const [activeSection, setActiveSection] = useState<AppSection>('history');
+  const [showIntegrationTab, setShowIntegrationTab] = useState<boolean>(() =>
+    loadIntegrationTabEnabled()
+  );
   const [layoutMode, setLayoutMode] = useState<WorkspaceLayoutMode>('split');
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
   const [isSendingToSheet, setIsSendingToSheet] = useState(false);
@@ -415,7 +436,6 @@ export default function App() {
     data: ProformaData;
     sourceLabel: string;
   } | null>(null);
-  const [showJsonDraftMenu, setShowJsonDraftMenu] = useState(false);
   const [toast, setToast] = useState<{ text: string; isError?: boolean } | null>(
     null
   );
@@ -431,6 +451,7 @@ export default function App() {
   const latestProformaRef = useRef(proforma);
   const latestTotalsRef = useRef(totals);
   const latestHistoryRef = useRef(history);
+  const latestRemoteHistoryRef = useRef(remoteHistory);
   const latestFooterLogosRef = useRef(footerLogos);
   const latestCloudConfigRef = useRef(cloudConfig);
   const latestSavedClientsRef = useRef(savedClients);
@@ -442,8 +463,6 @@ export default function App() {
     id: proforma.id,
     type: proforma.proformaType ?? 'mobiliario',
   });
-  const jsonMenuRef = useRef<HTMLDivElement | null>(null);
-  const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
   const isInitialAutosaveMountRef = useRef(true);
   const hasEditedSinceLoadRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
@@ -451,6 +470,7 @@ export default function App() {
   latestProformaRef.current = proforma;
   latestTotalsRef.current = totals;
   latestHistoryRef.current = history;
+  latestRemoteHistoryRef.current = remoteHistory;
   latestFooterLogosRef.current = footerLogos;
   latestCloudConfigRef.current = cloudConfig;
   latestSavedClientsRef.current = savedClients;
@@ -514,30 +534,6 @@ export default function App() {
     }
   }, [proforma.id, proforma.proformaType]);
 
-  // Cerrar menú desplegable de Borrador (.json) al hacer clic fuera
-  useEffect(() => {
-    if (!showJsonDraftMenu) return;
-    const handleOutsideClick = (event: MouseEvent) => {
-      if (
-        jsonMenuRef.current &&
-        !jsonMenuRef.current.contains(event.target as Node)
-      ) {
-        setShowJsonDraftMenu(false);
-      }
-    };
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setShowJsonDraftMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleOutsideClick);
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('mousedown', handleOutsideClick);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [showJsonDraftMenu]);
-
   const persistLocalBackup = useCallback(
     (forceHistoryBackup: boolean): string | null => {
       const currentDraft = latestProformaRef.current;
@@ -566,7 +562,13 @@ export default function App() {
           currentTotals.total
         );
         setHistory(updatedHistory);
-        setNextConsecutivoState(getNextConsecutivo());
+        const updatedNext = setNextConsecutivo(
+          computeNextConsecutivoFromRecords(
+            updatedHistory,
+            latestRemoteHistoryRef.current
+          )
+        );
+        setNextConsecutivoState(updatedNext);
       }
 
       return savedAt;
@@ -727,7 +729,12 @@ export default function App() {
     }
     const updatedHistory = saveProformaToHistory(proforma, totals.total);
     setHistory(updatedHistory);
-    const updatedNext = getNextConsecutivo();
+    const updatedNext = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(
+        updatedHistory,
+        latestRemoteHistoryRef.current
+      )
+    );
     setNextConsecutivoState(updatedNext);
 
     if (cloudConfig.autoSyncOnSave && cloudConfig.webhookUrl.trim()) {
@@ -758,8 +765,11 @@ export default function App() {
   };
 
   const executeNewProforma = () => {
-    // Reserva automáticamente el siguiente consecutivo disponible sin sobrescribir ni repetir guardados
-    const reserved = reserveNextConsecutivo(proforma.consecutivo);
+    // Calcula automáticamente el consecutivo más alto entre PROFORMAS e historial local + 1
+    const reserved = reserveNextConsecutivo(
+      hasProformaUserContent(proforma) ? proforma.consecutivo : undefined,
+      latestRemoteHistoryRef.current
+    );
     setNextConsecutivoState(reserved);
     const fresh = createInitialProforma(reserved, true);
     fresh.company = loadSavedCompanyDefaults();
@@ -787,7 +797,13 @@ export default function App() {
   };
 
   const handleSyncNextConsecutivo = () => {
-    const nextNum = getNextConsecutivo();
+    const nextNum = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(
+        latestHistoryRef.current,
+        latestRemoteHistoryRef.current
+      )
+    );
+    setNextConsecutivoState(nextNum);
     hasEditedSinceLoadRef.current = true;
     updateProforma((prev) => ({
       ...prev,
@@ -812,7 +828,13 @@ export default function App() {
       }
       const updatedHistory = saveProformaToHistory(proforma, totals.total);
       setHistory(updatedHistory);
-      setNextConsecutivoState(getNextConsecutivo());
+      const updatedNext = setNextConsecutivo(
+        computeNextConsecutivoFromRecords(
+          updatedHistory,
+          latestRemoteHistoryRef.current
+        )
+      );
+      setNextConsecutivoState(updatedNext);
       if (result.skippedExternalImages > 0) {
         showToast(
           `PDF "${result.fileName}" generado. Nota: ${result.skippedExternalImages} imagen(es) por enlace externo no pudieron incrustarse por permisos CORS del servidor (usa "Imprimir" o súbelas desde tu PC).`,
@@ -846,7 +868,13 @@ export default function App() {
       }
       const updatedHistory = saveProformaToHistory(proforma, totals.total);
       setHistory(updatedHistory);
-      setNextConsecutivoState(getNextConsecutivo());
+      const updatedNext = setNextConsecutivo(
+        computeNextConsecutivoFromRecords(
+          updatedHistory,
+          latestRemoteHistoryRef.current
+        )
+      );
+      setNextConsecutivoState(updatedNext);
 
       const nextCfg: CloudSyncConfig = {
         ...cloudConfig,
@@ -1110,7 +1138,8 @@ export default function App() {
 
   const handleDuplicateRecord = (record: SavedProformaRecord) => {
     const nextNum = reserveNextConsecutivo(
-      Math.max(proforma.consecutivo, record.consecutivo)
+      Math.max(proforma.consecutivo, record.consecutivo),
+      latestRemoteHistoryRef.current
     );
     setNextConsecutivoState(nextNum);
     const cloned = normalizeProformaClientContact(
@@ -1130,6 +1159,13 @@ export default function App() {
   const handleDeleteRecord = (id: string) => {
     const updated = deleteProformaFromHistory(id);
     setHistory(updated);
+    const updatedNext = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(
+        updated,
+        latestRemoteHistoryRef.current
+      )
+    );
+    setNextConsecutivoState(updatedNext);
     showToast('Cotización eliminada del historial local.');
   };
 
@@ -1472,9 +1508,34 @@ export default function App() {
           data: normalizeProformaClientContact(rec.data),
         }));
         const syncedAt = new Date().toISOString();
+        latestRemoteHistoryRef.current = normalized;
         setRemoteHistory(normalized);
         setLastRemoteHistorySyncAt(syncedAt);
         saveRemoteHistoryCache({ records: normalized, syncedAt });
+
+        const suggestedNext = setNextConsecutivo(
+          computeNextConsecutivoFromRecords(
+            latestHistoryRef.current,
+            normalized
+          )
+        );
+        setNextConsecutivoState(suggestedNext);
+
+        const currentActive = latestProformaRef.current;
+        const isSavedLocally = latestHistoryRef.current.some(
+          (rec) => rec.id === currentActive.id
+        );
+        if (
+          !hasEditedSinceLoadRef.current &&
+          !isSavedLocally &&
+          !hasProformaUserContent(currentActive) &&
+          currentActive.consecutivo !== suggestedNext
+        ) {
+          resetProforma({
+            ...currentActive,
+            consecutivo: suggestedNext,
+          });
+        }
 
         const msg =
           normalized.length > 0
@@ -1497,7 +1558,7 @@ export default function App() {
         setIsSyncingRemoteHistory(false);
       }
     },
-    [showToast]
+    [resetProforma, showToast]
   );
 
   const handleSyncClientsFromSheet = useCallback(
@@ -1850,6 +1911,22 @@ export default function App() {
         activeSection={activeSection}
         onSelectSection={setActiveSection}
         onDownloadPDF={handleDownloadPDF}
+        onExportCSV={() => exportProformaToCSV(proforma, totals)}
+        onSendToSheet={() => void handleSendProformaToSheet()}
+        onImportDraftFile={(file) => void handleImportDraftFile(file)}
+        showIntegrationTab={showIntegrationTab}
+        onToggleIntegrationTab={() => {
+          setShowIntegrationTab((prev) => {
+            const next = !prev;
+            saveIntegrationTabEnabled(next);
+            if (!next && activeSection === 'integration') {
+              setActiveSection('history');
+            }
+            return next;
+          });
+        }}
+        isSendingToSheet={isSendingToSheet}
+        isSheetWebhookConnected={isSheetWebhookConnected}
         historyCount={history.length}
         clientsCount={savedClients.length}
         themeMode={themeMode}
@@ -1880,6 +1957,72 @@ export default function App() {
       )}
 
       <main className="mx-auto max-w-[1480px] px-4 py-5 sm:px-6">
+        {/* Desglose superior siempre visible (oculto en la pestaña ESTADÍSTICA) */}
+        {activeSection !== 'dashboard' && (
+          <section
+            aria-label="Trabajando en la cotización"
+            className="no-print mb-4 overflow-hidden rounded-xl border border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] transition-colors duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
+          >
+            <div className="border-b border-[#ECEAE3] bg-[#FAF9F6] px-3.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-800/60">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#8C5A32] dark:text-[#D59B69]">
+                Trabajando en la cotización
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-[#F0EEE8] text-[10.5px] font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400">
+                    <th className="w-[120px] px-3.5 py-1.5">Consecutivo</th>
+                    <th className="px-3.5 py-1.5">Cliente</th>
+                    <th className="px-3.5 py-1.5">Proyecto</th>
+                    <th className="w-[80px] px-3.5 py-1.5 text-center">Ítems</th>
+                    <th className="w-[150px] px-3.5 py-1.5 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="text-zinc-800 dark:text-zinc-100">
+                    <td className="px-3.5 py-2 font-mono font-semibold tabular-nums whitespace-nowrap text-zinc-900 dark:text-zinc-100">
+                      Nº {proforma.consecutivo}
+                    </td>
+                    <td
+                      className="max-w-[260px] truncate px-3.5 py-2 font-medium"
+                      title={proforma.clientProject.cliente || 'Sin definir'}
+                    >
+                      {proforma.clientProject.cliente.trim() || (
+                        <span className="text-zinc-400 dark:text-zinc-500">
+                          Sin definir
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      className="max-w-[260px] truncate px-3.5 py-2 font-medium"
+                      title={proforma.clientProject.proyecto || 'Sin definir'}
+                    >
+                      {proforma.clientProject.proyecto.trim() || (
+                        <span className="text-zinc-400 dark:text-zinc-500">
+                          Sin definir
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3.5 py-2 text-center font-mono font-semibold tabular-nums whitespace-nowrap">
+                      {proforma.items.length}
+                    </td>
+                    <td
+                      className={`px-3.5 py-2 text-right font-mono font-semibold tabular-nums whitespace-nowrap ${
+                        totals.total <= 0
+                          ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-[#8C5A32] dark:text-[#D59B69]'
+                      }`}
+                    >
+                      {formatMoney(totals.total, proforma.clientProject.moneda)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {/* Barra de acciones del espacio de trabajo (visible en Editor y Vista Previa) */}
         {(activeSection === 'editor' || activeSection === 'preview') && (
           <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
@@ -2035,126 +2178,19 @@ export default function App() {
                 <span>Guardar en Historial</span>
               </button>
 
-              <input
-                ref={jsonImportInputRef}
-                type="file"
-                accept=".json,application/json"
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (file) {
-                    void handleImportDraftFile(file);
-                  }
+              <button
+                type="button"
+                onClick={() => {
+                  exportProformaToJSON(proforma, totals);
+                  showToast(
+                    `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
+                  );
                 }}
-                className="hidden"
-                aria-label="Importar borrador JSON desde archivo"
-              />
-
-              <div ref={jsonMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowJsonDraftMenu((open) => !open)}
-                  aria-expanded={showJsonDraftMenu}
-                  aria-haspopup="menu"
-                  title="Exportar o importar un borrador completo (.json) como respaldo portátil entre computadoras"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-                >
-                  <FileJson className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-                  <span>Exportar / Importar Borrador (.json)</span>
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${
-                      showJsonDraftMenu ? 'rotate-180' : ''
-                    }`}
-                    aria-hidden="true"
-                  />
-                </button>
-
-                {showJsonDraftMenu && (
-                  <div
-                    role="menu"
-                    className="absolute right-0 z-30 mt-1.5 w-60 rounded-lg border border-[#DCDAD3] bg-white p-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
-                  >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setShowJsonDraftMenu(false);
-                        exportProformaToJSON(proforma, totals);
-                        showToast(
-                          `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
-                        );
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
-                    >
-                      <Download className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-                      <div>
-                        <div>Exportar borrador (.json)</div>
-                        <div className="text-[10.5px] font-normal text-zinc-500 dark:text-zinc-400">
-                          Descarga la proforma activa completa
-                        </div>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setShowJsonDraftMenu(false);
-                        jsonImportInputRef.current?.click();
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-zinc-800 hover:bg-[#FAF9F6] cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
-                    >
-                      <Upload className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-                      <div>
-                        <div>Importar borrador (.json)</div>
-                        <div className="text-[10.5px] font-normal text-zinc-500 dark:text-zinc-400">
-                          Continúa un archivo enviado de otra PC
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => exportProformaToCSV(proforma, totals)}
-                title="Exportar cotización en formato CSV compatible con Excel (listo para descargar)"
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(true, 'outline')}`}
+                title="Exportar un borrador completo (.json) como respaldo portátil entre computadoras"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>CSV / Excel</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSendProformaToSheet}
-                disabled={isSendingToSheet}
-                title={
-                  isSheetWebhookConnected
-                    ? 'Conectado: enviar los datos de la proforma al Google Sheet configurado'
-                    : 'Sin URL o último envío con error: revisa Integración antes de enviar'
-                }
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isSheetWebhookConnected, 'outline')}`}
-              >
-                {isSendingToSheet ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                <span>
-                  {isSendingToSheet
-                    ? 'Enviando al Sheet...'
-                    : 'Enviar al Google Sheet'}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleDownloadPDF}
-                className="inline-flex items-center gap-1.5 rounded-md border border-black bg-black px-3.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700"
-              >
-                <PdfIcon className="h-4 w-4 text-white" />
-                <span>Guardar / Descargar PDF</span>
+                <FileJson className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
+                <span>Exportar Borrador (.json)</span>
               </button>
             </div>
           </div>
@@ -2231,7 +2267,25 @@ export default function App() {
         )}
 
         {activeSection === 'preview' && (
-          <div className="mx-auto max-w-[860px]">
+          <div className="mx-auto max-w-[860px] space-y-4">
+            <div className="no-print flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
+              <div className="text-xs text-zinc-600 dark:text-zinc-400">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  Vista Previa del Documento
+                </span>
+                <span className="ml-2 hidden sm:inline">
+                  · Documento listo para exportar en PDF
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleDownloadPDF}
+                className="inline-flex items-center gap-2 rounded-md border border-black bg-black px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700"
+              >
+                <PdfIcon className="h-4 w-4 text-white" />
+                <span>Descargar PDF</span>
+              </button>
+            </div>
             <ProformaPreview
               data={proforma}
               totals={totals}
@@ -2275,13 +2329,16 @@ export default function App() {
             sheetSyncFeedback={remoteHistoryFeedback}
             onSyncFromSheet={() => void handleSyncHistoryFromSheet(false)}
             onSendProforma={() => void handleSendProformaToSheet()}
-            onGoToIntegration={() => setActiveSection('integration')}
+            onGoToIntegration={() => {
+              setShowIntegrationTab(true);
+              saveIntegrationTabEnabled(true);
+              setActiveSection('integration');
+            }}
             onOpenRecord={handleOpenRecord}
             onDuplicateRecord={handleDuplicateRecord}
             onDeleteRecord={handleDeleteRecord}
             onGoToEditor={() => setActiveSection('editor')}
             onNewProforma={handleRequestNewProforma}
-            onImportDraftFile={(file) => void handleImportDraftFile(file)}
             proformasSheetUrl={sheetShortcutUrls.proformasSheetUrl}
           />
         )}
@@ -2292,11 +2349,8 @@ export default function App() {
             proforma={proforma}
             totals={totals}
             onSaveConfig={handleSaveCloudConfig}
-            onDownloadPDF={handleDownloadPDF}
             aranTemplatesCount={aranTemplates.length}
             terminosTemplatesCount={terminosTemplates.length}
-            isSyncingAran={isSyncingAran}
-            onSyncAranTemplates={(url) => handleSyncAranTemplates(false, url)}
             sheetShortcutUrls={sheetShortcutUrls}
             onSaveSheetShortcutUrls={handleSaveSheetShortcutUrls}
           />
