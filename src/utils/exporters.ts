@@ -10,6 +10,7 @@ import {
   formatDateSpanish,
   formatMoney,
   getCurrencyCode,
+  normalizeSpreadsheetParagraphs,
 } from './formatters';
 import {
   rasterizeImageSrcForPdf,
@@ -43,7 +44,15 @@ export function exportProformaToJSON(data: ProformaData, totals: ComputedTotals)
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json;charset=utf-8',
   });
-  triggerDownload(blob, buildPdfFileName(data.consecutivo, data.clientProject.cliente, 'json'));
+  triggerDownload(
+    blob,
+    buildPdfFileName(
+      data.consecutivo,
+      data.clientProject.proyecto,
+      'json',
+      data.clientProject.cliente
+    )
+  );
 }
 
 function escapeCsvCell(value: string | number): string {
@@ -168,7 +177,15 @@ export function exportProformaToCSV(data: ProformaData, totals: ComputedTotals):
   const blob = new Blob(['\uFEFF' + csvContent], {
     type: 'text/csv;charset=utf-8;',
   });
-  triggerDownload(blob, buildPdfFileName(data.consecutivo, data.clientProject.cliente, 'csv'));
+  triggerDownload(
+    blob,
+    buildPdfFileName(
+      data.consecutivo,
+      data.clientProject.proyecto,
+      'csv',
+      data.clientProject.cliente
+    )
+  );
 }
 
 function fitLogoInBox(
@@ -888,8 +905,11 @@ export async function generateProformaPDF(
   doc.line(margin, y, margin + 45, y);
   y += 4.5;
 
-  const termParagraphs = data.terminosCondiciones
-    .split(/\n+/)
+  const normalizedTerminos = normalizeSpreadsheetParagraphs(
+    data.terminosCondiciones
+  );
+  const termParagraphs = normalizedTerminos
+    .split(/\n\s*\n+/)
     .map((p) => p.trim())
     .filter(Boolean);
 
@@ -898,11 +918,15 @@ export async function generateProformaPDF(
   doc.setTextColor(...charcoal);
 
   termParagraphs.forEach((para) => {
-    const wrapped = doc.splitTextToSize(para, contentWidth);
-    const needed = wrapped.length * 3.8 + 2.5;
-    ensureSpace(needed, 'Términos y Condiciones (cont.)');
-    doc.text(wrapped, margin, y);
-    y += needed;
+    const subLines = para.split('\n').map((l) => l.trim()).filter(Boolean);
+    subLines.forEach((subLine, sIdx) => {
+      const wrapped = doc.splitTextToSize(subLine, contentWidth);
+      const lineSpacing = sIdx === subLines.length - 1 ? 2.5 : 0.8;
+      const needed = wrapped.length * 3.8 + lineSpacing;
+      ensureSpace(needed, 'Términos y Condiciones (cont.)');
+      doc.text(wrapped, margin, y);
+      y += needed;
+    });
   });
 
   y += 4;
@@ -919,8 +943,32 @@ export async function generateProformaPDF(
   y += 5;
 
   data.specBlocks.forEach((block) => {
-    const contentLines = doc.splitTextToSize(block.contenido || '', contentWidth - 6);
-    const blockHeight = 11 + contentLines.length * 3.7 + 3;
+    const normalizedSpecBody = normalizeSpreadsheetParagraphs(
+      block.contenido || ''
+    );
+    const specParagraphs = normalizedSpecBody
+      .split(/\n\s*\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const renderedSpecRows: Array<{ text: string; extraGapAfter: number }> = [];
+    specParagraphs.forEach((para, pIdx) => {
+      const subLines = para.split('\n').map((l) => l.trim()).filter(Boolean);
+      subLines.forEach((subLine, sIdx) => {
+        const wrapped: string[] = doc.splitTextToSize(subLine, contentWidth - 4);
+        wrapped.forEach((wLine, wIdx) => {
+          const isLastOfLine = wIdx === wrapped.length - 1;
+          const isLastOfPara = sIdx === subLines.length - 1 && isLastOfLine;
+          const isLastOfBlock = pIdx === specParagraphs.length - 1 && isLastOfPara;
+          renderedSpecRows.push({
+            text: wLine,
+            extraGapAfter: isLastOfBlock ? 0 : isLastOfPara ? 1.8 : 0,
+          });
+        });
+      });
+    });
+
+    const blockHeight = 11 + renderedSpecRows.length * 3.7 + 3;
 
     // Si cabe completo en la página actual, o si no cabe, saltar de página para no cortar el título
     ensureSpace(Math.min(blockHeight, 48), 'Especificaciones Técnicas (cont.)');
@@ -947,10 +995,10 @@ export async function generateProformaPDF(
     doc.setFontSize(8);
     doc.setTextColor(...charcoal);
 
-    contentLines.forEach((line: string) => {
+    renderedSpecRows.forEach((row) => {
       ensureSpace(5, 'Especificaciones Técnicas (cont.)');
-      doc.text(line, margin + 2, y);
-      y += 3.7;
+      doc.text(row.text, margin + 2, y);
+      y += 3.7 + row.extraGapAfter;
     });
 
     y += 3.5;
@@ -1078,14 +1126,15 @@ export async function generateProformaPDF(
   y = (doc.lastAutoTable?.finalY ?? y + 36) + 8;
 
   if (data.notasFinales.trim()) {
+    const normalizedNote = normalizeSpreadsheetParagraphs(data.notasFinales);
     doc.setFillColor(...subtleBg);
     doc.setDrawColor(...lightBorder);
-    const wrappedNote = doc.splitTextToSize(data.notasFinales.trim(), contentWidth - 8);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.2);
+    const wrappedNote = doc.splitTextToSize(normalizedNote, contentWidth - 8);
     const noteH = wrappedNote.length * 4 + 7;
     ensureSpace(noteH + 40, 'Aceptación y Firmas');
     doc.roundedRect(margin, y, contentWidth, noteH, 1.5, 1.5, 'FD');
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.2);
     doc.setTextColor(...mutedText);
     doc.text(wrappedNote, margin + 4, y + 5.5);
     y += noteH + 10;
@@ -1246,8 +1295,9 @@ export async function generateProformaPDF(
 
   const fileName = buildPdfFileName(
     data.consecutivo,
-    data.clientProject.cliente,
-    'pdf'
+    data.clientProject.proyecto,
+    'pdf',
+    data.clientProject.cliente
   );
   doc.save(fileName);
   return { skippedExternalImages, fileName };

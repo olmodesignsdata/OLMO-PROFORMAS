@@ -45,6 +45,7 @@ import {
   readExcelWorkbookFile,
   SpreadsheetSheetNotFoundError,
 } from '../utils/googleSheets';
+import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 
 export type ClientDraftPayload = Omit<
   SavedClient,
@@ -79,6 +80,8 @@ interface ClientsViewProps {
     sheetNotFoundError?: SpreadsheetSheetNotFoundError;
   }>;
   onClearClientsSyncFeedback?: () => void;
+  clientsSheetUrl?: string;
+  onSaveClientsSheetUrl?: (url: string) => void;
 }
 
 const EMPTY_FORM: ClientDraftPayload = {
@@ -104,6 +107,8 @@ export function ClientsView({
   clientsSyncFeedback = null,
   onSyncClientsFromSheet,
   onClearClientsSyncFeedback,
+  clientsSheetUrl = '',
+  onSaveClientsSheetUrl,
 }: ClientsViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -592,6 +597,16 @@ export function ClientsView({
               {isRefreshingClients ? 'Refrescando...' : 'Refrescar'}
             </span>
           </button>
+
+          {onSaveClientsSheetUrl && (
+            <GoogleSheetShortcutButton
+              label="Abrir Sheet Clientes"
+              sheetUrl={
+                clientsSheetUrl.trim() || importConfig.sheetUrl.trim()
+              }
+              onSaveSheetUrl={onSaveClientsSheetUrl}
+            />
+          )}
 
           <button
             type="button"

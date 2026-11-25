@@ -2,12 +2,16 @@ import {
   DEFAULT_ARAN_APPS_SCRIPT_URL,
   DEFAULT_BANK_ACCOUNT,
   DEFAULT_CLIENTS_APPS_SCRIPT_URL,
+  DEFAULT_CLIENTS_SHEET_URL,
   DEFAULT_COMPANY_INFO,
   DEFAULT_OLMO_MAIN_LOGO,
   DEFAULT_PROFORMAS_APPS_SCRIPT_URL,
+  DEFAULT_PROFORMAS_SHEET_URL,
+  DEFAULT_SPECS_SHEET_URL,
   INITIAL_CONSECUTIVO,
 } from '../data/defaults';
 import {
+  AppNotification,
   AranSpecTemplate,
   BankAccountInfo,
   ClientsImportConfig,
@@ -15,10 +19,13 @@ import {
   CompanyInfo,
   GoogleSheetsConfig,
   LogoAsset,
+  NotificationStateRecord,
   ProductTemplate,
   ProformaData,
   SavedClient,
   SavedProformaRecord,
+  SheetShortcutUrls,
+  TerminoTemplate,
   ThemeMode,
 } from '../types/proforma';
 
@@ -38,6 +45,10 @@ const KEYS = {
   CLIENTS_IMPORT_CONFIG: 'olmo_proforma_clients_import_v1',
   REMOTE_HISTORY_CACHE: 'olmo_proforma_remote_history_v1',
   ARAN_TEMPLATES_CACHE: 'olmo_proforma_aran_templates_v1',
+  TERMINOS_TEMPLATES_CACHE: 'olmo_proforma_terminos_templates_v1',
+  SHEET_SHORTCUT_URLS: 'olmo_proforma_sheet_shortcut_urls_v1',
+  NOTIFICATIONS_ENABLED: 'olmo_proforma_notifications_enabled_v1',
+  NOTIFICATION_STATE: 'olmo_proforma_notification_state_v1',
   THEME_MODE: 'olmo_proforma_theme_mode_v1',
 };
 
@@ -563,6 +574,135 @@ export function loadThemeMode(): ThemeMode {
 export function saveThemeMode(mode: ThemeMode): void {
   try {
     localStorage.setItem(KEYS.THEME_MODE, mode);
+  } catch {
+    // ignore
+  }
+}
+
+export function loadTerminosTemplatesCache(): TerminoTemplate[] {
+  try {
+    const raw = localStorage.getItem(KEYS.TERMINOS_TEMPLATES_CACHE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is TerminoTemplate =>
+        Boolean(item) &&
+        typeof item.id === 'string' &&
+        typeof item.tipoCotizacion === 'string' &&
+        typeof item.titulo === 'string' &&
+        typeof item.contenido === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveTerminosTemplatesCache(templates: TerminoTemplate[]): void {
+  try {
+    localStorage.setItem(
+      KEYS.TERMINOS_TEMPLATES_CACHE,
+      JSON.stringify(templates)
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function loadSheetShortcutUrls(): SheetShortcutUrls {
+  try {
+    const raw = localStorage.getItem(KEYS.SHEET_SHORTCUT_URLS);
+    if (!raw) {
+      return {
+        proformasSheetUrl: DEFAULT_PROFORMAS_SHEET_URL,
+        clientsSheetUrl: DEFAULT_CLIENTS_SHEET_URL,
+        specsSheetUrl: DEFAULT_SPECS_SHEET_URL,
+      };
+    }
+    const parsed = JSON.parse(raw) as Partial<SheetShortcutUrls>;
+    return {
+      proformasSheetUrl:
+        typeof parsed.proformasSheetUrl === 'string' &&
+        parsed.proformasSheetUrl.trim()
+          ? parsed.proformasSheetUrl
+          : DEFAULT_PROFORMAS_SHEET_URL,
+      clientsSheetUrl:
+        typeof parsed.clientsSheetUrl === 'string' &&
+        parsed.clientsSheetUrl.trim()
+          ? parsed.clientsSheetUrl
+          : DEFAULT_CLIENTS_SHEET_URL,
+      specsSheetUrl:
+        typeof parsed.specsSheetUrl === 'string' &&
+        parsed.specsSheetUrl.trim()
+          ? parsed.specsSheetUrl
+          : DEFAULT_SPECS_SHEET_URL,
+    };
+  } catch {
+    return {
+      proformasSheetUrl: DEFAULT_PROFORMAS_SHEET_URL,
+      clientsSheetUrl: DEFAULT_CLIENTS_SHEET_URL,
+      specsSheetUrl: DEFAULT_SPECS_SHEET_URL,
+    };
+  }
+}
+
+export function saveSheetShortcutUrls(urls: SheetShortcutUrls): void {
+  try {
+    localStorage.setItem(KEYS.SHEET_SHORTCUT_URLS, JSON.stringify(urls));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadNotificationsEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem(KEYS.NOTIFICATIONS_ENABLED);
+    if (raw === null) return true;
+    return raw !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function saveNotificationsEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(KEYS.NOTIFICATIONS_ENABLED, String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadNotificationState(): NotificationStateRecord {
+  try {
+    const raw = localStorage.getItem(KEYS.NOTIFICATION_STATE);
+    if (!raw) {
+      return { readIds: [], dismissedIds: [], reminders: [] };
+    }
+    const parsed = JSON.parse(raw) as Partial<NotificationStateRecord>;
+    return {
+      readIds: Array.isArray(parsed.readIds)
+        ? parsed.readIds.filter((x): x is string => typeof x === 'string')
+        : [],
+      dismissedIds: Array.isArray(parsed.dismissedIds)
+        ? parsed.dismissedIds.filter((x): x is string => typeof x === 'string')
+        : [],
+      reminders: Array.isArray(parsed.reminders)
+        ? parsed.reminders.filter(
+            (r): r is AppNotification =>
+              Boolean(r) &&
+              typeof r.id === 'string' &&
+              typeof r.title === 'string'
+          )
+        : [],
+    };
+  } catch {
+    return { readIds: [], dismissedIds: [], reminders: [] };
+  }
+}
+
+export function saveNotificationState(state: NotificationStateRecord): void {
+  try {
+    localStorage.setItem(KEYS.NOTIFICATION_STATE, JSON.stringify(state));
   } catch {
     // ignore
   }

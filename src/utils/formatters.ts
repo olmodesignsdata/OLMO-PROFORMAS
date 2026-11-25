@@ -99,12 +99,62 @@ export function computeProformaTotals(data: ProformaData): ComputedTotals {
   };
 }
 
-export function buildPdfFileName(consecutivo: number, cliente: string, ext = 'pdf'): string {
-  const cleanClient = String(cliente ?? '')
-    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+export function buildPdfFileName(
+  consecutivo: number,
+  proyecto: string,
+  ext = 'pdf',
+  clienteFallback = ''
+): string {
+  const sanitize = (val: string) =>
+    String(val ?? '')
+      .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-  const clientPart = cleanClient || 'Cliente';
-  return `Proforma#${consecutivo} ${clientPart}.${ext}`;
+  const projectPart = sanitize(proyecto);
+  const clientPart = sanitize(clienteFallback);
+  const namePart = projectPart || clientPart || 'Cliente';
+  return `Proforma #${consecutivo} - ${namePart}.${ext}`;
+}
+
+/**
+ * Normaliza saltos de línea simples innecesarios y espacios múltiples provenientes
+ * de celdas de Excel o Google Sheets, preservando saltos de párrafo dobles (\n\n)
+ * y viñetas o listas numeradas para que los párrafos alcancen el margen derecho limpiamente.
+ */
+export function normalizeSpreadsheetParagraphs(rawText: string): string {
+  const raw = String(rawText ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+  if (!raw) return '';
+
+  const bulletOrListStart = /^(?:[•\-\*▪‣◦–—]|(?:\d{1,3}|[a-zA-Z])[.)]\s+)/;
+  const paragraphs = raw.split(/\n\s*\n+/);
+
+  return paragraphs
+    .map((para) => {
+      const lines = para
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+        .filter((line) => line.length > 0);
+
+      if (lines.length === 0) return '';
+
+      const rebuilt: string[] = [];
+      lines.forEach((line, idx) => {
+        if (idx === 0) {
+          rebuilt.push(line);
+          return;
+        }
+        if (bulletOrListStart.test(line)) {
+          rebuilt.push(`\n${line}`);
+        } else {
+          rebuilt[rebuilt.length - 1] = `${rebuilt[rebuilt.length - 1]} ${line}`;
+        }
+      });
+      return rebuilt.join('');
+    })
+    .filter(Boolean)
+    .join('\n\n');
 }

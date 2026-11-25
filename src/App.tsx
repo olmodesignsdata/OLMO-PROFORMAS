@@ -23,6 +23,7 @@ import {
   ClientsImportSummary,
   ClientsView,
 } from './components/ClientsView';
+import { DashboardView } from './components/DashboardView';
 import { EditorPanel } from './components/EditorPanel';
 import { HistoryView } from './components/HistoryView';
 import { IntegrationView } from './components/IntegrationView';
@@ -33,10 +34,12 @@ import { getConnectionButtonClasses } from './utils/connectionStyles';
 import {
   createEmptyProductLine,
   createInitialProforma,
+  DEFAULT_NOTAS_FINALES,
   GRIFERIA_AUTO_FOOTER_LOGOS,
   isAutoGriferiaFooterLogo,
 } from './data/defaults';
 import {
+  AppNotification,
   AppSection,
   AranSpecTemplate,
   BankAccountInfo,
@@ -46,17 +49,20 @@ import {
   CompanyInfo,
   GoogleSheetsConfig,
   LogoAsset,
+  NotificationStateRecord,
   ProductLineItem,
   ProductTemplate,
   ProformaData,
   SavedClient,
   SavedProformaRecord,
+  SheetShortcutUrls,
+  TerminoTemplate,
   ThemeMode,
   WorkspaceLayoutMode,
 } from './types/proforma';
 import {
-  fetchAranSpecTemplatesFromAppsScript,
   fetchClientsFromAppsScript,
+  fetchEspecificacionesYTerminosFromAppsScript,
   fetchRemoteProformasFromAppsScript,
   parseProformaFromJsonInput,
   sendProformaToWebhook,
@@ -89,12 +95,16 @@ import {
   loadFooterLogos,
   loadGoogleSheetsConfig,
   loadMainLogo,
+  loadNotificationsEnabled,
+  loadNotificationState,
   loadProductTemplates,
   loadRemoteHistoryCache,
   loadSavedBankDefaults,
   loadSavedClients,
   loadSavedCompanyDefaults,
   loadSavedProformas,
+  loadSheetShortcutUrls,
+  loadTerminosTemplatesCache,
   loadThemeMode,
   reserveNextConsecutivo,
   saveAranTemplatesCache,
@@ -106,10 +116,14 @@ import {
   saveFooterLogos,
   saveGoogleSheetsConfig,
   saveMainLogo,
+  saveNotificationsEnabled,
+  saveNotificationState,
   saveProductTemplates,
   saveProformaToHistory,
   saveRemoteHistoryCache,
   saveSavedClients,
+  saveSheetShortcutUrls,
+  saveTerminosTemplatesCache,
   saveThemeMode,
   setNextConsecutivo,
 } from './utils/storage';
@@ -133,11 +147,14 @@ function normalizeProformaClientContact(data: ProformaData): ProformaData {
   const needsTypeOrRefs =
     !data.proformaType || !Array.isArray(data.visualReferences);
 
+  const hasMissingNotasFinales = typeof data.notasFinales !== 'string';
+
   if (
     typeof cp.telefono === 'string' &&
     typeof cp.correo === 'string' &&
     !hasLegacyClientSigner &&
-    !needsTypeOrRefs
+    !needsTypeOrRefs &&
+    !hasMissingNotasFinales
   ) {
     return data;
   }
@@ -166,6 +183,9 @@ function normalizeProformaClientContact(data: ProformaData): ProformaData {
     visualReferences: Array.isArray(data.visualReferences)
       ? data.visualReferences
       : [],
+    notasFinales: hasMissingNotasFinales
+      ? DEFAULT_NOTAS_FINALES
+      : data.notasFinales,
     clientProject: {
       ...cp,
       telefono,
@@ -368,6 +388,17 @@ export default function App() {
   const [aranTemplates, setAranTemplates] = useState<AranSpecTemplate[]>(() =>
     loadAranTemplatesCache()
   );
+  const [terminosTemplates, setTerminosTemplates] = useState<TerminoTemplate[]>(
+    () => loadTerminosTemplatesCache()
+  );
+  const [sheetShortcutUrls, setSheetShortcutUrls] = useState<SheetShortcutUrls>(
+    () => loadSheetShortcutUrls()
+  );
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() =>
+    loadNotificationsEnabled()
+  );
+  const [notificationState, setNotificationState] =
+    useState<NotificationStateRecord>(() => loadNotificationState());
   const [isSyncingAran, setIsSyncingAran] = useState(false);
   const [isSyncingClients, setIsSyncingClients] = useState(false);
   const [clientsSyncFeedback, setClientsSyncFeedback] = useState<{
@@ -1330,7 +1361,7 @@ export default function App() {
 
       if (!targetUrl) {
         const msg =
-          'Falta configurar la URL de Google Apps Script (/exec) para la hoja "ARAN" en Integración.';
+          'Falta configurar la URL de Google Apps Script (/exec) para "ESPECIFICACIONES" en Integración.';
         const nextCfg: CloudSyncConfig = {
           ...currentConfig,
           aranScriptUrl: '',
@@ -1345,18 +1376,36 @@ export default function App() {
 
       setIsSyncingAran(true);
       try {
-        const rows = await fetchAranSpecTemplatesFromAppsScript(
+        const result = await fetchEspecificacionesYTerminosFromAppsScript(
           targetUrl,
           currentConfig.secretToken
         );
+        const rows = result.specs;
+        const terminosRows = result.terminos;
         const syncedAt = new Date().toISOString();
+
         setAranTemplates(rows);
         saveAranTemplatesCache(rows);
 
+        setTerminosTemplates(terminosRows);
+        saveTerminosTemplatesCache(terminosRows);
+
+        if (result.spreadsheetUrl) {
+          setSheetShortcutUrls((prev) => {
+            if (prev.specsSheetUrl.trim()) return prev;
+            const next = {
+              ...prev,
+              specsSheetUrl: result.spreadsheetUrl!,
+            };
+            saveSheetShortcutUrls(next);
+            return next;
+          });
+        }
+
         const msg =
-          rows.length > 0
-            ? `Se cargaron ${rows.length} plantilla(s) desde la hoja "ARAN".`
-            : 'Conexión correcta con la hoja "ARAN", pero aún no tiene filas con datos.';
+          rows.length > 0 || terminosRows.length > 0
+            ? `Se cargaron ${rows.length} especificación(es) y ${terminosRows.length} término(s) desde ESPECIFICACIONES / TERMINOS_Y_CONDICIONES.`
+            : 'Conexión correcta con ESPECIFICACIONES, pero aún no tiene filas con datos.';
         const latest = latestCloudConfigRef.current;
         const nextCfg: CloudSyncConfig = {
           ...latest,
@@ -1373,7 +1422,7 @@ export default function App() {
         const msg =
           err instanceof Error
             ? err.message
-            : 'No se pudo consultar la hoja "ARAN".';
+            : 'No se pudo consultar la hoja "ESPECIFICACIONES".';
         const latest = latestCloudConfigRef.current;
         const nextCfg: CloudSyncConfig = {
           ...latest,
@@ -1617,6 +1666,181 @@ export default function App() {
     saveThemeMode(next);
   };
 
+  const handleSaveSheetShortcutUrls = useCallback((next: SheetShortcutUrls) => {
+    setSheetShortcutUrls(next);
+    saveSheetShortcutUrls(next);
+  }, []);
+
+  const handleToggleNotificationsEnabled = useCallback(
+    (enabled: boolean) => {
+      setNotificationsEnabled(enabled);
+      saveNotificationsEnabled(enabled);
+      showToast(
+        enabled
+          ? 'Notificaciones de la barra superior activadas.'
+          : 'Notificaciones de la barra superior desactivadas.'
+      );
+    },
+    [showToast]
+  );
+
+  const handleMarkNotificationRead = useCallback((id: string) => {
+    setNotificationState((prev) => {
+      if (prev.readIds.includes(id)) return prev;
+      const next: NotificationStateRecord = {
+        ...prev,
+        readIds: [...prev.readIds, id],
+      };
+      saveNotificationState(next);
+      return next;
+    });
+  }, []);
+
+  const handleDismissNotification = useCallback((id: string) => {
+    setNotificationState((prev) => {
+      const isReminder = prev.reminders.some((r) => r.id === id);
+      const next: NotificationStateRecord = {
+        reminders: isReminder
+          ? prev.reminders.filter((r) => r.id !== id)
+          : prev.reminders,
+        readIds: prev.readIds.filter((rid) => rid !== id),
+        dismissedIds: isReminder
+          ? prev.dismissedIds
+          : prev.dismissedIds.includes(id)
+            ? prev.dismissedIds
+            : [...prev.dismissedIds, id],
+      };
+      saveNotificationState(next);
+      return next;
+    });
+  }, []);
+
+  const handleAddReminder = useCallback(
+    (title: string, message: string) => {
+      const reminder: AppNotification = {
+        id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kind: 'reminder',
+        source: 'user',
+        title,
+        message,
+        createdAt: new Date().toISOString(),
+        read: false,
+      };
+      setNotificationState((prev) => {
+        const next: NotificationStateRecord = {
+          ...prev,
+          reminders: [reminder, ...prev.reminders],
+        };
+        saveNotificationState(next);
+        return next;
+      });
+      if (!notificationsEnabled) {
+        setNotificationsEnabled(true);
+        saveNotificationsEnabled(true);
+      }
+      showToast(`Recordatorio "${title}" guardado.`);
+    },
+    [notificationsEnabled, showToast]
+  );
+
+  const appNotifications = useMemo<AppNotification[]>(() => {
+    const items: AppNotification[] = [];
+    const nowIso = new Date().toISOString();
+
+    if (totals.total <= 0) {
+      items.push({
+        id: `sys-zero-total-${proforma.consecutivo}`,
+        kind: 'warning',
+        source: 'system',
+        title: `Proforma Nº ${proforma.consecutivo} en cero o negativo`,
+        message: `El total general actual es ${formatMoney(totals.total, proforma.clientProject.moneda)}. Revisa los montos antes de exportar PDF.`,
+        createdAt: nowIso,
+        read: false,
+        actionSection: 'editor',
+        actionLabel: 'Ir al Editor',
+      });
+    }
+
+    if (cloudConfig.lastStatus === 'error') {
+      items.push({
+        id: 'sys-proformas-send-error',
+        kind: 'error',
+        source: 'system',
+        title: 'Error de sincronización con PROFORMAS',
+        message:
+          cloudConfig.lastMessage ||
+          'No se pudo enviar la última proforma al Google Sheet.',
+        createdAt: nowIso,
+        read: false,
+        actionSection: 'integration',
+        actionLabel: 'Revisar Integración',
+      });
+    }
+
+    if (remoteHistoryFeedback?.ok === false) {
+      items.push({
+        id: 'sys-proformas-fetch-error',
+        kind: 'error',
+        source: 'system',
+        title: 'Fallo al consultar hoja PROFORMAS',
+        message: remoteHistoryFeedback.message,
+        createdAt: nowIso,
+        read: false,
+        actionSection: 'integration',
+        actionLabel: 'Revisar conexión',
+      });
+    }
+
+    if (cloudConfig.aranLastStatus === 'error') {
+      items.push({
+        id: 'sys-specs-sync-error',
+        kind: 'error',
+        source: 'system',
+        title: 'Fallo en ESPECIFICACIONES / Términos',
+        message:
+          cloudConfig.aranLastMessage ||
+          'Error al consultar las plantillas de especificaciones.',
+        createdAt: nowIso,
+        read: false,
+        actionSection: 'integration',
+        actionLabel: 'Ir a Integración',
+      });
+    }
+
+    if (clientsSyncFeedback?.ok === false) {
+      items.push({
+        id: 'sys-clients-sync-error',
+        kind: 'error',
+        source: 'system',
+        title: 'Error al sincronizar Clientes',
+        message: clientsSyncFeedback.message,
+        createdAt: nowIso,
+        read: false,
+        actionSection: 'clients',
+        actionLabel: 'Ir a Clientes',
+      });
+    }
+
+    const merged = [...notificationState.reminders, ...items];
+    return merged
+      .filter((n) => !notificationState.dismissedIds.includes(n.id))
+      .map((n) => ({
+        ...n,
+        read: notificationState.readIds.includes(n.id),
+      }));
+  }, [
+    totals.total,
+    proforma.consecutivo,
+    proforma.clientProject.moneda,
+    cloudConfig.lastStatus,
+    cloudConfig.lastMessage,
+    cloudConfig.aranLastStatus,
+    cloudConfig.aranLastMessage,
+    remoteHistoryFeedback,
+    clientsSyncFeedback,
+    notificationState,
+  ]);
+
   const isSheetWebhookConnected =
     Boolean(cloudConfig.webhookUrl.trim()) && cloudConfig.lastStatus !== 'error';
 
@@ -1630,6 +1854,12 @@ export default function App() {
         clientsCount={savedClients.length}
         themeMode={themeMode}
         onChangeThemeMode={handleChangeThemeMode}
+        notificationsEnabled={notificationsEnabled}
+        onToggleNotificationsEnabled={handleToggleNotificationsEnabled}
+        notifications={appNotifications}
+        onMarkNotificationRead={handleMarkNotificationRead}
+        onDismissNotification={handleDismissNotification}
+        onAddReminder={handleAddReminder}
       />
 
       {/* Notificación flotante sobria */}
@@ -1667,9 +1897,24 @@ export default function App() {
                 {totals.unidadResumen}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono font-semibold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
+              <span
+                className={`font-mono font-semibold tabular-nums ${
+                  totals.total <= 0
+                    ? 'text-amber-700 dark:text-amber-400'
+                    : 'text-[#8C5A32] dark:text-[#D59B69]'
+                }`}
+              >
                 Total: {formatMoney(totals.total, proforma.clientProject.moneda)}
               </span>
+              {totals.total <= 0 && (
+                <span
+                  title="La cotización tiene total menor o igual a 0. Revisa antes de exportar PDF."
+                  className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-700/80 dark:bg-amber-950/60 dark:text-amber-200"
+                >
+                  <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>Total ≤ 0</span>
+                </span>
+              )}
               <span aria-hidden="true">·</span>
               <span
                 title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
@@ -1958,6 +2203,14 @@ export default function App() {
                 onSaveClientToDirectory={handleSaveClientFromEditor}
                 onGoToClientsDirectory={() => setActiveSection('clients')}
                 aranTemplates={aranTemplates}
+                terminosTemplates={terminosTemplates}
+                specsSheetUrl={sheetShortcutUrls.specsSheetUrl}
+                onSaveSpecsSheetUrl={(url) =>
+                  handleSaveSheetShortcutUrls({
+                    ...sheetShortcutUrls,
+                    specsSheetUrl: url,
+                  })
+                }
                 aranScriptUrl={cloudConfig.aranScriptUrl ?? ''}
                 aranLastStatus={cloudConfig.aranLastStatus}
                 aranLastMessage={cloudConfig.aranLastMessage}
@@ -2010,6 +2263,13 @@ export default function App() {
             clientsSyncFeedback={clientsSyncFeedback}
             onSyncClientsFromSheet={() => handleSyncClientsFromSheet(false)}
             onClearClientsSyncFeedback={() => setClientsSyncFeedback(null)}
+            clientsSheetUrl={sheetShortcutUrls.clientsSheetUrl}
+            onSaveClientsSheetUrl={(url) =>
+              handleSaveSheetShortcutUrls({
+                ...sheetShortcutUrls,
+                clientsSheetUrl: url,
+              })
+            }
           />
         )}
 
@@ -2034,6 +2294,13 @@ export default function App() {
             onGoToEditor={() => setActiveSection('editor')}
             onNewProforma={handleRequestNewProforma}
             onImportDraftFile={(file) => void handleImportDraftFile(file)}
+            proformasSheetUrl={sheetShortcutUrls.proformasSheetUrl}
+            onSaveProformasSheetUrl={(url) =>
+              handleSaveSheetShortcutUrls({
+                ...sheetShortcutUrls,
+                proformasSheetUrl: url,
+              })
+            }
           />
         )}
 
@@ -2045,8 +2312,21 @@ export default function App() {
             onSaveConfig={handleSaveCloudConfig}
             onDownloadPDF={handleDownloadPDF}
             aranTemplatesCount={aranTemplates.length}
+            terminosTemplatesCount={terminosTemplates.length}
             isSyncingAran={isSyncingAran}
             onSyncAranTemplates={(url) => handleSyncAranTemplates(false, url)}
+            sheetShortcutUrls={sheetShortcutUrls}
+            onSaveSheetShortcutUrls={handleSaveSheetShortcutUrls}
+          />
+        )}
+
+        {activeSection === 'dashboard' && (
+          <DashboardView
+            records={history}
+            remoteRecords={remoteHistory}
+            themeMode={themeMode}
+            onGoToHistory={() => setActiveSection('history')}
+            onGoToEditor={() => setActiveSection('editor')}
           />
         )}
       </main>

@@ -22,6 +22,7 @@ import {
   CloudSyncConfig,
   ComputedTotals,
   ProformaData,
+  SheetShortcutUrls,
 } from '../types/proforma';
 import {
   buildCloudPayload,
@@ -39,10 +40,13 @@ interface IntegrationViewProps {
   onSaveConfig: (next: CloudSyncConfig) => void;
   onDownloadPDF: () => Promise<void> | void;
   aranTemplatesCount: number;
+  terminosTemplatesCount?: number;
   isSyncingAran: boolean;
   onSyncAranTemplates: (
     overrideUrl?: string
   ) => Promise<{ ok: boolean; message: string; count: number }>;
+  sheetShortcutUrls: SheetShortcutUrls;
+  onSaveSheetShortcutUrls: (next: SheetShortcutUrls) => void;
 }
 
 export function IntegrationView({
@@ -52,8 +56,11 @@ export function IntegrationView({
   onSaveConfig,
   onDownloadPDF,
   aranTemplatesCount,
+  terminosTemplatesCount = 0,
   isSyncingAran,
   onSyncAranTemplates,
+  sheetShortcutUrls,
+  onSaveSheetShortcutUrls,
 }: IntegrationViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -141,12 +148,12 @@ export function IntegrationView({
     };
     setDraftConfig(cleared);
     onSaveConfig(cleared);
-    setFeedback({
-      ok: true,
-      message:
-        'Se limpió la URL de la hoja "ARAN". Pega una nueva o restaura la predeterminada.',
-    });
-  };
+      setFeedback({
+        ok: true,
+        message:
+          'Se limpió la URL de la hoja "ESPECIFICACIONES". Pega una nueva o restaura la predeterminada.',
+      });
+    };
 
   const handleRestoreDefaultAranUrl = () => {
     if (isLocked) return;
@@ -160,7 +167,7 @@ export function IntegrationView({
     onSaveConfig(restored);
     setFeedback({
       ok: true,
-      message: `URL predeterminada de ARAN restaurada: ${DEFAULT_ARAN_APPS_SCRIPT_URL}`,
+      message: `URL predeterminada de ESPECIFICACIONES restaurada: ${DEFAULT_ARAN_APPS_SCRIPT_URL}`,
     });
   };
 
@@ -227,8 +234,9 @@ export function IntegrationView({
 
   const expectedPdfName = buildPdfFileName(
     proforma.consecutivo,
-    proforma.clientProject.cliente,
-    'pdf'
+    proforma.clientProject.proyecto,
+    'pdf',
+    proforma.clientProject.cliente
   );
 
   const samplePayload = buildCloudPayload(
@@ -473,11 +481,11 @@ export function IntegrationView({
                 </span>
               </label>
 
-              {/* Configuración del script de la hoja ARAN */}
+              {/* Configuración del script de ESPECIFICACIONES y TERMINOS_Y_CONDICIONES */}
               <div className="space-y-3 border-t border-[#E5E4DF] pt-4 dark:border-zinc-800">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-                    Script Hoja &ldquo;ARAN&rdquo; (Especificaciones Técnicas)
+                    Script Hojas &ldquo;ESPECIFICACIONES&rdquo; y &ldquo;TERMINOS_Y_CONDICIONES&rdquo;
                   </span>
                   <span
                     className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold ${
@@ -501,7 +509,7 @@ export function IntegrationView({
                         className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
                         aria-hidden="true"
                       />
-                      <span>URL ARAN configurada actualmente:</span>
+                      <span>URL ESPECIFICACIONES configurada actualmente:</span>
                     </span>
                     <div className="flex items-center gap-1.5">
                       {configuredAranUrl !== DEFAULT_ARAN_APPS_SCRIPT_URL && (
@@ -542,14 +550,20 @@ export function IntegrationView({
                     </p>
                   ) : (
                     <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                      Sin URL configurada para la hoja &ldquo;ARAN&rdquo;. Pega la URL /exec abajo o restaura la predeterminada.
+                      Sin URL configurada para &ldquo;ESPECIFICACIONES&rdquo;. Pega la URL /exec abajo o restaura la predeterminada.
                     </p>
                   )}
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
                     <span>
-                      Plantillas ARAN disponibles:{' '}
-                      <strong className="font-mono text-zinc-700 dark:text-zinc-200">
+                      Especificaciones disponibles:{' '}
+                      <strong className="font-mono text-zinc-700 dark:text-zinc-200 tabular-nums">
                         {aranTemplatesCount}
+                      </strong>
+                    </span>
+                    <span>
+                      Términos disponibles:{' '}
+                      <strong className="font-mono text-zinc-700 dark:text-zinc-200 tabular-nums">
+                        {terminosTemplatesCount}
                       </strong>
                     </span>
                     {draftConfig.aranLastSyncedAt && (
@@ -570,7 +584,7 @@ export function IntegrationView({
                     htmlFor="aran-script-url"
                     className="mb-1.5 block text-xs font-medium text-zinc-600 dark:text-zinc-400"
                   >
-                    URL de Apps Script para hoja &ldquo;ARAN&rdquo; (/exec)
+                    URL de Apps Script para &ldquo;ESPECIFICACIONES&rdquo; y &ldquo;TERMINOS_Y_CONDICIONES&rdquo; (/exec)
                   </label>
                   <input
                     id="aran-script-url"
@@ -593,6 +607,95 @@ export function IntegrationView({
                         : 'bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100'
                     }`}
                   />
+                </div>
+              </div>
+
+              {/* Accesos directos a Google Sheets */}
+              <div className="space-y-3 border-t border-[#E5E4DF] pt-4 dark:border-zinc-800">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    Accesos Directos a Google Sheets
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2.5">
+                  <div>
+                    <label
+                      htmlFor="shortcut-proformas-url"
+                      className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
+                    >
+                      Enlace directo Sheet Proformas
+                    </label>
+                    <input
+                      id="shortcut-proformas-url"
+                      type="url"
+                      disabled={isLocked}
+                      placeholder="https://docs.google.com/spreadsheets/d/..."
+                      value={sheetShortcutUrls.proformasSheetUrl}
+                      onChange={(e) =>
+                        onSaveSheetShortcutUrls({
+                          ...sheetShortcutUrls,
+                          proformasSheetUrl: e.target.value,
+                        })
+                      }
+                      className={`w-full rounded-md border border-[#DCDAD3] px-3 py-1.5 font-mono text-xs placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none dark:border-zinc-700 dark:placeholder:text-zinc-500 ${
+                        isLocked
+                          ? 'cursor-not-allowed bg-zinc-100 text-zinc-500 dark:bg-zinc-800/70 dark:text-zinc-400'
+                          : 'bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100'
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="shortcut-clients-url"
+                      className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
+                    >
+                      Enlace directo Sheet Clientes
+                    </label>
+                    <input
+                      id="shortcut-clients-url"
+                      type="url"
+                      disabled={isLocked}
+                      placeholder="https://docs.google.com/spreadsheets/d/..."
+                      value={sheetShortcutUrls.clientsSheetUrl}
+                      onChange={(e) =>
+                        onSaveSheetShortcutUrls({
+                          ...sheetShortcutUrls,
+                          clientsSheetUrl: e.target.value,
+                        })
+                      }
+                      className={`w-full rounded-md border border-[#DCDAD3] px-3 py-1.5 font-mono text-xs placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none dark:border-zinc-700 dark:placeholder:text-zinc-500 ${
+                        isLocked
+                          ? 'cursor-not-allowed bg-zinc-100 text-zinc-500 dark:bg-zinc-800/70 dark:text-zinc-400'
+                          : 'bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100'
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="shortcut-specs-url"
+                      className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
+                    >
+                      Enlace directo Sheet Especificaciones
+                    </label>
+                    <input
+                      id="shortcut-specs-url"
+                      type="url"
+                      disabled={isLocked}
+                      placeholder="https://docs.google.com/spreadsheets/d/..."
+                      value={sheetShortcutUrls.specsSheetUrl}
+                      onChange={(e) =>
+                        onSaveSheetShortcutUrls({
+                          ...sheetShortcutUrls,
+                          specsSheetUrl: e.target.value,
+                        })
+                      }
+                      className={`w-full rounded-md border border-[#DCDAD3] px-3 py-1.5 font-mono text-xs placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none dark:border-zinc-700 dark:placeholder:text-zinc-500 ${
+                        isLocked
+                          ? 'cursor-not-allowed bg-zinc-100 text-zinc-500 dark:bg-zinc-800/70 dark:text-zinc-400'
+                          : 'bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100'
+                      }`}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -662,8 +765,8 @@ export function IntegrationView({
               disabled={isSyncingAran}
               title={
                 isAranConnected
-                  ? 'Conectado: consultar y recargar filas desde la hoja ARAN'
-                  : 'Sin URL o error de conexión en ARAN: revisa la URL del script'
+                  ? 'Conectado: consultar y recargar ESPECIFICACIONES y TERMINOS_Y_CONDICIONES desde Google Sheets'
+                  : 'Sin URL o error de conexión en ESPECIFICACIONES: revisa la URL del script'
               }
               className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAranConnected, 'outline')}`}
             >
@@ -673,7 +776,9 @@ export function IntegrationView({
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
               )}
               <span>
-                {isSyncingAran ? 'Cargando ARAN...' : 'Cargar / Probar ARAN'}
+                {isSyncingAran
+                  ? 'Cargando Especificaciones...'
+                  : 'Cargar / Probar Especificaciones'}
               </span>
             </button>
 

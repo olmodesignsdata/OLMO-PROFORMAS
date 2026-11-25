@@ -7,6 +7,7 @@ import {
   ProformaData,
   ProformaType,
   SavedProformaRecord,
+  TerminoTemplate,
 } from '../types/proforma';
 import { computeProformaTotals } from './formatters';
 import { ClientImportRow } from './googleSheets';
@@ -74,7 +75,12 @@ function doGet(e) {
       rows.push(obj);
     }
 
-    return jsonResponse({ ok: true, sheet: sheetName, rows: rows });
+    return jsonResponse({
+      ok: true,
+      sheet: sheetName,
+      spreadsheetUrl: ss.getUrl(),
+      rows: rows
+    });
   } catch (err) {
     return jsonResponse({ ok: false, error: err.toString() });
   }
@@ -165,7 +171,7 @@ function doPost(e) {
       p.clientProject.telefono || "",
       p.clientProject.correo || "",
       p.clientProject.ubicacion,
-      p.clientProject.proyecto,
+      payload.proyecto || p.clientProject.proyecto || "",
       p.clientProject.validez,
       p.clientProject.moneda,
       t.unidadResumen,
@@ -205,6 +211,7 @@ export interface CloudSyncPayload {
   event: 'proforma_saved';
   sentAt: string;
   token?: string;
+  proyecto: string;
   proforma: ProformaData;
   totales: ComputedTotals;
 }
@@ -218,6 +225,7 @@ export function buildCloudPayload(
     event: 'proforma_saved',
     sentAt: new Date().toISOString(),
     ...(secretToken ? { token: secretToken } : {}),
+    proyecto: (proforma.clientProject.proyecto ?? '').trim(),
     proforma,
     totales,
   };
@@ -849,6 +857,12 @@ function rowToSavedProformaRecord(
     if (!hydrated.clientProject.cliente && clienteCol) {
       hydrated.clientProject.cliente = clienteCol;
     }
+    const proyectoCol = String(
+      pickRowValue(lookup, ['Proyecto', 'Obra']) ?? ''
+    ).trim();
+    if (!hydrated.clientProject.proyecto && proyectoCol) {
+      hydrated.clientProject.proyecto = proyectoCol;
+    }
     const totals = computeProformaTotals(hydrated);
     const colTotal = parseLooseNumber(
       pickRowValue(lookup, ['Total', 'Monto Total']),
@@ -1165,20 +1179,179 @@ export async function fetchClientsFromAppsScript(
   return clients;
 }
 
-export async function fetchAranSpecTemplatesFromAppsScript(
-  aranScriptUrl: string,
+function extractCandidateArrayToObjects(
+  candidateList: unknown
+): Record<string, unknown>[] {
+  if (!Array.isArray(candidateList) || candidateList.length === 0) return [];
+  if (Array.isArray(candidateList[0])) {
+    const matrix = candidateList as unknown[][];
+    if (matrix.length < 2) return [];
+    const headers = (matrix[0] ?? []).map((h) => String(h ?? '').trim());
+    const out: Record<string, unknown>[] = [];
+    for (let r = 1; r < matrix.length; r++) {
+      const cells = matrix[r] ?? [];
+      if (cells.every((c) => !String(c ?? '').trim())) continue;
+      const rec: Record<string, unknown> = {};
+      headers.forEach((h, idx) => {
+        if (h) rec[h] = cells[idx];
+      });
+      out.push(rec);
+    }
+    return out;
+  }
+  return candidateList.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+  );
+}
+
+function parseTerminosRows(rawTerminos: unknown): TerminoTemplate[] {
+  const rows = extractCandidateArrayToObjects(rawTerminos);
+  const terminos: TerminoTemplate[] = [];
+
+  rows.forEach((row, idx) => {
+    const lookup = buildNormalizedRowLookup(row);
+    const tipoCotizacion = String(
+      pickRowValue(lookup, [
+        'tipoCotizacion',
+        'tipo_cotizacion',
+        'Tipo de Cotizacion',
+        'Tipo de Cotización',
+        'Tipo Cotizacion',
+        'Tipo',
+        'Categoria',
+        'Categoría',
+        'ProformaType',
+      ]) ?? ''
+    ).trim();
+    const titulo = String(
+      pickRowValue(lookup, [
+        'titulo',
+        'Título',
+        'Nombre',
+        'Title',
+        'Concepto',
+      ]) ?? ''
+    ).trim();
+    const contenido = String(
+      pickRowValue(lookup, [
+        'contenido',
+        'Contenido',
+        'Terminos',
+        'Términos',
+        'Terminos y Condiciones',
+        'Términos y Condiciones',
+        'Texto',
+        'Descripcion',
+        'Descripción',
+        'Content',
+      ]) ?? ''
+    ).trim();
+
+    if (!tipoCotizacion && !titulo && !contenido) return;
+
+    const safeTitulo =
+      titulo || tipoCotizacion || `Términos ${idx + 1}`;
+    terminos.push({
+      id: `term-${idx}-${normalizeRowKey(tipoCotizacion || safeTitulo).slice(0, 24) || idx}`,
+      tipoCotizacion,
+      titulo: safeTitulo,
+      contenido,
+    });
+  });
+
+  return terminos;
+}
+
+export function terminosMatchesProformaType(
+  rawTipoCotizacion: string,
+  targetType: ProformaType
+): boolean {
+  const norm = normalizeRowKey(rawTipoCotizacion);
+  if (!norm) return false;
+  if (targetType === 'mobiliario') {
+    return (
+      norm === 'mobiliario' ||
+      norm.includes('mobiliario') ||
+      norm.includes('mueble')
+    );
+  }
+  if (targetType === 'puertas') {
+    return norm === 'puertas' || norm.includes('puerta');
+  }
+  if (targetType === 'griferia') {
+    return (
+      norm === 'griferia' ||
+      norm.includes('grif') ||
+      norm.includes('sanit') ||
+      norm.includes('losa')
+    );
+  }
+  if (targetType === 'cielos_pisos') {
+    return (
+      norm === 'cielospisos' ||
+      norm.includes('cielo') ||
+      norm.includes('piso')
+    );
+  }
+  return false;
+}
+
+export function findBestTerminoForProformaType(
+  terminos: TerminoTemplate[],
+  targetType: ProformaType
+): TerminoTemplate | undefined {
+  if (!terminos.length) return undefined;
+  const exact = terminos.find((t) =>
+    terminosMatchesProformaType(t.tipoCotizacion, targetType)
+  );
+  if (exact) return exact;
+  return terminos.find((t) => {
+    const norm = normalizeRowKey(t.tipoCotizacion);
+    return !norm || norm === 'general' || norm === 'todos';
+  });
+}
+
+function extractSpreadsheetUrlFromGetResponse(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const candidates = [
+    obj.spreadsheetUrl,
+    obj.sheetUrl,
+    obj.spreadsheet_url,
+    obj.url,
+  ];
+  for (const cand of candidates) {
+    if (
+      typeof cand === 'string' &&
+      cand.trim().startsWith('https://docs.google.com/spreadsheets/')
+    ) {
+      return cand.trim();
+    }
+  }
+  return undefined;
+}
+
+export interface SpecsAndTerminosSyncResult {
+  specs: AranSpecTemplate[];
+  terminos: TerminoTemplate[];
+  spreadsheetUrl?: string;
+}
+
+export async function fetchEspecificacionesYTerminosFromAppsScript(
+  specsScriptUrl: string,
   secretToken?: string
-): Promise<AranSpecTemplate[]> {
-  const validated = validateHttpUrl(aranScriptUrl);
+): Promise<SpecsAndTerminosSyncResult> {
+  const validated = validateHttpUrl(specsScriptUrl);
   if (typeof validated === 'string') {
     throw new Error(
-      'Configura primero una URL válida de Google Apps Script (/exec) para la hoja "ARAN" en Integración.'
+      'Configura primero una URL válida de Google Apps Script (/exec) para la hoja "ESPECIFICACIONES" en Integración.'
     );
   }
 
   const getUrl = new URL(validated.toString());
   if (!getUrl.searchParams.has('sheet')) {
-    getUrl.searchParams.set('sheet', 'ARAN');
+    getUrl.searchParams.set('sheet', 'ESPECIFICACIONES');
   }
   if (secretToken?.trim() && !getUrl.searchParams.has('token')) {
     getUrl.searchParams.set('token', secretToken.trim());
@@ -1194,14 +1367,14 @@ export async function fetchAranSpecTemplatesFromAppsScript(
   } catch (err) {
     throw new Error(
       err instanceof Error
-        ? `No se pudo consultar la hoja "ARAN" (${err.message}). Verifica que el script esté publicado con acceso "Cualquier usuario".`
-        : 'No se pudo conectar con Google Apps Script para leer la hoja "ARAN".'
+        ? `No se pudo consultar la hoja "ESPECIFICACIONES" (${err.message}). Verifica que el script esté publicado con acceso "Cualquier usuario".`
+        : 'No se pudo conectar con Google Apps Script para leer la hoja "ESPECIFICACIONES".'
     );
   }
 
   if (!response.ok) {
     throw new Error(
-      `El Apps Script de "ARAN" respondió con estado HTTP ${response.status}.`
+      `El Apps Script de "ESPECIFICACIONES" respondió con estado HTTP ${response.status}.`
     );
   }
 
@@ -1212,7 +1385,7 @@ export async function fetchAranSpecTemplatesFromAppsScript(
     trimmedLower.startsWith('<html')
   ) {
     throw new Error(
-      'El script de "ARAN" devolvió una página HTML en lugar de JSON. Verifica que doGet(e) devuelva ContentService JSON con acceso "Cualquier usuario".'
+      'El script de "ESPECIFICACIONES" devolvió una página HTML en lugar de JSON. Verifica que doGet(e) devuelva ContentService JSON con acceso "Cualquier usuario".'
     );
   }
 
@@ -1221,7 +1394,7 @@ export async function fetchAranSpecTemplatesFromAppsScript(
     parsed = JSON.parse(text);
   } catch {
     throw new Error(
-      'La respuesta del Google Apps Script de "ARAN" no es un JSON válido.'
+      'La respuesta del Google Apps Script de "ESPECIFICACIONES" no es un JSON válido.'
     );
   }
 
@@ -1277,14 +1450,64 @@ export async function fetchAranSpecTemplatesFromAppsScript(
       return;
     }
 
-    const safeTitulo = titulo || subtitulo || `Bloque ARAN ${idx + 1}`;
+    const safeTitulo = titulo || subtitulo || `Especificación ${idx + 1}`;
     templates.push({
-      id: `aran-${idx}-${normalizeRowKey(safeTitulo).slice(0, 24) || idx}`,
+      id: `spec-sheet-${idx}-${normalizeRowKey(safeTitulo).slice(0, 24) || idx}`,
       titulo: safeTitulo,
       subtitulo,
       contenido,
     });
   });
 
-  return templates;
+  let terminos: TerminoTemplate[] = [];
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const rawTerminos =
+      obj.terminos ??
+      obj.terminosCondiciones ??
+      obj.terms ??
+      obj.TERMINOS_Y_CONDICIONES;
+    if (rawTerminos !== undefined) {
+      terminos = parseTerminosRows(rawTerminos);
+    } else {
+      // Respaldo opcional si el script requiere ?sheet=TERMINOS_Y_CONDICIONES por separado
+      try {
+        const termsUrl = new URL(validated.toString());
+        termsUrl.searchParams.set('sheet', 'TERMINOS_Y_CONDICIONES');
+        if (secretToken?.trim()) {
+          termsUrl.searchParams.set('token', secretToken.trim());
+        }
+        const termsRes = await fetch(termsUrl.toString(), {
+          method: 'GET',
+          mode: 'cors',
+          redirect: 'follow',
+        });
+        if (termsRes.ok) {
+          const termsText = await termsRes.text();
+          const termsJson = JSON.parse(termsText);
+          const termsRows = extractRowsArrayFromGetResponse(termsJson);
+          terminos = parseTerminosRows(termsRows);
+        }
+      } catch {
+        // Silencioso si el endpoint no soporta consulta separada
+      }
+    }
+  }
+
+  return {
+    specs: templates,
+    terminos,
+    spreadsheetUrl: extractSpreadsheetUrlFromGetResponse(parsed),
+  };
+}
+
+export async function fetchAranSpecTemplatesFromAppsScript(
+  aranScriptUrl: string,
+  secretToken?: string
+): Promise<AranSpecTemplate[]> {
+  const result = await fetchEspecificacionesYTerminosFromAppsScript(
+    aranScriptUrl,
+    secretToken
+  );
+  return result.specs;
 }

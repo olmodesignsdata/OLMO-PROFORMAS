@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   BookmarkPlus,
@@ -28,6 +29,7 @@ import { ChangeEvent, useMemo, useRef, useState } from 'react';
 import {
   CURRENCY_OPTIONS,
   DEFAULT_BANK_ACCOUNT,
+  DEFAULT_NOTAS_FINALES,
   DEFAULT_OLMO_MAIN_LOGO,
   DEFAULT_PAYMENT_SCHEDULE,
   DEFAULT_SPEC_BLOCKS,
@@ -48,10 +50,16 @@ import {
   ProformaType,
   SavedClient,
   SpecBlock,
+  TerminoTemplate,
   VisualReferenceItem,
 } from '../types/proforma';
+import { findBestTerminoForProformaType } from '../utils/cloudSync';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
-import { formatMoney, getCurrencyCode } from '../utils/formatters';
+import {
+  formatMoney,
+  getCurrencyCode,
+  normalizeSpreadsheetParagraphs,
+} from '../utils/formatters';
 import {
   DEFAULT_IMPORT_SHEET_NAME,
   fetchAndParseGoogleSheetProducts,
@@ -69,6 +77,7 @@ import {
   resolveAndValidateImageUrl,
 } from '../utils/logoUtils';
 import { ClientDraftPayload } from './ClientsView';
+import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 import { ResilientImage } from './ResilientImage';
 
 interface EditorPanelProps {
@@ -102,6 +111,9 @@ interface EditorPanelProps {
   ) => void;
   onGoToClientsDirectory: () => void;
   aranTemplates: AranSpecTemplate[];
+  terminosTemplates?: TerminoTemplate[];
+  specsSheetUrl?: string;
+  onSaveSpecsSheetUrl?: (url: string) => void;
   aranScriptUrl: string;
   aranLastStatus?: 'ok' | 'error';
   aranLastMessage?: string;
@@ -145,6 +157,9 @@ export function EditorPanel({
   onSaveClientToDirectory,
   onGoToClientsDirectory,
   aranTemplates,
+  terminosTemplates = [],
+  specsSheetUrl = '',
+  onSaveSpecsSheetUrl,
   aranScriptUrl,
   aranLastStatus,
   aranLastMessage,
@@ -179,6 +194,7 @@ export function EditorPanel({
   const [collapsedProductIds, setCollapsedProductIds] = useState<Record<string, boolean>>({});
   const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
   const [selectedAranByBlockId, setSelectedAranByBlockId] = useState<Record<string, string>>({});
+  const [selectedTerminoId, setSelectedTerminoId] = useState('');
 
   const [mainLogoUrlInput, setMainLogoUrlInput] = useState('');
   const [mainLogoUrlLoading, setMainLogoUrlLoading] = useState(false);
@@ -628,11 +644,23 @@ export function EditorPanel({
   };
 
   const handleChangeProformaType = (nextType: ProformaType) => {
+    const matchedTermino = findBestTerminoForProformaType(
+      terminosTemplates,
+      nextType
+    );
+
     onChange((prev) => {
       const prevType: ProformaType = prev.proformaType ?? 'mobiliario';
       return {
         ...prev,
         proformaType: nextType,
+        ...(matchedTermino
+          ? {
+              terminosCondiciones: normalizeSpreadsheetParagraphs(
+                matchedTermino.contenido
+              ),
+            }
+          : {}),
         items: prev.items.map((item) => {
           if (nextType === 'cielos_pisos') {
             const qty = Number(item.cantidad) > 0 ? Number(item.cantidad) : 1;
@@ -667,6 +695,25 @@ export function EditorPanel({
         }),
       };
     });
+
+    if (matchedTermino) {
+      setSelectedTerminoId(matchedTermino.id);
+      flashBanner(
+        `Términos y condiciones actualizados desde "${matchedTermino.titulo}".`
+      );
+    }
+  };
+
+  const applyTerminoTemplate = (terminoId: string) => {
+    setSelectedTerminoId(terminoId);
+    if (!terminoId) return;
+    const tpl = terminosTemplates.find((item) => item.id === terminoId);
+    if (!tpl) return;
+    onChange((prev) => ({
+      ...prev,
+      terminosCondiciones: normalizeSpreadsheetParagraphs(tpl.contenido),
+    }));
+    flashBanner(`Términos "${tpl.titulo}" cargados desde TERMINOS_Y_CONDICIONES.`);
   };
 
   const updateItem = (
@@ -1072,12 +1119,12 @@ export function EditorPanel({
               ...b,
               titulo: tpl.titulo,
               subtitulo: tpl.subtitulo,
-              contenido: tpl.contenido,
+              contenido: normalizeSpreadsheetParagraphs(tpl.contenido),
             }
           : b
       ),
     }));
-    flashBanner(`Plantilla "${tpl.titulo}" aplicada desde la hoja ARAN.`);
+    flashBanner(`Plantilla "${tpl.titulo}" aplicada desde ESPECIFICACIONES.`);
   };
 
   const addSpecBlockFromAran = (templateId: string) => {
@@ -1089,7 +1136,7 @@ export function EditorPanel({
       id: newId,
       titulo: tpl.titulo,
       subtitulo: tpl.subtitulo,
-      contenido: tpl.contenido,
+      contenido: normalizeSpreadsheetParagraphs(tpl.contenido),
     };
     setSelectedAranByBlockId((prev) => ({
       ...prev,
@@ -1099,7 +1146,7 @@ export function EditorPanel({
       ...prev,
       specBlocks: [...prev.specBlocks, newBlock],
     }));
-    flashBanner(`Bloque "${tpl.titulo}" agregado desde la hoja ARAN.`);
+    flashBanner(`Bloque "${tpl.titulo}" agregado desde ESPECIFICACIONES.`);
   };
 
   const updateBank = (field: keyof BankAccountInfo, value: string) => {
@@ -3047,11 +3094,36 @@ export function EditorPanel({
                 </div>
                 <div>
                   <span className="block text-zinc-500 dark:text-zinc-400">Total Cotizado</span>
-                  <span className="mt-1 block font-mono text-base font-bold text-[#8C5A32] dark:text-amber-400 tabular-nums">
-                    {formatMoney(totals.total, data.clientProject.moneda)}
-                  </span>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <span
+                      className={`font-mono text-base font-bold tabular-nums ${
+                        totals.total <= 0
+                          ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-[#8C5A32] dark:text-amber-400'
+                      }`}
+                    >
+                      {formatMoney(totals.total, data.clientProject.moneda)}
+                    </span>
+                    {totals.total <= 0 && (
+                      <span
+                        role="status"
+                        className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-700/80 dark:bg-amber-950/60 dark:text-amber-200"
+                      >
+                        <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span>Total en cero o negativo</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
+              {totals.total <= 0 && (
+                <div className="mt-3 flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800/80 dark:bg-amber-950/50 dark:text-amber-200">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+                  <span>
+                    Advertencia: el total general de la cotización es menor o igual a 0. Revisa las cantidades o precios antes de exportar el PDF.
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -3256,24 +3328,66 @@ export function EditorPanel({
         {activeTab === 'terminos' && (
           <div className="space-y-6">
             <div>
-              <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Términos y Condiciones
                 </h2>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    setSelectedTerminoId('');
                     onChange((prev) => ({
                       ...prev,
                       terminosCondiciones: DEFAULT_TERMINOS_CONDICIONES,
-                    }))
-                  }
+                    }));
+                  }}
                   className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
                 >
                   <RotateCcw className="h-3 w-3" aria-hidden="true" />
                   <span>Restaurar predeterminados</span>
                 </button>
               </div>
+
+              <div className="mb-2.5 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-1.5 dark:border-zinc-800 dark:bg-zinc-800/50">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label
+                    htmlFor="terminos-template-select"
+                    className="text-xs font-semibold text-zinc-800 dark:text-zinc-200"
+                  >
+                    Cargar desde pestaña &ldquo;TERMINOS_Y_CONDICIONES&rdquo; (según tipo o manual)
+                  </label>
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
+                    {terminosTemplates.length > 0
+                      ? `${terminosTemplates.length} plantilla(s)`
+                      : isSyncingAran
+                        ? 'Consultando...'
+                        : 'Sin filas cargadas'}
+                  </span>
+                </div>
+                <select
+                  id="terminos-template-select"
+                  value={selectedTerminoId}
+                  disabled={terminosTemplates.length === 0}
+                  onChange={(e) => applyTerminoTemplate(e.target.value)}
+                  className={`${inputClass} py-1.5 text-xs disabled:opacity-60`}
+                >
+                  <option value="">
+                    {terminosTemplates.length > 0
+                      ? '— Elegir términos de TERMINOS_Y_CONDICIONES (editable abajo) —'
+                      : isSyncingAran
+                        ? 'Cargando términos desde Google Sheets...'
+                        : 'Sin filas cargadas en TERMINOS_Y_CONDICIONES (edición manual libre)'}
+                  </option>
+                  {terminosTemplates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.tipoCotizacion
+                        ? `${tpl.tipoCotizacion} — ${tpl.titulo}`
+                        : tpl.titulo}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <textarea
                 rows={10}
                 value={data.terminosCondiciones}
@@ -3312,14 +3426,22 @@ export function EditorPanel({
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>Restaurar</span>
                   </button>
+                  {onSaveSpecsSheetUrl && (
+                    <GoogleSheetShortcutButton
+                      label="Abrir Sheet Especificaciones"
+                      sheetUrl={specsSheetUrl}
+                      onSaveSheetUrl={onSaveSpecsSheetUrl}
+                      size="sm"
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={onSyncAranTemplates}
                     disabled={isSyncingAran}
                     title={
                       isAranConnected
-                        ? 'Conectado con hoja ARAN: recargar plantillas desde Google Sheets'
-                        : 'Sin URL o error en script ARAN: revisa la pestaña Integración'
+                        ? 'Conectado con hoja ESPECIFICACIONES y TERMINOS_Y_CONDICIONES: recargar desde Google Sheets'
+                        : 'Sin URL o error en script de ESPECIFICACIONES: revisa la pestaña Integración'
                     }
                     className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAranConnected, 'outline')}`}
                   >
@@ -3333,8 +3455,8 @@ export function EditorPanel({
                     )}
                     <span>
                       {isSyncingAran
-                        ? 'Cargando ARAN...'
-                        : `ARAN (${aranTemplates.length})`}
+                        ? 'Cargando Especificaciones...'
+                        : `ESPECIFICACIONES (${aranTemplates.length})`}
                     </span>
                   </button>
                   <button
@@ -3348,16 +3470,16 @@ export function EditorPanel({
                 </div>
               </div>
 
-              {/* Barra rápida para agregar un bloque nuevo directamente desde la hoja ARAN */}
+              {/* Barra rápida para agregar un bloque nuevo directamente desde la hoja ESPECIFICACIONES */}
               <div className="mb-4 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-2 dark:border-zinc-800 dark:bg-zinc-800/50">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label
                     htmlFor="aran-add-new-block-select"
                     className="text-xs font-semibold text-zinc-800 dark:text-zinc-200"
                   >
-                    Agregar bloque nuevo desde hoja &ldquo;ARAN&rdquo;
+                    Agregar bloque nuevo desde hoja &ldquo;ESPECIFICACIONES&rdquo;
                   </label>
-                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
                     {aranTemplates.length > 0
                       ? `${aranTemplates.length} fila(s) disponible(s)`
                       : isSyncingAran
@@ -3375,10 +3497,10 @@ export function EditorPanel({
                 >
                   <option value="">
                     {aranTemplates.length > 0
-                      ? '— Seleccionar "Titulo" de ARAN para crear bloque nuevo —'
+                      ? '— Seleccionar "Titulo" de ESPECIFICACIONES para crear bloque nuevo —'
                       : isSyncingAran
-                        ? 'Cargando plantillas desde ARAN...'
-                        : 'No hay plantillas cargadas desde ARAN (puedes crear bloques manuales)'}
+                        ? 'Cargando plantillas desde ESPECIFICACIONES...'
+                        : 'No hay plantillas cargadas desde ESPECIFICACIONES (puedes crear bloques manuales)'}
                   </option>
                   {aranTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>
@@ -3393,7 +3515,7 @@ export function EditorPanel({
                       <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                       <span>
                         {aranLastMessage ||
-                          'Falta configurar la URL del script "ARAN" en Integración.'}
+                          'Falta configurar la URL del script "ESPECIFICACIONES" en Integración.'}
                       </span>
                     </span>
                     <button
@@ -3418,7 +3540,7 @@ export function EditorPanel({
                         htmlFor={`aran-block-select-${block.id}`}
                         className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-400"
                       >
-                        Cargar plantilla desde hoja &ldquo;ARAN&rdquo; (opcional)
+                        Cargar plantilla desde hoja &ldquo;ESPECIFICACIONES&rdquo; (opcional)
                       </label>
                       <select
                         id={`aran-block-select-${block.id}`}
@@ -3431,10 +3553,10 @@ export function EditorPanel({
                       >
                         <option value="">
                           {aranTemplates.length > 0
-                            ? '— Elegir "Titulo" de ARAN para rellenar este bloque —'
+                            ? '— Elegir "Titulo" de ESPECIFICACIONES para rellenar este bloque —'
                             : isSyncingAran
-                              ? 'Cargando opciones desde ARAN...'
-                              : 'Sin filas de ARAN cargadas (edición manual libre)'}
+                              ? 'Cargando opciones desde ESPECIFICACIONES...'
+                              : 'Sin filas de ESPECIFICACIONES cargadas (edición manual libre)'}
                         </option>
                         {aranTemplates.map((tpl) => (
                           <option key={tpl.id} value={tpl.id}>
@@ -3738,17 +3860,38 @@ export function EditorPanel({
               </h2>
 
               <div>
-                <label className={labelClass}>Nota de formalización</label>
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <label htmlFor="proforma-notas-finales" className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Párrafo de formalización (Cierre / Pagos)
+                  </label>
+                  {data.notasFinales !== DEFAULT_NOTAS_FINALES && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChange((prev) => ({
+                          ...prev,
+                          notasFinales: DEFAULT_NOTAS_FINALES,
+                        }))
+                      }
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#8C5A32] hover:bg-[#FAF6F1] dark:text-[#D59B69] dark:hover:bg-zinc-800 cursor-pointer"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                      <span>Restaurar predeterminado</span>
+                    </button>
+                  )}
+                </div>
                 <textarea
-                  rows={2}
+                  id="proforma-notas-finales"
+                  rows={3}
                   value={data.notasFinales}
+                  placeholder={DEFAULT_NOTAS_FINALES}
                   onChange={(e) =>
                     onChange((prev) => ({
                       ...prev,
                       notasFinales: e.target.value,
                     }))
                   }
-                  className={`${inputClass} resize-y text-xs`}
+                  className={`${inputClass} resize-y text-xs leading-relaxed`}
                 />
               </div>
 

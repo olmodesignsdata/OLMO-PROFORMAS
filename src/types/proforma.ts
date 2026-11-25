@@ -133,6 +133,40 @@ export interface AranSpecTemplate {
   contenido: string;
 }
 
+export interface TerminoTemplate {
+  id: string;
+  tipoCotizacion: string;
+  titulo: string;
+  contenido: string;
+}
+
+export interface SheetShortcutUrls {
+  proformasSheetUrl: string;
+  clientsSheetUrl: string;
+  specsSheetUrl: string;
+}
+
+export type NotificationKind = 'warning' | 'error' | 'info' | 'reminder';
+
+export interface AppNotification {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  message: string;
+  createdAt: string;
+  read: boolean;
+  dismissed?: boolean;
+  source: 'system' | 'user';
+  actionSection?: AppSection;
+  actionLabel?: string;
+}
+
+export interface NotificationStateRecord {
+  readIds: string[];
+  dismissedIds: string[];
+  reminders: AppNotification[];
+}
+
 export interface CloudSyncConfig {
   webhookUrl: string;
   autoSyncOnSave: boolean;
@@ -196,6 +230,7 @@ export type AppSection =
   | 'preview'
   | 'clients'
   | 'history'
+  | 'dashboard'
   | 'integration';
 export type WorkspaceLayoutMode = 'split' | 'editor' | 'preview';
 export type ThemeMode = 'light' | 'dark';

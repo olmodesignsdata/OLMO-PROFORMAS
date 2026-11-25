@@ -21,6 +21,13 @@ export const DEFAULT_CLIENTS_APPS_SCRIPT_URL =
 export const DEFAULT_ARAN_APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzbjR0fhi7IZXLglPRBL2PBxuBleK7oGK9X3rHgAc8KiHQTZFkbsB5JRoLnY5vwpHWbyA/exec';
 
+export const DEFAULT_PROFORMAS_SHEET_URL = '';
+export const DEFAULT_CLIENTS_SHEET_URL = '';
+export const DEFAULT_SPECS_SHEET_URL = '';
+
+export const DEFAULT_NOTAS_FINALES =
+  'Para formalizar la orden de producción, sírvase remitir esta proforma firmada junto con el comprobante del primer pago al correo proyectos@olmodiseno.com.';
+
 export const DEFAULT_OLMO_MAIN_LOGO: LogoAsset = {
   id: 'default-olmo-bn',
   name: 'OLMO B.N.',
@@ -234,8 +241,7 @@ export function createInitialProforma(consecutivo: number, isBlank = false): Pro
       clienteTitulo: 'FIRMA CLIENTE',
       clienteNombre: '',
     },
-    notasFinales:
-      'Para formalizar la orden de producción, sírvase remitir esta proforma firmada junto con el comprobante del primer pago al correo proyectos@olmodiseno.com.',
+    notasFinales: DEFAULT_NOTAS_FINALES,
     updatedAt: new Date().toISOString(),
   };
 }

@@ -33,6 +33,7 @@ import {
   generateProformaPDF,
 } from '../utils/exporters';
 import { PdfIcon } from './PdfIcon';
+import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 
 interface HistoryViewProps {
   records: SavedProformaRecord[];
@@ -54,6 +55,8 @@ interface HistoryViewProps {
   onGoToEditor: () => void;
   onNewProforma: () => void;
   onImportDraftFile?: (file: File) => void;
+  proformasSheetUrl?: string;
+  onSaveProformasSheetUrl?: (url: string) => void;
 }
 
 type HistoryFilterSource = 'all' | 'local' | 'sheet';
@@ -96,6 +99,40 @@ function extractIsoDateKey(raw: string): string {
   return '';
 }
 
+export function mergeProformaHistoryRecords(
+  records: SavedProformaRecord[],
+  remoteRecords: SavedProformaRecord[]
+): SavedProformaRecord[] {
+  const map = new Map<string, SavedProformaRecord>();
+  const keyOf = (rec: SavedProformaRecord) =>
+    rec.consecutivo > 0 ? `num:${rec.consecutivo}` : `id:${rec.id}`;
+
+  records.forEach((rec) => {
+    map.set(keyOf(rec), { ...rec, source: 'local' });
+  });
+
+  remoteRecords.forEach((remote) => {
+    const k = keyOf(remote);
+    const existing = map.get(k);
+    if (existing) {
+      map.set(k, {
+        ...existing,
+        source: 'both',
+      });
+    } else {
+      map.set(k, {
+        ...remote,
+        source: 'sheet',
+      });
+    }
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (b.consecutivo !== a.consecutivo) return b.consecutivo - a.consecutivo;
+    return b.savedAt.localeCompare(a.savedAt);
+  });
+}
+
 export function HistoryView({
   records,
   remoteRecords,
@@ -116,6 +153,8 @@ export function HistoryView({
   onNewProforma,
   onImportDraftFile,
   hasCloudSendError = false,
+  proformasSheetUrl = '',
+  onSaveProformasSheetUrl,
 }: HistoryViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -131,36 +170,10 @@ export function HistoryView({
   const [minTotal, setMinTotal] = useState('');
   const [maxTotal, setMaxTotal] = useState('');
 
-  const combinedRecords = useMemo<SavedProformaRecord[]>(() => {
-    const map = new Map<string, SavedProformaRecord>();
-    const keyOf = (rec: SavedProformaRecord) =>
-      rec.consecutivo > 0 ? `num:${rec.consecutivo}` : `id:${rec.id}`;
-
-    records.forEach((rec) => {
-      map.set(keyOf(rec), { ...rec, source: 'local' });
-    });
-
-    remoteRecords.forEach((remote) => {
-      const k = keyOf(remote);
-      const existing = map.get(k);
-      if (existing) {
-        map.set(k, {
-          ...existing,
-          source: 'both',
-        });
-      } else {
-        map.set(k, {
-          ...remote,
-          source: 'sheet',
-        });
-      }
-    });
-
-    return Array.from(map.values()).sort((a, b) => {
-      if (b.consecutivo !== a.consecutivo) return b.consecutivo - a.consecutivo;
-      return b.savedAt.localeCompare(a.savedAt);
-    });
-  }, [records, remoteRecords]);
+  const combinedRecords = useMemo<SavedProformaRecord[]>(
+    () => mergeProformaHistoryRecords(records, remoteRecords),
+    [records, remoteRecords]
+  );
 
   const enrichedRecords = useMemo<EnrichedHistoryRecord[]>(() => {
     return combinedRecords.map((rec) => {
@@ -334,6 +347,14 @@ export function HistoryView({
                 : 'Actualizar desde Sheet'}
             </span>
           </button>
+
+          {onSaveProformasSheetUrl && (
+            <GoogleSheetShortcutButton
+              label="Abrir Sheet Proformas"
+              sheetUrl={proformasSheetUrl}
+              onSaveSheetUrl={onSaveProformasSheetUrl}
+            />
+          )}
 
           {onSendProforma && (
             <button
@@ -733,7 +754,8 @@ export function HistoryView({
             <thead>
               <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
                 <th className="px-4 py-3">Consecutivo</th>
-                <th className="px-4 py-3">Cliente y Proyecto</th>
+                <th className="px-4 py-3">Cliente</th>
+                <th className="px-4 py-3">Proyecto</th>
                 <th className="px-4 py-3">Origen</th>
                 <th className="px-4 py-3">Fecha</th>
                 <th className="px-4 py-3 text-right">Ítems</th>
@@ -764,8 +786,10 @@ export function HistoryView({
                       <div className="font-medium text-zinc-900 dark:text-zinc-100">
                         {rec.data.clientProject.cliente || 'Cliente sin nombre'}
                       </div>
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {rec.data.clientProject.proyecto || 'Sin proyecto'}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div className="text-xs text-zinc-700 dark:text-zinc-300">
+                        {rec.data.clientProject.proyecto.trim() || '—'}
                       </div>
                     </td>
                     <td className="px-4 py-3.5 whitespace-nowrap">

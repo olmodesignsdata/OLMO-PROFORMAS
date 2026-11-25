@@ -1,4 +1,4 @@
-import { Printer } from 'lucide-react';
+import { AlertTriangle, Printer } from 'lucide-react';
 import { useState } from 'react';
 import {
   DEFAULT_OLMO_MAIN_LOGO,
@@ -14,6 +14,7 @@ import {
   formatDateSpanish,
   formatMoney,
   getCurrencyCode,
+  normalizeSpreadsheetParagraphs,
 } from '../utils/formatters';
 import { ResilientImage } from './ResilientImage';
 
@@ -126,6 +127,18 @@ export function ProformaPreview({
           </button>
         </div>
       </div>
+
+      {totals.total <= 0 && (
+        <div
+          role="alert"
+          className="no-print mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+          <span>
+            Atención: el total general de esta cotización es {formatMoney(totals.total, data.clientProject.moneda)} (cero o negativo). Revisa los precios antes de exportar el PDF.
+          </span>
+        </div>
+      )}
 
       {/* Contenedor de hojas Letter */}
       <div className="print-only-container flex flex-col items-center gap-6 pb-8">
@@ -703,25 +716,25 @@ export function ProformaPreview({
               </div>
 
               {/* Términos y Condiciones */}
-              <section className="mt-6">
+              <section className="mt-6 w-full max-w-none">
                 <h2 className="inline-block border-b-2 border-[#8C5A32] pb-1 text-[12px] font-bold tracking-wider text-zinc-900">
                   TÉRMINOS Y CONDICIONES
                 </h2>
-                <div className="mt-3 space-y-2.5 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line">
-                  {data.terminosCondiciones}
+                <div className="mt-3 w-full max-w-none space-y-2.5 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line break-words">
+                  {normalizeSpreadsheetParagraphs(data.terminosCondiciones)}
                 </div>
               </section>
 
               {/* Especificaciones Técnicas */}
-              <section className="mt-7">
+              <section className="mt-7 w-full max-w-none">
                 <h2 className="inline-block border-b-2 border-[#8C5A32] pb-1 text-[12px] font-bold tracking-wider text-zinc-900">
                   ESPECIFICACIONES TÉCNICAS GENERALES Y ACABADOS DE MOBILIARIO
                 </h2>
-                <div className="mt-3.5 space-y-4">
+                <div className="mt-3.5 w-full max-w-none space-y-4">
                   {data.specBlocks.map((block) => (
                     <div
                       key={block.id}
-                      className="proforma-row border border-[#E5E4DF]"
+                      className="proforma-row w-full max-w-none border border-[#E5E4DF]"
                     >
                       <div className="border-b border-[#E5E4DF] bg-[#FAF9F6] px-4 py-2">
                         <h3 className="text-[11.5px] font-bold text-zinc-900">
@@ -733,8 +746,8 @@ export function ProformaPreview({
                           </p>
                         )}
                       </div>
-                      <div className="px-4 py-3 text-[11px] leading-relaxed text-zinc-700 whitespace-pre-line">
-                        {block.contenido}
+                      <div className="w-full max-w-none px-4 py-3 text-[11px] leading-relaxed text-zinc-700 whitespace-pre-line break-words">
+                        {normalizeSpreadsheetParagraphs(block.contenido)}
                       </div>
                     </div>
                   ))}
@@ -781,7 +794,7 @@ export function ProformaPreview({
             id="proforma-page-3"
             className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
           >
-            <div>
+            <div className="w-full">
               {/* Encabezado Continuación */}
               <div className="flex items-center justify-between border-b border-[#E5E4DF] pb-3 text-[11px]">
                 <div className="flex items-center gap-2.5">
@@ -921,8 +934,8 @@ export function ProformaPreview({
 
               {/* Notas finales */}
               {data.notasFinales.trim() && (
-                <section className="mt-6 rounded border border-[#E5E4DF] bg-[#FAF9F6] px-4 py-3 text-[11.5px] leading-relaxed text-zinc-600">
-                  {data.notasFinales}
+                <section className="mt-6 w-full max-w-none rounded border border-[#E5E4DF] bg-[#FAF9F6] px-4 py-3 text-[11.5px] leading-relaxed text-zinc-600 whitespace-pre-line break-words">
+                  {normalizeSpreadsheetParagraphs(data.notasFinales)}
                 </section>
               )}
             </div>
