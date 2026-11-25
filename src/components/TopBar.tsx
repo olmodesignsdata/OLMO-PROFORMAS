@@ -78,14 +78,14 @@ export function TopBar({
       id: 'history',
       label: historyCount > 0 ? `PROFORMAS (${historyCount})` : 'PROFORMAS',
     },
-    { id: 'editor', label: 'Editor' },
-    { id: 'preview', label: 'Vista Previa' },
+    { id: 'editor', label: 'EDITOR' },
+    { id: 'preview', label: 'VISTA PREVIA' },
     {
       id: 'clients',
-      label: clientsCount > 0 ? `Clientes (${clientsCount})` : 'Clientes',
+      label: clientsCount > 0 ? `CLIENTES (${clientsCount})` : 'CLIENTES',
     },
-    { id: 'integration', label: 'Integración' },
-    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'integration', label: 'INTEGRACIÓN' },
+    { id: 'dashboard', label: 'ESTADÍSTICA' },
   ];
 
   const unreadNotifications = notifications.filter((n) => !n.read);

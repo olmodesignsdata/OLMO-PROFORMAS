@@ -19,7 +19,10 @@ import {
   X,
 } from 'lucide-react';
 import { ChangeEvent, useMemo, useRef, useState } from 'react';
-import { GRIFERIA_AUTO_FOOTER_LOGOS } from '../data/defaults';
+import {
+  DEFAULT_PROFORMAS_SHEET_URL,
+  GRIFERIA_AUTO_FOOTER_LOGOS,
+} from '../data/defaults';
 import { ComputedTotals, SavedProformaRecord } from '../types/proforma';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import {
@@ -56,7 +59,6 @@ interface HistoryViewProps {
   onNewProforma: () => void;
   onImportDraftFile?: (file: File) => void;
   proformasSheetUrl?: string;
-  onSaveProformasSheetUrl?: (url: string) => void;
 }
 
 type HistoryFilterSource = 'all' | 'local' | 'sheet';
@@ -154,7 +156,6 @@ export function HistoryView({
   onImportDraftFile,
   hasCloudSendError = false,
   proformasSheetUrl = '',
-  onSaveProformasSheetUrl,
 }: HistoryViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -348,13 +349,11 @@ export function HistoryView({
             </span>
           </button>
 
-          {onSaveProformasSheetUrl && (
-            <GoogleSheetShortcutButton
-              label="Abrir Sheet Proformas"
-              sheetUrl={proformasSheetUrl}
-              onSaveSheetUrl={onSaveProformasSheetUrl}
-            />
-          )}
+          <GoogleSheetShortcutButton
+            label="Abrir Sheet Proformas"
+            sheetUrl={proformasSheetUrl}
+            defaultSheetUrl={DEFAULT_PROFORMAS_SHEET_URL}
+          />
 
           {onSendProforma && (
             <button

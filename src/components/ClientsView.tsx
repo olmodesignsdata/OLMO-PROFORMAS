@@ -22,7 +22,10 @@ import {
   X,
 } from 'lucide-react';
 import { FormEvent, useMemo, useRef, useState } from 'react';
-import { DEFAULT_CLIENTS_APPS_SCRIPT_URL } from '../data/defaults';
+import {
+  DEFAULT_CLIENTS_APPS_SCRIPT_URL,
+  DEFAULT_CLIENTS_SHEET_URL,
+} from '../data/defaults';
 import {
   ClientsImportConfig,
   ClientsImportStrategy,
@@ -81,7 +84,6 @@ interface ClientsViewProps {
   }>;
   onClearClientsSyncFeedback?: () => void;
   clientsSheetUrl?: string;
-  onSaveClientsSheetUrl?: (url: string) => void;
 }
 
 const EMPTY_FORM: ClientDraftPayload = {
@@ -108,7 +110,6 @@ export function ClientsView({
   onSyncClientsFromSheet,
   onClearClientsSyncFeedback,
   clientsSheetUrl = '',
-  onSaveClientsSheetUrl,
 }: ClientsViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -598,15 +599,13 @@ export function ClientsView({
             </span>
           </button>
 
-          {onSaveClientsSheetUrl && (
-            <GoogleSheetShortcutButton
-              label="Abrir Sheet Clientes"
-              sheetUrl={
-                clientsSheetUrl.trim() || importConfig.sheetUrl.trim()
-              }
-              onSaveSheetUrl={onSaveClientsSheetUrl}
-            />
-          )}
+          <GoogleSheetShortcutButton
+            label="Abrir Sheet Clientes"
+            sheetUrl={
+              clientsSheetUrl.trim() || importConfig.sheetUrl.trim()
+            }
+            defaultSheetUrl={DEFAULT_CLIENTS_SHEET_URL}
+          />
 
           <button
             type="button"

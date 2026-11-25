@@ -21,9 +21,12 @@ export const DEFAULT_CLIENTS_APPS_SCRIPT_URL =
 export const DEFAULT_ARAN_APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzbjR0fhi7IZXLglPRBL2PBxuBleK7oGK9X3rHgAc8KiHQTZFkbsB5JRoLnY5vwpHWbyA/exec';
 
-export const DEFAULT_PROFORMAS_SHEET_URL = '';
-export const DEFAULT_CLIENTS_SHEET_URL = '';
-export const DEFAULT_SPECS_SHEET_URL = '';
+export const DEFAULT_PROFORMAS_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/18WAp3TD160gmYBA8L1q58Iw8-zb1V1gokJsTdnDWstQ/edit';
+export const DEFAULT_CLIENTS_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/1uoeux2P6FL7dAV_NRktj0V33WN043NpQJmetYDvvg3A/edit';
+export const DEFAULT_SPECS_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/1Sosw-nl5Nx_W2i1a-4TUmu97lxn2NrnFNnr6I1RQNqs/edit';
 
 export const DEFAULT_NOTAS_FINALES =
   'Para formalizar la orden de producción, sírvase remitir esta proforma firmada junto con el comprobante del primer pago al correo proyectos@olmodiseno.com.';

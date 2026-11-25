@@ -1,7 +1,9 @@
 import {
   BarChart3,
   FilePlus2,
+  Filter,
   FolderKanban,
+  RotateCcw,
   TrendingUp,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -21,14 +23,15 @@ import {
   SavedProformaRecord,
   ThemeMode,
 } from '../types/proforma';
-
-type CurrencyCode = 'USD' | 'CRC';
 import {
   computeProformaTotals,
   formatMoney,
   getCurrencyCode,
 } from '../utils/formatters';
 import { mergeProformaHistoryRecords } from './HistoryView';
+
+type CurrencyCode = 'USD' | 'CRC';
+type CurrencyFilterValue = 'ALL' | CurrencyCode;
 
 interface DashboardViewProps {
   records: SavedProformaRecord[];
@@ -59,6 +62,40 @@ const TYPE_CHART_COLORS: Record<ProformaType, string> = {
   griferia: '#3B6E8C',
   cielos_pisos: '#A67C52',
 };
+
+function normalizeFilterText(value: string): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function extractIsoDateKey(rawDate: string, fallbackIso: string): string {
+  const candidates = [String(rawDate ?? '').trim(), String(fallbackIso ?? '').trim()];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const isoPrefix = candidate.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoPrefix) {
+      return isoPrefix[1];
+    }
+    const dmy = candidate.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (dmy) {
+      const day = dmy[1].padStart(2, '0');
+      const month = dmy[2].padStart(2, '0');
+      const year = dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3];
+      return `${year}-${month}-${day}`;
+    }
+    const parsed = new Date(candidate);
+    if (!Number.isNaN(parsed.getTime())) {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+  return '';
+}
 
 function parseYearMonthKey(rawDate: string, fallbackIso: string): string {
   const candidates = [String(rawDate ?? '').trim(), String(fallbackIso ?? '').trim()];
@@ -102,6 +139,18 @@ export function DashboardView({
 }: DashboardViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
+  const controlInputClass =
+    'w-full rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-amber-500';
+
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [selectedClient, setSelectedClient] = useState('');
+  const [selectedProject, setSelectedProject] = useState('');
+  const [selectedType, setSelectedType] = useState<'' | ProformaType>('');
+  const [currencyFilter, setCurrencyFilter] =
+    useState<CurrencyFilterValue>('ALL');
+  const [selectedCurrency, setSelectedCurrency] = useState<CurrencyCode>('USD');
 
   const combined = useMemo(
     () => mergeProformaHistoryRecords(records, remoteRecords),
@@ -119,12 +168,23 @@ export function DashboardView({
         rec.data.clientProject.fecha,
         rec.savedAt
       );
+      const isoDate = extractIsoDateKey(
+        rec.data.clientProject.fecha,
+        rec.savedAt
+      );
+      const clientLabel = rec.data.clientProject.cliente.trim();
+      const projectLabel = rec.data.clientProject.proyecto.trim();
       return {
         record: rec,
         totalValue,
         currency,
         type,
         monthKey,
+        isoDate,
+        clientLabel,
+        normalizedClient: normalizeFilterText(clientLabel),
+        projectLabel,
+        normalizedProject: normalizeFilterText(projectLabel),
       };
     });
   }, [combined]);
@@ -140,19 +200,123 @@ export function DashboardView({
     return list.length > 0 ? list : ['USD'];
   }, [enriched]);
 
-  const [selectedCurrency, setSelectedCurrency] = useState<CurrencyCode>(() =>
-    availableCurrencies[0] ?? 'USD'
+  const uniqueMonths = useMemo<Array<{ value: string; label: string }>>(() => {
+    const set = new Set<string>();
+    enriched.forEach((e) => {
+      if (e.monthKey && e.monthKey !== 'Sin fecha') {
+        set.add(e.monthKey);
+      }
+    });
+    return Array.from(set)
+      .sort((a, b) => b.localeCompare(a))
+      .map((ym) => ({ value: ym, label: formatMonthLabel(ym) }));
+  }, [enriched]);
+
+  const uniqueClients = useMemo<Array<{ value: string; label: string }>>(() => {
+    const map = new Map<string, string>();
+    enriched.forEach((e) => {
+      if (e.normalizedClient && e.clientLabel && !map.has(e.normalizedClient)) {
+        map.set(e.normalizedClient, e.clientLabel);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'es'));
+  }, [enriched]);
+
+  const uniqueProjects = useMemo<Array<{ value: string; label: string }>>(() => {
+    const map = new Map<string, string>();
+    enriched.forEach((e) => {
+      if (
+        e.normalizedProject &&
+        e.projectLabel &&
+        !map.has(e.normalizedProject)
+      ) {
+        map.set(e.normalizedProject, e.projectLabel);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'es'));
+  }, [enriched]);
+
+  const hasActiveFilters = Boolean(
+    dateFrom ||
+      dateTo ||
+      selectedMonth ||
+      selectedClient ||
+      selectedProject ||
+      selectedType ||
+      currencyFilter !== 'ALL'
   );
 
-  const activeCurrency: CurrencyCode = availableCurrencies.includes(
-    selectedCurrency
-  )
-    ? selectedCurrency
-    : availableCurrencies[0];
+  const handleClearFilters = () => {
+    setDateFrom('');
+    setDateTo('');
+    setSelectedMonth('');
+    setSelectedClient('');
+    setSelectedProject('');
+    setSelectedType('');
+    setCurrencyFilter('ALL');
+  };
+
+  const filteredEntries = useMemo(() => {
+    return enriched.filter((entry) => {
+      if (selectedMonth && entry.monthKey !== selectedMonth) {
+        return false;
+      }
+      if (dateFrom && (!entry.isoDate || entry.isoDate < dateFrom)) {
+        return false;
+      }
+      if (dateTo && (!entry.isoDate || entry.isoDate > dateTo)) {
+        return false;
+      }
+      if (selectedClient && entry.normalizedClient !== selectedClient) {
+        return false;
+      }
+      if (selectedProject && entry.normalizedProject !== selectedProject) {
+        return false;
+      }
+      if (selectedType && entry.type !== selectedType) {
+        return false;
+      }
+      if (currencyFilter !== 'ALL' && entry.currency !== currencyFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [
+    enriched,
+    selectedMonth,
+    dateFrom,
+    dateTo,
+    selectedClient,
+    selectedProject,
+    selectedType,
+    currencyFilter,
+  ]);
+
+  const filteredCurrencies = useMemo<CurrencyCode[]>(() => {
+    const counts: Record<CurrencyCode, number> = { USD: 0, CRC: 0 };
+    filteredEntries.forEach((e) => {
+      counts[e.currency] += 1;
+    });
+    const list: CurrencyCode[] = [];
+    if (counts.USD > 0) list.push('USD');
+    if (counts.CRC > 0) list.push('CRC');
+    return list.length > 0 ? list : availableCurrencies;
+  }, [filteredEntries, availableCurrencies]);
+
+  const activeCurrency: CurrencyCode =
+    currencyFilter !== 'ALL'
+      ? currencyFilter
+      : filteredCurrencies.includes(selectedCurrency)
+        ? selectedCurrency
+        : filteredCurrencies[0];
 
   const currencyEntries = useMemo(
-    () => enriched.filter((e) => e.currency === activeCurrency),
-    [enriched, activeCurrency]
+    () => filteredEntries.filter((e) => e.currency === activeCurrency),
+    [filteredEntries, activeCurrency]
   );
 
   const monthlySalesData = useMemo(() => {
@@ -198,7 +362,7 @@ export function DashboardView({
       });
     });
 
-    enriched.forEach((entry) => {
+    filteredEntries.forEach((entry) => {
       const bucket = counts.get(entry.type);
       if (bucket) {
         bucket.count += 1;
@@ -209,7 +373,7 @@ export function DashboardView({
     });
 
     return Array.from(counts.values());
-  }, [enriched, activeCurrency]);
+  }, [filteredEntries, activeCurrency]);
 
   const kpis = useMemo(() => {
     const totalSales = currencyEntries.reduce(
@@ -229,13 +393,13 @@ export function DashboardView({
     }, null);
 
     return {
-      totalQuotes: enriched.length,
+      totalQuotes: filteredEntries.length,
       currencyQuotes: currencyEntries.length,
       totalSales,
       avgTicket,
       peakMonth,
     };
-  }, [enriched.length, currencyEntries, monthlySalesData]);
+  }, [filteredEntries.length, currencyEntries, monthlySalesData]);
 
   const isDark = themeMode === 'dark';
   const axisTickColor = isDark ? '#A1A1AA' : '#52525B';
@@ -247,7 +411,7 @@ export function DashboardView({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
-            Dashboard de Cotizaciones
+            Estadística de Cotizaciones
           </h1>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             Resumen mensual de ventas cotizadas y frecuencia por tipo de
@@ -255,14 +419,14 @@ export function DashboardView({
           </p>
         </div>
 
-        {availableCurrencies.length > 1 && (
+        {currencyFilter === 'ALL' && filteredCurrencies.length > 1 && (
           <div className="flex flex-wrap items-center gap-3">
             <div
               role="group"
-              aria-label="Filtrar métricas de ventas por moneda"
+              aria-label="Cambiar moneda de métricas de ventas"
               className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800"
             >
-              {availableCurrencies.map((cur) => (
+              {filteredCurrencies.map((cur) => (
                 <button
                   key={cur}
                   type="button"
@@ -314,241 +478,468 @@ export function DashboardView({
         </div>
       ) : (
         <>
-          {/* KPIs resumen */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className={`p-4 ${cardSurface}`}>
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Total Proformas (Historial)
-              </span>
-              <p className="mt-1.5 font-mono text-2xl font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
-                {kpis.totalQuotes}
-              </p>
-              <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
-                {kpis.currencyQuotes} cotización(es) en {activeCurrency}
-              </p>
-            </div>
-
-            <div className={`p-4 ${cardSurface}`}>
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Ventas Totales ({activeCurrency})
-              </span>
-              <p className="mt-1.5 font-mono text-2xl font-bold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
-                {formatMoney(kpis.totalSales, activeCurrency)}
-              </p>
-              <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                Suma acumulada de proformas
-              </p>
-            </div>
-
-            <div className={`p-4 ${cardSurface}`}>
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Ticket Promedio ({activeCurrency})
-              </span>
-              <p className="mt-1.5 font-mono text-2xl font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
-                {formatMoney(kpis.avgTicket, activeCurrency)}
-              </p>
-              <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                Promedio por proforma
-              </p>
-            </div>
-
-            <div className={`p-4 ${cardSurface}`}>
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Mes Pico ({activeCurrency})
-              </span>
-              <p className="mt-1.5 font-display text-xl font-bold text-zinc-900 dark:text-zinc-100">
-                {kpis.peakMonth ? kpis.peakMonth.label : '—'}
-              </p>
-              <p className="mt-1 font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
-                {kpis.peakMonth
-                  ? formatMoney(kpis.peakMonth.total, activeCurrency)
-                  : 'Sin registros'}
-              </p>
-            </div>
-          </div>
-
-          {/* Gráficos Recharts */}
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-            {/* (a) Ventas totales mensuales */}
-            <section
-              aria-label="Ventas totales mensuales"
-              className={`p-5 lg:col-span-7 ${cardSurface}`}
-            >
-              <div className="mb-4 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <TrendingUp
-                    className="h-4 w-4 text-[#8C5A32] dark:text-[#C68B59]"
-                    aria-hidden="true"
-                  />
-                  <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    Ventas Totales Mensuales ({activeCurrency})
-                  </h2>
-                </div>
-                <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
-                  {monthlySalesData.length} mes(es)
+          {/* Filtros interactivos */}
+          <section
+            aria-label="Filtros de Estadística"
+            className={`p-4 ${cardSurface}`}
+          >
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                <Filter
+                  className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                  aria-hidden="true"
+                />
+                <span>Filtros</span>
+                <span className="font-mono text-[11px] font-normal text-zinc-500 tabular-nums dark:text-zinc-400">
+                  · Mostrando {filteredEntries.length} de {enriched.length}{' '}
+                  proforma(s)
                 </span>
               </div>
 
-              <div className="h-72 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={monthlySalesData}
-                    margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke={gridStroke}
-                      vertical={false}
-                    />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fill: axisTickColor, fontSize: 11 }}
-                      axisLine={{ stroke: gridStroke }}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tick={{ fill: axisTickColor, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={72}
-                      tickFormatter={(val: number) =>
-                        val >= 1000
-                          ? `${activeCurrency === 'CRC' ? '₡' : '$'}${(val / 1000).toFixed(0)}k`
-                          : `${activeCurrency === 'CRC' ? '₡' : '$'}${val}`
-                      }
-                    />
-                    <Tooltip
-                      cursor={{
-                        fill: isDark
-                          ? 'rgba(255,255,255,0.04)'
-                          : 'rgba(140,90,50,0.06)',
-                      }}
-                      contentStyle={{
-                        backgroundColor: isDark ? '#18181B' : '#FFFFFF',
-                        borderColor: isDark ? '#3F3F46' : '#E3E1DA',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        color: isDark ? '#F4F4F5' : '#18181B',
-                      }}
-                      formatter={(value: unknown, _name, item) => {
-                        const num = Number(value ?? 0);
-                        const cnt = item?.payload?.count ?? 0;
-                        return [
-                          `${formatMoney(num, activeCurrency)} (${cnt} proforma${cnt === 1 ? '' : 's'})`,
-                          'Total mensual',
-                        ];
-                      }}
-                    />
-                    <Bar
-                      dataKey="total"
-                      fill={barFill}
-                      radius={[6, 6, 0, 0]}
-                      maxBarSize={48}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                disabled={!hasActiveFilters}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                <span>Limpiar filtros</span>
+              </button>
+            </div>
 
-            {/* (b) Frecuencia de proformas por tipo de cotización */}
-            <section
-              aria-label="Frecuencia de proformas por tipo de cotización"
-              className={`p-5 lg:col-span-5 ${cardSurface}`}
-            >
-              <div className="mb-4 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <FolderKanban
-                    className="h-4 w-4 text-[#8C5A32] dark:text-[#C68B59]"
-                    aria-hidden="true"
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
+              {/* Rango de fechas */}
+              <div className="grid grid-cols-2 gap-2 sm:col-span-2 lg:col-span-3">
+                <div>
+                  <label
+                    htmlFor="dashboard-date-from"
+                    className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                  >
+                    Fecha desde
+                  </label>
+                  <input
+                    id="dashboard-date-from"
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className={controlInputClass}
                   />
-                  <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    Frecuencia por Tipo de Cotización
-                  </h2>
                 </div>
-                <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
-                  {kpis.totalQuotes} total
-                </span>
+                <div>
+                  <label
+                    htmlFor="dashboard-date-to"
+                    className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                  >
+                    Fecha hasta
+                  </label>
+                  <input
+                    id="dashboard-date-to"
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    className={controlInputClass}
+                  />
+                </div>
               </div>
 
-              <div className="h-52 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={typeFrequencyData}
-                    layout="vertical"
-                    margin={{ top: 4, right: 18, left: 4, bottom: 4 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke={gridStroke}
-                      horizontal={false}
-                    />
-                    <XAxis
-                      type="number"
-                      allowDecimals={false}
-                      tick={{ fill: axisTickColor, fontSize: 11 }}
-                      axisLine={{ stroke: gridStroke }}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="label"
-                      width={132}
-                      tick={{ fill: axisTickColor, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <Tooltip
-                      cursor={{
-                        fill: isDark
-                          ? 'rgba(255,255,255,0.04)'
-                          : 'rgba(140,90,50,0.06)',
-                      }}
-                      contentStyle={{
-                        backgroundColor: isDark ? '#18181B' : '#FFFFFF',
-                        borderColor: isDark ? '#3F3F46' : '#E3E1DA',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        color: isDark ? '#F4F4F5' : '#18181B',
-                      }}
-                      formatter={(value: unknown) => [
-                        `${Number(value ?? 0)} proforma(s)`,
-                        'Frecuencia',
-                      ]}
-                    />
-                    <Bar dataKey="count" radius={[0, 6, 6, 0]} maxBarSize={26}>
-                      {typeFrequencyData.map((entry) => (
-                        <Cell
-                          key={entry.type}
-                          fill={TYPE_CHART_COLORS[entry.type]}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+              {/* Mes */}
+              <div className="lg:col-span-2">
+                <label
+                  htmlFor="dashboard-month-filter"
+                  className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                >
+                  Mes
+                </label>
+                <select
+                  id="dashboard-month-filter"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className={controlInputClass}
+                >
+                  <option value="">Todos ({uniqueMonths.length})</option>
+                  {uniqueMonths.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="mt-3 divide-y divide-[#F0EFEA] border-t border-[#F0EFEA] text-xs dark:divide-zinc-800 dark:border-zinc-800">
-                {typeFrequencyData.map((row) => (
-                  <div
-                    key={row.type}
-                    className="flex items-center justify-between py-2"
+              {/* Cliente */}
+              <div className="lg:col-span-2">
+                <label
+                  htmlFor="dashboard-client-filter"
+                  className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                >
+                  Cliente
+                </label>
+                <select
+                  id="dashboard-client-filter"
+                  value={selectedClient}
+                  onChange={(e) => setSelectedClient(e.target.value)}
+                  className={controlInputClass}
+                >
+                  <option value="">Todos ({uniqueClients.length})</option>
+                  {uniqueClients.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Proyecto */}
+              <div className="lg:col-span-2">
+                <label
+                  htmlFor="dashboard-project-filter"
+                  className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                >
+                  Proyecto
+                </label>
+                <select
+                  id="dashboard-project-filter"
+                  value={selectedProject}
+                  onChange={(e) => setSelectedProject(e.target.value)}
+                  className={controlInputClass}
+                >
+                  <option value="">Todos ({uniqueProjects.length})</option>
+                  {uniqueProjects.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Tipo de Cotización */}
+              <div
+                className={
+                  availableCurrencies.length > 1
+                    ? 'lg:col-span-2'
+                    : 'lg:col-span-3'
+                }
+              >
+                <label
+                  htmlFor="dashboard-type-filter"
+                  className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
+                >
+                  Tipo de Cotización
+                </label>
+                <select
+                  id="dashboard-type-filter"
+                  value={selectedType}
+                  onChange={(e) =>
+                    setSelectedType(e.target.value as '' | ProformaType)
+                  }
+                  className={controlInputClass}
+                >
+                  <option value="">Todos los tipos</option>
+                  {PROFORMA_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Moneda (si aplica) */}
+              {availableCurrencies.length > 1 && (
+                <div className="lg:col-span-1">
+                  <label
+                    htmlFor="dashboard-currency-filter"
+                    className="mb-1 block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400"
                   >
-                    <span className="flex items-center gap-2 font-medium text-zinc-700 dark:text-zinc-300">
-                      <span
-                        className="h-2.5 w-2.5 rounded-xs shrink-0"
-                        style={{ backgroundColor: TYPE_CHART_COLORS[row.type] }}
+                    Moneda
+                  </label>
+                  <select
+                    id="dashboard-currency-filter"
+                    value={currencyFilter}
+                    onChange={(e) =>
+                      setCurrencyFilter(e.target.value as CurrencyFilterValue)
+                    }
+                    className={controlInputClass}
+                  >
+                    <option value="ALL">Todas</option>
+                    {availableCurrencies.map((cur) => (
+                      <option key={cur} value={cur}>
+                        {cur}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {filteredEntries.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[#DCDAD3] bg-white px-6 py-12 text-center dark:border-zinc-700 dark:bg-zinc-900">
+              <Filter
+                className="mx-auto h-7 w-7 text-[#8C5A32] dark:text-[#C68B59]"
+                aria-hidden="true"
+              />
+              <p className="mt-3 font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                No hay registros para el filtro seleccionado
+              </p>
+              <p className="mx-auto mt-1.5 max-w-md text-sm text-zinc-500 dark:text-zinc-400">
+                Ninguna cotización coincide con la combinación actual de fecha,
+                mes, cliente, proyecto, tipo o moneda.
+              </p>
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Limpiar filtros</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* KPIs resumen */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className={`p-4 ${cardSurface}`}>
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Total Proformas {hasActiveFilters ? '(Filtradas)' : '(Historial)'}
+                  </span>
+                  <p className="mt-1.5 font-mono text-2xl font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
+                    {kpis.totalQuotes}
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
+                    {kpis.currencyQuotes} cotización(es) en {activeCurrency}
+                  </p>
+                </div>
+
+                <div className={`p-4 ${cardSurface}`}>
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Ventas Totales ({activeCurrency})
+                  </span>
+                  <p className="mt-1.5 font-mono text-2xl font-bold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
+                    {formatMoney(kpis.totalSales, activeCurrency)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Suma acumulada de proformas
+                  </p>
+                </div>
+
+                <div className={`p-4 ${cardSurface}`}>
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Ticket Promedio ({activeCurrency})
+                  </span>
+                  <p className="mt-1.5 font-mono text-2xl font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
+                    {formatMoney(kpis.avgTicket, activeCurrency)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Promedio por proforma
+                  </p>
+                </div>
+
+                <div className={`p-4 ${cardSurface}`}>
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Mes Pico ({activeCurrency})
+                  </span>
+                  <p className="mt-1.5 font-display text-xl font-bold text-zinc-900 dark:text-zinc-100">
+                    {kpis.peakMonth ? kpis.peakMonth.label : '—'}
+                  </p>
+                  <p className="mt-1 font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
+                    {kpis.peakMonth
+                      ? formatMoney(kpis.peakMonth.total, activeCurrency)
+                      : 'Sin registros'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Gráficos Recharts */}
+              <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+                {/* (a) Ventas totales mensuales */}
+                <section
+                  aria-label="Ventas totales mensuales"
+                  className={`p-5 lg:col-span-7 ${cardSurface}`}
+                >
+                  <div className="mb-4 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <TrendingUp
+                        className="h-4 w-4 text-[#8C5A32] dark:text-[#C68B59]"
                         aria-hidden="true"
                       />
-                      <span>{row.label}</span>
-                    </span>
-                    <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
-                      {row.count}
+                      <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        Ventas Totales Mensuales ({activeCurrency})
+                      </h2>
+                    </div>
+                    <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
+                      {monthlySalesData.length} mes(es)
                     </span>
                   </div>
-                ))}
+
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={monthlySalesData}
+                        margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke={gridStroke}
+                          vertical={false}
+                        />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fill: axisTickColor, fontSize: 11 }}
+                          axisLine={{ stroke: gridStroke }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          tick={{ fill: axisTickColor, fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={72}
+                          tickFormatter={(val: number) =>
+                            val >= 1000
+                              ? `${activeCurrency === 'CRC' ? '₡' : '$'}${(val / 1000).toFixed(0)}k`
+                              : `${activeCurrency === 'CRC' ? '₡' : '$'}${val}`
+                          }
+                        />
+                        <Tooltip
+                          cursor={{
+                            fill: isDark
+                              ? 'rgba(255,255,255,0.04)'
+                              : 'rgba(140,90,50,0.06)',
+                          }}
+                          contentStyle={{
+                            backgroundColor: isDark ? '#18181B' : '#FFFFFF',
+                            borderColor: isDark ? '#3F3F46' : '#E3E1DA',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            color: isDark ? '#F4F4F5' : '#18181B',
+                          }}
+                          formatter={(value: unknown, _name, item) => {
+                            const num = Number(value ?? 0);
+                            const cnt = item?.payload?.count ?? 0;
+                            return [
+                              `${formatMoney(num, activeCurrency)} (${cnt} proforma${cnt === 1 ? '' : 's'})`,
+                              'Total mensual',
+                            ];
+                          }}
+                        />
+                        <Bar
+                          dataKey="total"
+                          fill={barFill}
+                          radius={[6, 6, 0, 0]}
+                          maxBarSize={48}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+
+                {/* (b) Frecuencia de proformas por tipo de cotización */}
+                <section
+                  aria-label="Frecuencia de proformas por tipo de cotización"
+                  className={`p-5 lg:col-span-5 ${cardSurface}`}
+                >
+                  <div className="mb-4 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <FolderKanban
+                        className="h-4 w-4 text-[#8C5A32] dark:text-[#C68B59]"
+                        aria-hidden="true"
+                      />
+                      <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        Frecuencia por Tipo de Cotización
+                      </h2>
+                    </div>
+                    <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
+                      {kpis.totalQuotes} total
+                    </span>
+                  </div>
+
+                  <div className="h-52 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={typeFrequencyData}
+                        layout="vertical"
+                        margin={{ top: 4, right: 18, left: 4, bottom: 4 }}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke={gridStroke}
+                          horizontal={false}
+                        />
+                        <XAxis
+                          type="number"
+                          allowDecimals={false}
+                          tick={{ fill: axisTickColor, fontSize: 11 }}
+                          axisLine={{ stroke: gridStroke }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          type="category"
+                          dataKey="label"
+                          width={132}
+                          tick={{ fill: axisTickColor, fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <Tooltip
+                          cursor={{
+                            fill: isDark
+                              ? 'rgba(255,255,255,0.04)'
+                              : 'rgba(140,90,50,0.06)',
+                          }}
+                          contentStyle={{
+                            backgroundColor: isDark ? '#18181B' : '#FFFFFF',
+                            borderColor: isDark ? '#3F3F46' : '#E3E1DA',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            color: isDark ? '#F4F4F5' : '#18181B',
+                          }}
+                          formatter={(value: unknown) => [
+                            `${Number(value ?? 0)} proforma(s)`,
+                            'Frecuencia',
+                          ]}
+                        />
+                        <Bar
+                          dataKey="count"
+                          radius={[0, 6, 6, 0]}
+                          maxBarSize={26}
+                        >
+                          {typeFrequencyData.map((entry) => (
+                            <Cell
+                              key={entry.type}
+                              fill={TYPE_CHART_COLORS[entry.type]}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="mt-3 divide-y divide-[#F0EFEA] border-t border-[#F0EFEA] text-xs dark:divide-zinc-800 dark:border-zinc-800">
+                    {typeFrequencyData.map((row) => (
+                      <div
+                        key={row.type}
+                        className="flex items-center justify-between py-2"
+                      >
+                        <span className="flex items-center gap-2 font-medium text-zinc-700 dark:text-zinc-300">
+                          <span
+                            className="h-2.5 w-2.5 rounded-xs shrink-0"
+                            style={{
+                              backgroundColor: TYPE_CHART_COLORS[row.type],
+                            }}
+                            aria-hidden="true"
+                          />
+                          <span>{row.label}</span>
+                        </span>
+                        <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
+                          {row.count}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
               </div>
-            </section>
-          </div>
+            </>
+          )}
         </>
       )}
     </div>

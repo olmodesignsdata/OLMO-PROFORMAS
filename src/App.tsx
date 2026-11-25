@@ -2205,12 +2205,6 @@ export default function App() {
                 aranTemplates={aranTemplates}
                 terminosTemplates={terminosTemplates}
                 specsSheetUrl={sheetShortcutUrls.specsSheetUrl}
-                onSaveSpecsSheetUrl={(url) =>
-                  handleSaveSheetShortcutUrls({
-                    ...sheetShortcutUrls,
-                    specsSheetUrl: url,
-                  })
-                }
                 aranScriptUrl={cloudConfig.aranScriptUrl ?? ''}
                 aranLastStatus={cloudConfig.aranLastStatus}
                 aranLastMessage={cloudConfig.aranLastMessage}
@@ -2264,12 +2258,6 @@ export default function App() {
             onSyncClientsFromSheet={() => handleSyncClientsFromSheet(false)}
             onClearClientsSyncFeedback={() => setClientsSyncFeedback(null)}
             clientsSheetUrl={sheetShortcutUrls.clientsSheetUrl}
-            onSaveClientsSheetUrl={(url) =>
-              handleSaveSheetShortcutUrls({
-                ...sheetShortcutUrls,
-                clientsSheetUrl: url,
-              })
-            }
           />
         )}
 
@@ -2295,12 +2283,6 @@ export default function App() {
             onNewProforma={handleRequestNewProforma}
             onImportDraftFile={(file) => void handleImportDraftFile(file)}
             proformasSheetUrl={sheetShortcutUrls.proformasSheetUrl}
-            onSaveProformasSheetUrl={(url) =>
-              handleSaveSheetShortcutUrls({
-                ...sheetShortcutUrls,
-                proformasSheetUrl: url,
-              })
-            }
           />
         )}
 

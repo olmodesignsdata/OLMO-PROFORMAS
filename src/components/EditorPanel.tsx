@@ -33,6 +33,7 @@ import {
   DEFAULT_OLMO_MAIN_LOGO,
   DEFAULT_PAYMENT_SCHEDULE,
   DEFAULT_SPEC_BLOCKS,
+  DEFAULT_SPECS_SHEET_URL,
   DEFAULT_TERMINOS_CONDICIONES,
   PROFORMA_TYPE_OPTIONS,
 } from '../data/defaults';
@@ -113,7 +114,6 @@ interface EditorPanelProps {
   aranTemplates: AranSpecTemplate[];
   terminosTemplates?: TerminoTemplate[];
   specsSheetUrl?: string;
-  onSaveSpecsSheetUrl?: (url: string) => void;
   aranScriptUrl: string;
   aranLastStatus?: 'ok' | 'error';
   aranLastMessage?: string;
@@ -159,7 +159,6 @@ export function EditorPanel({
   aranTemplates,
   terminosTemplates = [],
   specsSheetUrl = '',
-  onSaveSpecsSheetUrl,
   aranScriptUrl,
   aranLastStatus,
   aranLastMessage,
@@ -3332,20 +3331,53 @@ export function EditorPanel({
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Términos y Condiciones
                 </h2>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedTerminoId('');
-                    onChange((prev) => ({
-                      ...prev,
-                      terminosCondiciones: DEFAULT_TERMINOS_CONDICIONES,
-                    }));
-                  }}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
-                >
-                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                  <span>Restaurar predeterminados</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTerminoId('');
+                      onChange((prev) => ({
+                        ...prev,
+                        terminosCondiciones: DEFAULT_TERMINOS_CONDICIONES,
+                      }));
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    <span>Restaurar predeterminados</span>
+                  </button>
+                  <GoogleSheetShortcutButton
+                    label="Abrir Sheet Términos y Condiciones"
+                    sheetUrl={DEFAULT_SPECS_SHEET_URL}
+                    defaultSheetUrl={DEFAULT_SPECS_SHEET_URL}
+                    size="sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={onSyncAranTemplates}
+                    disabled={isSyncingAran}
+                    title={
+                      isAranConnected
+                        ? 'Conectado con hoja TERMINOS_Y_CONDICIONES: recargar catálogo desde Google Sheets sin sobrescribir cambios actuales'
+                        : 'Sin URL o error en script de ESPECIFICACIONES / TERMINOS_Y_CONDICIONES: revisa la pestaña Integración'
+                    }
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer ${getConnectionButtonClasses(isAranConnected, 'outline')}`}
+                  >
+                    {isSyncingAran ? (
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    <span>
+                      {isSyncingAran
+                        ? 'Cargando Términos...'
+                        : `TERMINOS_Y_CONDICIONES (${terminosTemplates.length})`}
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <div className="mb-2.5 rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3 space-y-1.5 dark:border-zinc-800 dark:bg-zinc-800/50">
@@ -3426,14 +3458,12 @@ export function EditorPanel({
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>Restaurar</span>
                   </button>
-                  {onSaveSpecsSheetUrl && (
-                    <GoogleSheetShortcutButton
-                      label="Abrir Sheet Especificaciones"
-                      sheetUrl={specsSheetUrl}
-                      onSaveSheetUrl={onSaveSpecsSheetUrl}
-                      size="sm"
-                    />
-                  )}
+                  <GoogleSheetShortcutButton
+                    label="Abrir Sheet Especificaciones"
+                    sheetUrl={specsSheetUrl}
+                    defaultSheetUrl={DEFAULT_SPECS_SHEET_URL}
+                    size="sm"
+                  />
                   <button
                     type="button"
                     onClick={onSyncAranTemplates}
