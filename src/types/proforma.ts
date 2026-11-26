@@ -28,12 +28,15 @@ export interface ProductLineItem {
   imagen?: string;
 }
 
+export type VisualReferenceSize = 'small' | 'medium' | 'large';
+
 export interface VisualReferenceItem {
   id: string;
   slotIndex: number;
   imageDataUrl: string;
   name?: string;
   caption: string;
+  size?: VisualReferenceSize;
 }
 
 export interface SpecBlock {
@@ -234,3 +237,4 @@ export type AppSection =
   | 'integration';
 export type WorkspaceLayoutMode = 'split' | 'editor' | 'preview';
 export type ThemeMode = 'light' | 'dark';
+export type AutoRefreshMinutes = 5 | 10 | 30;

@@ -12,9 +12,11 @@ import {
   ChevronsUpDown,
   Copy,
   FileSpreadsheet,
+  GripVertical,
   ImagePlus,
   Link2,
   Loader2,
+  Maximize2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -53,6 +55,7 @@ import {
   SpecBlock,
   TerminoTemplate,
   VisualReferenceItem,
+  VisualReferenceSize,
 } from '../types/proforma';
 import { findBestTerminoForProformaType } from '../utils/cloudSync';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
@@ -60,6 +63,7 @@ import {
   formatMoney,
   getCurrencyCode,
   normalizeSpreadsheetParagraphs,
+  normalizeVisualReferenceSize,
 } from '../utils/formatters';
 import {
   DEFAULT_IMPORT_SHEET_NAME,
@@ -225,15 +229,24 @@ export function EditorPanel({
     Record<string, string | null>
   >({});
 
-  const [visualRefUrlInputs, setVisualRefUrlInputs] = useState<string[]>(() =>
-    Array.from({ length: 10 }, () => '')
-  );
-  const [visualRefLoading, setVisualRefLoading] = useState<boolean[]>(() =>
-    Array.from({ length: 10 }, () => false)
-  );
+  const [visualRefUrlInputs, setVisualRefUrlInputs] = useState<
+    Record<string, string>
+  >({});
+  const [visualRefLoading, setVisualRefLoading] = useState<
+    Record<string, boolean>
+  >({});
   const [visualRefSlotErrors, setVisualRefSlotErrors] = useState<
-    Array<string | null>
-  >(() => Array.from({ length: 10 }, () => null));
+    Record<string, string | null>
+  >({});
+  const [showStarterVisualRefs, setShowStarterVisualRefs] = useState(true);
+  const [draggedVisualRefId, setDraggedVisualRefId] = useState<string | null>(
+    null
+  );
+  const [dragOverVisualRefId, setDragOverVisualRefId] = useState<string | null>(
+    null
+  );
+  const [expandedVisualRefModal, setExpandedVisualRefModal] =
+    useState<VisualReferenceItem | null>(null);
 
   const mainLogoInputRef = useRef<HTMLInputElement | null>(null);
   const spreadsheetFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -242,9 +255,9 @@ export function EditorPanel({
     null,
     null,
   ]);
-  const visualRefFileInputRefs = useRef<Array<HTMLInputElement | null>>(
-    Array.from({ length: 10 }, () => null)
-  );
+  const visualRefFileInputRefs = useRef<
+    Record<string, HTMLInputElement | null>
+  >({});
   const itemImageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>(
     {}
   );
@@ -809,131 +822,188 @@ export function EditorPanel({
     }
   };
 
-  const upsertVisualRefImage = (
-    slotIndex: number,
-    imageUrl: string,
-    name: string
+  const starterVisualRefs: VisualReferenceItem[] = [
+    {
+      id: 'vref-starter-0',
+      slotIndex: 0,
+      imageDataUrl: '',
+      caption: '',
+      size: 'medium',
+    },
+    {
+      id: 'vref-starter-1',
+      slotIndex: 1,
+      imageDataUrl: '',
+      caption: '',
+      size: 'medium',
+    },
+  ];
+
+  const getMaterializedVisualRefs = (
+    list: VisualReferenceItem[] | undefined
+  ): VisualReferenceItem[] => {
+    if (Array.isArray(list) && list.length > 0) {
+      return [...list]
+        .sort((a, b) => a.slotIndex - b.slotIndex)
+        .map((item, idx) => ({
+          ...item,
+          slotIndex: idx,
+          size: normalizeVisualReferenceSize(item.size),
+        }));
+    }
+    return showStarterVisualRefs
+      ? starterVisualRefs.map((item) => ({ ...item }))
+      : [];
+  };
+
+  const editorVisualRefs = getMaterializedVisualRefs(data.visualReferences);
+
+  const upsertVisualRefPatch = (
+    refId: string,
+    patch: Partial<VisualReferenceItem>
   ) => {
     onChange((prev) => {
-      const list = [...(prev.visualReferences ?? [])];
-      const existingIdx = list.findIndex((r) => r.slotIndex === slotIndex);
-      if (existingIdx >= 0) {
-        list[existingIdx] = {
-          ...list[existingIdx],
-          imageDataUrl: imageUrl,
-          name,
-        };
-      } else {
-        list.push({
-          id: `vref-${Date.now()}-${slotIndex}`,
-          slotIndex,
-          imageDataUrl: imageUrl,
-          name,
-          caption: '',
-        });
-      }
-      list.sort((a, b) => a.slotIndex - b.slotIndex);
-      return { ...prev, visualReferences: list };
+      const list = getMaterializedVisualRefs(prev.visualReferences);
+      const next = list.map((item, idx) =>
+        item.id === refId
+          ? {
+              ...item,
+              ...patch,
+              slotIndex: idx,
+            }
+          : { ...item, slotIndex: idx }
+      );
+      return { ...prev, visualReferences: next };
     });
   };
 
-  const handleVisualRefUpload = async (slotIndex: number, file: File) => {
+  const handleAddVisualRefSlot = () => {
     setVisualRefError(null);
-    setVisualRefSlotErrors((prev) =>
-      prev.map((err, idx) => (idx === slotIndex ? null : err))
-    );
+    setShowStarterVisualRefs(true);
+    onChange((prev) => {
+      const list = getMaterializedVisualRefs(prev.visualReferences);
+      const newSlot: VisualReferenceItem = {
+        id: `vref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        slotIndex: list.length,
+        imageDataUrl: '',
+        caption: '',
+        size: 'medium',
+      };
+      return { ...prev, visualReferences: [...list, newSlot] };
+    });
+  };
+
+  const handleVisualRefUpload = async (refId: string, file: File) => {
+    setVisualRefError(null);
+    setVisualRefSlotErrors((prev) => ({ ...prev, [refId]: null }));
     try {
       const processed = await processProductImageFile(file);
-      upsertVisualRefImage(slotIndex, processed.dataUrl, processed.name);
-      setVisualRefUrlInputs((prev) =>
-        prev.map((val, idx) => (idx === slotIndex ? '' : val))
-      );
+      upsertVisualRefPatch(refId, {
+        imageDataUrl: processed.dataUrl,
+        name: processed.name,
+      });
+      setVisualRefUrlInputs((prev) => ({ ...prev, [refId]: '' }));
     } catch (err) {
-      setVisualRefSlotErrors((prev) =>
-        prev.map((msg, idx) =>
-          idx === slotIndex
-            ? err instanceof Error
-              ? err.message
-              : 'No se pudo cargar la imagen.'
-            : msg
-        )
-      );
+      setVisualRefSlotErrors((prev) => ({
+        ...prev,
+        [refId]:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo cargar la imagen.',
+      }));
     }
   };
 
-  const handleLoadVisualRefUrl = async (slotIndex: number) => {
-    const rawUrl = visualRefUrlInputs[slotIndex] ?? '';
+  const handleLoadVisualRefUrl = async (refId: string, slotPos: number) => {
+    const rawUrl = visualRefUrlInputs[refId] ?? '';
     setVisualRefError(null);
-    setVisualRefSlotErrors((prev) =>
-      prev.map((err, idx) => (idx === slotIndex ? null : err))
-    );
-    setVisualRefLoading((prev) =>
-      prev.map((loading, idx) => (idx === slotIndex ? true : loading))
-    );
+    setVisualRefSlotErrors((prev) => ({ ...prev, [refId]: null }));
+    setVisualRefLoading((prev) => ({ ...prev, [refId]: true }));
     try {
       const resolved = await resolveAndValidateImageUrl(rawUrl);
-      upsertVisualRefImage(slotIndex, resolved.url, resolved.name);
-      setVisualRefUrlInputs((prev) =>
-        prev.map((val, idx) => (idx === slotIndex ? resolved.url : val))
-      );
+      upsertVisualRefPatch(refId, {
+        imageDataUrl: resolved.url,
+        name: resolved.name,
+      });
+      setVisualRefUrlInputs((prev) => ({ ...prev, [refId]: resolved.url }));
       flashBanner(
         resolved.isGoogleDrive
-          ? `Referencia ${slotIndex + 1} cargada desde Google Drive.`
-          : `Referencia ${slotIndex + 1} cargada desde enlace.`
+          ? `Referencia ${slotPos + 1} cargada desde Google Drive.`
+          : `Referencia ${slotPos + 1} cargada desde enlace.`
       );
     } catch (err) {
-      setVisualRefSlotErrors((prev) =>
-        prev.map((msg, idx) =>
-          idx === slotIndex
-            ? err instanceof Error
-              ? err.message
-              : 'No se pudo cargar la imagen desde la URL.'
-            : msg
-        )
-      );
+      setVisualRefSlotErrors((prev) => ({
+        ...prev,
+        [refId]:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo cargar la imagen desde la URL.',
+      }));
     } finally {
-      setVisualRefLoading((prev) =>
-        prev.map((loading, idx) => (idx === slotIndex ? false : loading))
-      );
+      setVisualRefLoading((prev) => ({ ...prev, [refId]: false }));
     }
   };
 
-  const handleVisualRefCaptionChange = (slotIndex: number, caption: string) => {
+  const handleVisualRefCaptionChange = (refId: string, caption: string) => {
+    upsertVisualRefPatch(refId, { caption });
+  };
+
+  const handleVisualRefSizeChange = (
+    refId: string,
+    size: VisualReferenceSize
+  ) => {
+    upsertVisualRefPatch(refId, { size });
+  };
+
+  const handleClearVisualRefImage = (refId: string) => {
+    setVisualRefError(null);
+    setVisualRefSlotErrors((prev) => ({ ...prev, [refId]: null }));
+    setVisualRefUrlInputs((prev) => ({ ...prev, [refId]: '' }));
+    upsertVisualRefPatch(refId, { imageDataUrl: '', name: '' });
+  };
+
+  const handleDeleteVisualRefSlot = (refId: string) => {
+    setVisualRefError(null);
+    setVisualRefSlotErrors((prev) => ({ ...prev, [refId]: null }));
+    setVisualRefUrlInputs((prev) => ({ ...prev, [refId]: '' }));
+    const current = editorVisualRefs;
+    const remaining = current
+      .filter((r) => r.id !== refId)
+      .map((item, idx) => ({ ...item, slotIndex: idx }));
+    if (remaining.length === 0) {
+      setShowStarterVisualRefs(false);
+    }
+    onChange((prev) => ({
+      ...prev,
+      visualReferences: remaining,
+    }));
+  };
+
+  const handleReorderVisualRefs = (fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return;
     onChange((prev) => {
-      const list = [...(prev.visualReferences ?? [])];
-      const existingIdx = list.findIndex((r) => r.slotIndex === slotIndex);
-      if (existingIdx >= 0) {
-        list[existingIdx] = {
-          ...list[existingIdx],
-          caption,
-        };
-      } else {
-        list.push({
-          id: `vref-${Date.now()}-${slotIndex}`,
-          slotIndex,
-          imageDataUrl: '',
-          caption,
-        });
-      }
-      list.sort((a, b) => a.slotIndex - b.slotIndex);
-      return { ...prev, visualReferences: list };
+      const list = getMaterializedVisualRefs(prev.visualReferences);
+      const fromIdx = list.findIndex((r) => r.id === fromId);
+      const toIdx = list.findIndex((r) => r.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const reordered = [...list];
+      const [moved] = reordered.splice(fromIdx, 1);
+      reordered.splice(toIdx, 0, moved);
+      return {
+        ...prev,
+        visualReferences: reordered.map((item, idx) => ({
+          ...item,
+          slotIndex: idx,
+        })),
+      };
     });
   };
 
-  const handleRemoveVisualRef = (slotIndex: number) => {
-    setVisualRefError(null);
-    setVisualRefSlotErrors((prev) =>
-      prev.map((err, idx) => (idx === slotIndex ? null : err))
-    );
-    setVisualRefUrlInputs((prev) =>
-      prev.map((val, idx) => (idx === slotIndex ? '' : val))
-    );
-    onChange((prev) => ({
-      ...prev,
-      visualReferences: (prev.visualReferences ?? []).filter(
-        (r) => r.slotIndex !== slotIndex
-      ),
-    }));
+  const moveVisualRefByStep = (refId: string, delta: -1 | 1) => {
+    const idx = editorVisualRefs.findIndex((r) => r.id === refId);
+    const targetIdx = idx + delta;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= editorVisualRefs.length) return;
+    handleReorderVisualRefs(refId, editorVisualRefs[targetIdx].id);
   };
 
   const addItem = (presetName = '') => {
@@ -1912,7 +1982,12 @@ export function EditorPanel({
               >
                 <span className="inline-flex items-center gap-2">
                   <Building2 className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
-                  <span>Datos del Estudio Emisor ({data.company.nombreComercial})</span>
+                  <span>
+                    Datos del Estudio Emisor
+                    {data.company.nombreComercial.trim()
+                      ? ` (${data.company.nombreComercial.trim()})`
+                      : ''}
+                  </span>
                 </span>
                 {showCompanyDrawer ? (
                   <ChevronUp className="h-4 w-4 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
@@ -1973,6 +2048,7 @@ export function EditorPanel({
                       <input
                         type="email"
                         value={data.company.correo}
+                        placeholder="Opcional"
                         onChange={(e) =>
                           updateCompany('correo', e.target.value)
                         }
@@ -1984,6 +2060,7 @@ export function EditorPanel({
                       <input
                         type="text"
                         value={data.company.sitioWeb}
+                        placeholder="Opcional"
                         onChange={(e) =>
                           updateCompany('sitioWeb', e.target.value)
                         }
@@ -3128,22 +3205,32 @@ export function EditorPanel({
         )}
 
         {/* ================================================================
-            TAB 3: REFERENCIAS VISUALES (SECCIÓN INDEPENDIENTE, HASTA 10 IMÁGENES)
+            TAB 3: REFERENCIAS VISUALES (ESPACIOS ILIMITADOS, TAMAÑOS Y ORDEN)
             ================================================================ */}
         {activeTab === 'referencias' && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-2.5">
+              <div className="min-w-0 flex-1">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  Referencias Visuales (hasta 10 imágenes)
+                  Referencias Visuales
                 </h2>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  Carga hasta 10 imágenes de referencia desde tu PC o mediante enlace/URL (incluyendo Google Drive). Los espacios sin imagen no aparecen en la vista previa ni en el PDF; si dejas la descripción en blanco, se mostrará únicamente la imagen.
+                  Agrega tantos espacios de imagen como necesites desde tu PC o URL. Elige el tamaño por espacio (<strong className="font-medium text-zinc-700 dark:text-zinc-300">Pequeño</strong> hasta 3/fila, <strong className="font-medium text-zinc-700 dark:text-zinc-300">Mediano</strong> hasta 2/fila o <strong className="font-medium text-zinc-700 dark:text-zinc-300">Grande</strong> 1/fila) y arrastra para reordenar dentro del área de impresión.
                 </p>
               </div>
-              <span className="rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 font-mono text-[11px] font-medium text-zinc-600 tabular-nums dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                {activeVisualRefsCount}/10
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-1 font-mono text-[11px] font-medium text-zinc-600 tabular-nums dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                  {activeVisualRefsCount} cargada(s) · {editorVisualRefs.length} espacio(s)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAddVisualRefSlot}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Agregar espacio</span>
+                </button>
+              </div>
             </div>
 
             {visualRefError && (
@@ -3152,172 +3239,393 @@ export function EditorPanel({
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {Array.from({ length: 10 }, (_, slotIdx) => {
-                const entry: VisualReferenceItem | undefined = (
-                  data.visualReferences ?? []
-                ).find((r) => r.slotIndex === slotIdx);
-                const hasImage = Boolean(entry?.imageDataUrl?.trim());
-                const slotErr = visualRefSlotErrors[slotIdx];
-                const slotLoading = visualRefLoading[slotIdx];
-                const currentUrlValue =
-                  visualRefUrlInputs[slotIdx] ||
-                  (entry?.imageDataUrl && !entry.imageDataUrl.startsWith('data:')
-                    ? entry.imageDataUrl
-                    : '');
+            {editorVisualRefs.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[#DCDAD3] bg-[#FAF9F6] px-4 py-8 text-center dark:border-zinc-700 dark:bg-zinc-800/40">
+                <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  No hay espacios de referencia visual agregados.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleAddVisualRefSlot}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Agregar primer espacio de imagen</span>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {editorVisualRefs.map((entry, idx) => {
+                  const hasImage = Boolean(entry.imageDataUrl?.trim());
+                  const slotErr = visualRefSlotErrors[entry.id];
+                  const slotLoading = Boolean(visualRefLoading[entry.id]);
+                  const currentUrlValue =
+                    visualRefUrlInputs[entry.id] ??
+                    (entry.imageDataUrl && !entry.imageDataUrl.startsWith('data:')
+                      ? entry.imageDataUrl
+                      : '');
+                  const currentSize = normalizeVisualReferenceSize(entry.size);
+                  const isDragged = draggedVisualRefId === entry.id;
+                  const isDragTarget =
+                    dragOverVisualRefId === entry.id &&
+                    draggedVisualRefId !== entry.id;
 
-                return (
-                  <div
-                    key={slotIdx}
-                    className="flex flex-col justify-between rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 dark:border-zinc-800 dark:bg-zinc-800/50"
-                  >
-                    <input
-                      ref={(el) => {
-                        visualRefFileInputRefs.current[slotIdx] = el;
+                  return (
+                    <div
+                      key={entry.id}
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggedVisualRefId(entry.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', entry.id);
                       }}
-                      type="file"
-                      accept={ACCEPTED_LOGO_INPUT}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        if (file) {
-                          handleVisualRefUpload(slotIdx, file);
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverVisualRefId !== entry.id) {
+                          setDragOverVisualRefId(entry.id);
                         }
                       }}
-                      className="hidden"
-                      aria-label={`Subir imagen de referencia ${slotIdx + 1}`}
-                    />
-
-                    <div className="mb-2 flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-                        Imagen {slotIdx + 1}
-                      </span>
-                      {hasImage && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveVisualRef(slotIdx)}
-                          title={`Quitar imagen ${slotIdx + 1}`}
-                          aria-label={`Quitar imagen ${slotIdx + 1}`}
-                          className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="mb-2.5 flex h-24 items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5 dark:border-zinc-700">
-                      {hasImage && entry ? (
-                        <ResilientImage
-                          src={entry.imageDataUrl}
-                          alt={
-                            entry.caption.trim() ||
-                            entry.name ||
-                            `Referencia ${slotIdx + 1}`
-                          }
-                          className="max-h-20 max-w-full w-auto h-auto object-contain"
-                          fallback={
-                            <span className="text-[11px] text-amber-700">
-                              No se pudo previsualizar este enlace
-                            </span>
-                          }
-                        />
-                      ) : (
-                        <span className="text-[11px] text-zinc-400">
-                          Sin imagen cargada
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="space-y-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          visualRefFileInputRefs.current[slotIdx]?.click()
+                      onDragLeave={() => {
+                        if (dragOverVisualRefId === entry.id) {
+                          setDragOverVisualRefId(null);
                         }
-                        className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
-                      >
-                        <ImagePlus
-                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {hasImage
-                            ? 'Cambiar archivo desde PC'
-                            : 'Subir archivo desde PC'}
-                        </span>
-                      </button>
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const fromId =
+                          draggedVisualRefId ||
+                          e.dataTransfer.getData('text/plain');
+                        if (fromId) {
+                          handleReorderVisualRefs(fromId, entry.id);
+                        }
+                        setDraggedVisualRefId(null);
+                        setDragOverVisualRefId(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedVisualRefId(null);
+                        setDragOverVisualRefId(null);
+                      }}
+                      className={`flex flex-col justify-between overflow-hidden rounded-md border bg-[#FAF9F6] p-3 transition-all dark:bg-zinc-800/50 ${
+                        currentSize === 'large' ? 'sm:col-span-2' : ''
+                      } ${
+                        isDragTarget
+                          ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/30 dark:border-amber-400 dark:ring-amber-400/30'
+                          : 'border-[#E5E4DF] dark:border-zinc-800'
+                      } ${isDragged ? 'opacity-50' : ''}`}
+                    >
+                      <input
+                        ref={(el) => {
+                          visualRefFileInputRefs.current[entry.id] = el;
+                        }}
+                        type="file"
+                        accept={ACCEPTED_LOGO_INPUT}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) {
+                            void handleVisualRefUpload(entry.id, file);
+                          }
+                        }}
+                        className="hidden"
+                        aria-label={`Subir imagen de referencia ${idx + 1}`}
+                      />
 
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="url"
-                          aria-label={`URL de imagen para referencia ${slotIdx + 1}`}
-                          placeholder="O pegar URL / enlace Google Drive..."
-                          value={currentUrlValue}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setVisualRefUrlInputs((prev) =>
-                              prev.map((v, i) => (i === slotIdx ? val : v))
-                            );
-                            if (slotErr) {
-                              setVisualRefSlotErrors((prev) =>
-                                prev.map((err, i) =>
-                                  i === slotIdx ? null : err
-                                )
-                              );
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleLoadVisualRefUrl(slotIdx);
-                            }
-                          }}
-                          className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
-                        />
-                        <button
-                          type="button"
-                          disabled={slotLoading}
-                          onClick={() => handleLoadVisualRefUrl(slotIdx)}
-                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-                        >
-                          {slotLoading ? (
-                            <Loader2
-                              className="h-3.5 w-3.5 animate-spin"
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <Link2
-                              className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
-                              aria-hidden="true"
-                            />
+                      <div className="mb-2 flex items-center justify-between gap-2 text-[11px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            title="Arrastra para reordenar"
+                            className="inline-flex cursor-grab items-center rounded p-0.5 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 active:cursor-grabbing dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                          >
+                            <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+                          </span>
+                          <span className="font-semibold text-zinc-700 truncate dark:text-zinc-300">
+                            Espacio {idx + 1}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => moveVisualRefByStep(entry.id, -1)}
+                            disabled={idx === 0}
+                            title="Mover antes"
+                            aria-label={`Mover espacio ${idx + 1} antes`}
+                            className="rounded p-0.5 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                          >
+                            <ArrowUp className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveVisualRefByStep(entry.id, 1)}
+                            disabled={idx === editorVisualRefs.length - 1}
+                            title="Mover después"
+                            aria-label={`Mover espacio ${idx + 1} después`}
+                            className="rounded p-0.5 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                          >
+                            <ArrowDown className="h-3 w-3" />
+                          </button>
+                          {hasImage && (
+                            <button
+                              type="button"
+                              onClick={() => handleClearVisualRefImage(entry.id)}
+                              title={`Quitar imagen del espacio ${idx + 1}`}
+                              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 hover:bg-amber-50 hover:text-amber-800 dark:text-zinc-400 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 cursor-pointer"
+                            >
+                              Limpiar
+                            </button>
                           )}
-                          <span>Cargar</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteVisualRefSlot(entry.id)}
+                            title={`Eliminar espacio ${idx + 1}`}
+                            aria-label={`Eliminar espacio ${idx + 1}`}
+                            className="rounded p-0.5 text-zinc-400 hover:bg-red-50 hover:text-red-700 dark:text-zinc-500 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
 
-                      {slotErr && (
-                        <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
-                          {slotErr}
-                        </p>
-                      )}
+                      {/* Selector de tamaño / distribución dentro del área de impresión */}
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-[10.5px] font-medium text-zinc-500 dark:text-zinc-400">
+                          Tamaño:
+                        </span>
+                        <div
+                          role="group"
+                          aria-label={`Tamaño de impresión para espacio ${idx + 1}`}
+                          className="inline-flex rounded border border-[#DCDAD3] bg-white p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                        >
+                          {(
+                            [
+                              {
+                                value: 'small' as VisualReferenceSize,
+                                label: 'Pequeño',
+                                hint: 'Hasta 3 por fila',
+                              },
+                              {
+                                value: 'medium' as VisualReferenceSize,
+                                label: 'Mediano',
+                                hint: 'Hasta 2 por fila',
+                              },
+                              {
+                                value: 'large' as VisualReferenceSize,
+                                label: 'Grande',
+                                hint: '1 por fila (expandido)',
+                              },
+                            ] as const
+                          ).map((opt) => {
+                            const selected = currentSize === opt.value;
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                title={opt.hint}
+                                onClick={() =>
+                                  handleVisualRefSizeChange(entry.id, opt.value)
+                                }
+                                className={`rounded px-2 py-0.5 text-[10.5px] font-medium transition-colors cursor-pointer ${
+                                  selected
+                                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-                      <input
-                        type="text"
-                        placeholder="Descripción opcional (si queda vacía se omite)"
-                        value={entry?.caption ?? ''}
-                        onChange={(e) =>
-                          handleVisualRefCaptionChange(
-                            slotIdx,
-                            e.target.value
-                          )
-                        }
-                        className="w-full rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
-                      />
+                      <div
+                        className={`relative mb-2.5 flex items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5 dark:border-zinc-700 ${
+                          currentSize === 'large'
+                            ? 'h-40'
+                            : currentSize === 'small'
+                              ? 'h-20'
+                              : 'h-24'
+                        }`}
+                      >
+                        {hasImage ? (
+                          <>
+                            <ResilientImage
+                              src={entry.imageDataUrl}
+                              alt={
+                                entry.caption.trim() ||
+                                entry.name ||
+                                `Referencia ${idx + 1}`
+                              }
+                              className="max-h-full max-w-full w-auto h-auto object-contain"
+                              fallback={
+                                <span className="text-[11px] text-amber-700">
+                                  No se pudo previsualizar este enlace
+                                </span>
+                              }
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setExpandedVisualRefModal(entry)}
+                              title="Expandir imagen"
+                              aria-label={`Expandir imagen ${idx + 1}`}
+                              className="absolute right-1.5 top-1.5 rounded border border-[#DCDAD3] bg-white/90 p-1 text-zinc-700 shadow-xs hover:bg-white hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900/90 dark:text-zinc-200 cursor-pointer"
+                            >
+                              <Maximize2 className="h-3 w-3" />
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-[11px] text-zinc-400">
+                            Sin imagen cargada
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            visualRefFileInputRefs.current[entry.id]?.click()
+                          }
+                          className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+                        >
+                          <ImagePlus
+                            className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {hasImage
+                              ? 'Cambiar archivo desde PC'
+                              : 'Subir archivo desde PC'}
+                          </span>
+                        </button>
+
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="url"
+                            aria-label={`URL de imagen para referencia ${idx + 1}`}
+                            placeholder="O pegar URL / enlace Google Drive..."
+                            value={currentUrlValue}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setVisualRefUrlInputs((prev) => ({
+                                ...prev,
+                                [entry.id]: val,
+                              }));
+                              if (slotErr) {
+                                setVisualRefSlotErrors((prev) => ({
+                                  ...prev,
+                                  [entry.id]: null,
+                                }));
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleLoadVisualRefUrl(entry.id, idx);
+                              }
+                            }}
+                            className="min-w-0 flex-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
+                          />
+                          <button
+                            type="button"
+                            disabled={slotLoading}
+                            onClick={() =>
+                              void handleLoadVisualRefUrl(entry.id, idx)
+                            }
+                            className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            {slotLoading ? (
+                              <Loader2
+                                className="h-3.5 w-3.5 animate-spin"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Link2
+                                className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span>Cargar</span>
+                          </button>
+                        </div>
+
+                        {slotErr && (
+                          <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
+                            {slotErr}
+                          </p>
+                        )}
+
+                        <input
+                          type="text"
+                          placeholder="Descripción editable (si queda vacía se omite)"
+                          value={entry.caption ?? ''}
+                          onChange={(e) =>
+                            handleVisualRefCaptionChange(
+                              entry.id,
+                              e.target.value
+                            )
+                          }
+                          className="w-full rounded border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-[#8C5A32] focus:outline-none focus:ring-2 focus:ring-[#8C5A32]/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-amber-500"
+                        />
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex justify-center pt-1">
+              <button
+                type="button"
+                onClick={handleAddVisualRefSlot}
+                className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-[#C7C3B8] bg-white px-4 py-2 text-xs font-semibold text-zinc-700 hover:border-[#8C5A32] hover:bg-[#FAF9F6] hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-amber-500 dark:hover:bg-zinc-800 cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Agregar otro espacio de imagen</span>
+              </button>
             </div>
+
+            {expandedVisualRefModal && (
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="Vista ampliada de referencia visual"
+                onClick={() => setExpandedVisualRefModal(null)}
+                className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/75 p-4 backdrop-blur-[1px]"
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[#E5E4DF] bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <div className="flex items-center justify-between border-b border-[#E5E4DF] px-4 py-2.5 dark:border-zinc-800">
+                    <span className="text-xs font-semibold text-zinc-900 truncate dark:text-zinc-100">
+                      {expandedVisualRefModal.caption.trim() ||
+                        expandedVisualRefModal.name ||
+                        'Referencia visual ampliada'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedVisualRefModal(null)}
+                      aria-label="Cerrar vista ampliada"
+                      className="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 cursor-pointer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="flex flex-1 items-center justify-center overflow-auto bg-[#FAF9F6] p-4 dark:bg-zinc-950">
+                    <ResilientImage
+                      src={expandedVisualRefModal.imageDataUrl}
+                      alt={
+                        expandedVisualRefModal.caption.trim() ||
+                        expandedVisualRefModal.name ||
+                        'Referencia visual'
+                      }
+                      className="max-h-[75vh] max-w-full w-auto h-auto object-contain"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

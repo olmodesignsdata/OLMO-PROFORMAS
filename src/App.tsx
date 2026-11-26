@@ -23,7 +23,8 @@ import {
 } from './components/ClientsView';
 import { DashboardView } from './components/DashboardView';
 import { EditorPanel } from './components/EditorPanel';
-import { HistoryView } from './components/HistoryView';
+import { HistoryView, mergeProformaHistoryRecords } from './components/HistoryView';
+import { ImportFromSheetModal } from './components/ImportFromSheetModal';
 import { IntegrationView } from './components/IntegrationView';
 import { PdfIcon } from './components/PdfIcon';
 import { ProformaPreview } from './components/ProformaPreview';
@@ -34,11 +35,13 @@ import {
   DEFAULT_NOTAS_FINALES,
   GRIFERIA_AUTO_FOOTER_LOGOS,
   isAutoGriferiaFooterLogo,
+  normalizeCompanyDefaults,
 } from './data/defaults';
 import {
   AppNotification,
   AppSection,
   AranSpecTemplate,
+  AutoRefreshMinutes,
   BankAccountInfo,
   ClientsImportConfig,
   ClientsImportStrategy,
@@ -55,6 +58,7 @@ import {
   SheetShortcutUrls,
   TerminoTemplate,
   ThemeMode,
+  VisualReferenceSize,
   WorkspaceLayoutMode,
 } from './types/proforma';
 import {
@@ -87,6 +91,7 @@ import {
   deleteProformaFromHistory,
   loadActiveProformaConfirmed,
   loadAranTemplatesCache,
+  loadAutoRefreshMinutes,
   loadClientsImportConfig,
   loadCloudConfig,
   loadDraftProforma,
@@ -109,6 +114,7 @@ import {
   reserveNextConsecutivo,
   saveActiveProformaConfirmed,
   saveAranTemplatesCache,
+  saveAutoRefreshMinutes,
   saveBankDefaults,
   saveClientsImportConfig,
   saveCloudConfig,
@@ -144,6 +150,17 @@ function isUntouchedLegacySampleDraft(draft: ProformaData): boolean {
 
 function normalizeProformaClientContact(data: ProformaData): ProformaData {
   const cp = data.clientProject;
+  const normalizedCompany = normalizeCompanyDefaults(data.company);
+  const hasCompanyChanges =
+    !data.company ||
+    normalizedCompany.nombreComercial !== data.company.nombreComercial ||
+    normalizedCompany.razonSocial !== data.company.razonSocial ||
+    normalizedCompany.cedulaJuridica !== data.company.cedulaJuridica ||
+    normalizedCompany.telefono !== data.company.telefono ||
+    normalizedCompany.correo !== data.company.correo ||
+    normalizedCompany.sitioWeb !== data.company.sitioWeb ||
+    normalizedCompany.direccion !== data.company.direccion;
+
   const hasLegacyClientSigner =
     data.signatures?.clienteNombre === 'Nombre y Cédula / Aprobación';
   const needsTypeOrRefs =
@@ -154,6 +171,7 @@ function normalizeProformaClientContact(data: ProformaData): ProformaData {
   if (
     typeof cp.telefono === 'string' &&
     typeof cp.correo === 'string' &&
+    !hasCompanyChanges &&
     !hasLegacyClientSigner &&
     !needsTypeOrRefs &&
     !hasMissingNotasFinales
@@ -181,6 +199,7 @@ function normalizeProformaClientContact(data: ProformaData): ProformaData {
 
   return {
     ...data,
+    company: normalizedCompany,
     proformaType: data.proformaType ?? 'mobiliario',
     visualReferences: Array.isArray(data.visualReferences)
       ? data.visualReferences
@@ -441,7 +460,19 @@ export default function App() {
   );
   const [layoutMode, setLayoutMode] = useState<WorkspaceLayoutMode>('split');
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
+  const [autoRefreshMinutes, setAutoRefreshMinutes] =
+    useState<AutoRefreshMinutes>(() => loadAutoRefreshMinutes());
   const [isSendingToSheet, setIsSendingToSheet] = useState(false);
+  const [showSendToSheetConfirm, setShowSendToSheetConfirm] = useState(false);
+  const [sheetPreviewModal, setSheetPreviewModal] = useState<{
+    isOpen: boolean;
+    mode: 'import' | 'history';
+    initialRecord: SavedProformaRecord | null;
+  }>({
+    isOpen: false,
+    mode: 'import',
+    initialRecord: null,
+  });
   const [showNewQuoteConfirm, setShowNewQuoteConfirm] = useState(false);
   const [pendingLoadDraft, setPendingLoadDraft] = useState<{
     data: ProformaData;
@@ -698,7 +729,14 @@ export default function App() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!isProformaConfirmed) return;
       if (activeSection !== 'editor' && activeSection !== 'preview') return;
-      if (showNewQuoteConfirm || pendingLoadDraft) return;
+      if (
+        showNewQuoteConfirm ||
+        pendingLoadDraft ||
+        showSendToSheetConfirm ||
+        sheetPreviewModal.isOpen
+      ) {
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (isTextEditingElement(event.target)) return;
 
@@ -726,6 +764,8 @@ export default function App() {
     activeSection,
     showNewQuoteConfirm,
     pendingLoadDraft,
+    showSendToSheetConfirm,
+    sheetPreviewModal.isOpen,
     canUndo,
     canRedo,
     handleUndo,
@@ -785,25 +825,10 @@ export default function App() {
     setNextConsecutivoState(updatedNext);
 
     if (cloudConfig.autoSyncOnSave && cloudConfig.webhookUrl.trim()) {
-      const res = await sendProformaToWebhook(cloudConfig, proforma, totals);
-      if (res.ok) {
-        const nextCfg: CloudSyncConfig = {
-          ...cloudConfig,
-          lastSyncedAt: new Date().toISOString(),
-          lastStatus: 'ok',
-          lastMessage: res.message,
-        };
-        setCloudConfig(nextCfg);
-        saveCloudConfig(nextCfg);
-        showToast(
-          `Proforma Nº ${proforma.consecutivo} guardada en historial y sincronizada en la nube.`
-        );
-      } else {
-        showToast(
-          `Guardada en historial local. Error al sincronizar en nube: ${res.message}`,
-          true
-        );
-      }
+      setShowSendToSheetConfirm(true);
+      showToast(
+        `Proforma Nº ${proforma.consecutivo} guardada en historial local. Confirma para enviarla al Sheet.`
+      );
     } else {
       showToast(
         `Proforma Nº ${proforma.consecutivo} guardada en historial local.`
@@ -878,6 +903,10 @@ export default function App() {
         mainLogo,
         footerLogos
       );
+      if (result.canceled) {
+        showToast('Exportación de PDF cancelada.');
+        return;
+      }
       // Guardar automáticamente en historial al generar PDF para asegurar consecutivo único
       const savedAt = saveDraftProforma(proforma);
       if (savedAt) {
@@ -906,7 +935,7 @@ export default function App() {
     }
   };
 
-  const handleSendProformaToSheet = async () => {
+  const handleSendProformaToSheet = () => {
     if (!isProformaConfirmed) {
       showToast(
         'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de enviarla al Sheet.',
@@ -921,6 +950,12 @@ export default function App() {
       );
       return;
     }
+    setShowSendToSheetConfirm(true);
+  };
+
+  const executeSendProformaToSheet = async () => {
+    setShowSendToSheetConfirm(false);
+    if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
 
     setIsSendingToSheet(true);
     try {
@@ -962,6 +997,47 @@ export default function App() {
       setIsSendingToSheet(false);
     }
   };
+
+  const handleChangeVisualReferenceSize = useCallback(
+    (refId: string, nextSize: VisualReferenceSize) => {
+      if (!latestIsProformaConfirmedRef.current) return;
+      hasEditedSinceLoadRef.current = true;
+      updateProforma((prev) => ({
+        ...prev,
+        visualReferences: (prev.visualReferences ?? []).map((item) =>
+          item.id === refId ? { ...item, size: nextSize } : item
+        ),
+      }));
+    },
+    [updateProforma]
+  );
+
+  const handleReorderVisualReferences = useCallback(
+    (fromId: string, toId: string) => {
+      if (!latestIsProformaConfirmedRef.current) return;
+      if (!fromId || !toId || fromId === toId) return;
+      hasEditedSinceLoadRef.current = true;
+      updateProforma((prev) => {
+        const list = [...(prev.visualReferences ?? [])].sort(
+          (a, b) => a.slotIndex - b.slotIndex
+        );
+        const fromIdx = list.findIndex((r) => r.id === fromId);
+        const toIdx = list.findIndex((r) => r.id === toId);
+        if (fromIdx < 0 || toIdx < 0) return prev;
+        const reordered = [...list];
+        const [moved] = reordered.splice(fromIdx, 1);
+        reordered.splice(toIdx, 0, moved);
+        return {
+          ...prev,
+          visualReferences: reordered.map((item, idx) => ({
+            ...item,
+            slotIndex: idx,
+          })),
+        };
+      });
+    },
+    [updateProforma]
+  );
 
   const handleUploadMainLogo = async (file: File) => {
     try {
@@ -1811,6 +1887,84 @@ export default function App() {
     }
   }, [handleSyncHistoryFromSheet, handleSyncClientsFromSheet]);
 
+  // Auto-refresco periódico compartido para Proformas y Clientes (5 min por defecto)
+  useEffect(() => {
+    const intervalMs = autoRefreshMinutes * 60 * 1000;
+    const timerId = window.setInterval(() => {
+      void handleSyncHistoryFromSheet(true);
+      void handleSyncClientsFromSheet(true);
+    }, intervalMs);
+    return () => window.clearInterval(timerId);
+  }, [
+    autoRefreshMinutes,
+    handleSyncHistoryFromSheet,
+    handleSyncClientsFromSheet,
+  ]);
+
+  const handleChangeAutoRefreshMinutes = useCallback(
+    (minutes: AutoRefreshMinutes) => {
+      setAutoRefreshMinutes(minutes);
+      saveAutoRefreshMinutes(minutes);
+      showToast(
+        `Auto-refresco de Proformas y Clientes configurado cada ${minutes} minutos.`
+      );
+    },
+    [showToast]
+  );
+
+  const mergedHistoryForModal = useMemo(
+    () => mergeProformaHistoryRecords(history, remoteHistory),
+    [history, remoteHistory]
+  );
+
+  const handleOpenImportFromSheetModal = useCallback(() => {
+    setSheetPreviewModal({
+      isOpen: true,
+      mode: 'import',
+      initialRecord: null,
+    });
+    if (latestCloudConfigRef.current.webhookUrl.trim()) {
+      void handleSyncHistoryFromSheet(true);
+    }
+  }, [handleSyncHistoryFromSheet]);
+
+  const handlePreviewHistoryRecord = useCallback(
+    (record: SavedProformaRecord) => {
+      setSheetPreviewModal({
+        isOpen: true,
+        mode: 'history',
+        initialRecord: record,
+      });
+    },
+    []
+  );
+
+  const handleConfirmImportFromSheetRecord = (record: SavedProformaRecord) => {
+    const currentMode = sheetPreviewModal.mode;
+    setSheetPreviewModal((prev) => ({ ...prev, isOpen: false }));
+    if (isProformaConfirmed && hasUnsavedProformaChanges(proforma, history)) {
+      handleOpenRecord(record);
+      return;
+    }
+    const parsedFromDatosJson = record.rawDatosJson
+      ? parseProformaFromJsonInput(record.rawDatosJson, record.consecutivo)
+      : null;
+    const loaded = normalizeProformaClientContact(
+      JSON.parse(
+        JSON.stringify(parsedFromDatosJson ?? record.data)
+      ) as ProformaData
+    );
+    confirmActiveProforma();
+    hasEditedSinceLoadRef.current = false;
+    resetProforma(loaded);
+    setActiveSection('editor');
+    showToast(
+      currentMode === 'history'
+        ? `Proforma Nº ${loaded.consecutivo} cargada en el editor para continuar editando.`
+        : `Proforma Nº ${loaded.consecutivo} importada desde Google Sheets y lista para editar.`
+    );
+  };
+
   const handleManualConsecutivoChange = (updater: (prev: ProformaData) => ProformaData) => {
     if (!isProformaConfirmed) return;
     hasEditedSinceLoadRef.current = true;
@@ -1924,6 +2078,95 @@ export default function App() {
       });
     }
 
+    if (isProformaConfirmed) {
+      const consecutivoNum = Number(proforma.consecutivo);
+      const missingFields: string[] = [];
+      if (!Number.isFinite(consecutivoNum) || consecutivoNum <= 0) {
+        missingFields.push('Número / consecutivo');
+      }
+      if (!proforma.clientProject.cliente.trim()) {
+        missingFields.push('Cliente');
+      }
+      if (!proforma.clientProject.proyecto.trim()) {
+        missingFields.push('Proyecto');
+      }
+      if (missingFields.length > 0) {
+        items.push({
+          id: `sys-missing-key-fields-${proforma.id}`,
+          kind: 'warning',
+          source: 'system',
+          title:
+            Number.isFinite(consecutivoNum) && consecutivoNum > 0
+              ? `Datos clave incompletos en Proforma Nº ${consecutivoNum}`
+              : 'Datos clave incompletos en la proforma',
+          message: `Falta completar: ${missingFields.join(', ')}.`,
+          createdAt: nowIso,
+          read: false,
+          actionSection: 'editor',
+          actionLabel: 'Completar en Editor',
+        });
+      }
+
+      if (Number.isFinite(consecutivoNum) && consecutivoNum > 0) {
+        const activeNum = Math.floor(consecutivoNum);
+        const activeClienteNorm = proforma.clientProject.cliente
+          .trim()
+          .toLowerCase();
+
+        const isSameActiveRecord = (rec: SavedProformaRecord): boolean => {
+          if (rec.id === proforma.id || rec.data?.id === proforma.id) {
+            return true;
+          }
+          if (
+            rec.source === 'sheet' &&
+            !rec.rawDatosJson &&
+            rec.id === `sheet-prof-${rec.consecutivo}` &&
+            Number(rec.consecutivo) === activeNum &&
+            history.some(
+              (h) =>
+                h.id === proforma.id && Number(h.consecutivo) === activeNum
+            ) &&
+            (!activeClienteNorm ||
+              rec.data.clientProject.cliente.trim().toLowerCase() ===
+                activeClienteNorm)
+          ) {
+            return true;
+          }
+          return false;
+        };
+
+        const localDuplicates = history.filter(
+          (rec) =>
+            Number(rec.consecutivo) === activeNum && !isSameActiveRecord(rec)
+        );
+        const remoteDuplicates = remoteHistory.filter(
+          (rec) =>
+            Number(rec.consecutivo) === activeNum && !isSameActiveRecord(rec)
+        );
+
+        if (localDuplicates.length > 0 || remoteDuplicates.length > 0) {
+          const origins: string[] = [];
+          if (localDuplicates.length > 0) origins.push('Historial local');
+          if (remoteDuplicates.length > 0) origins.push('Sheet PROFORMAS');
+          const sampleMatch = remoteDuplicates[0] ?? localDuplicates[0];
+          const sampleClient =
+            sampleMatch?.data.clientProject.cliente.trim() ||
+            'Cliente sin definir';
+          items.push({
+            id: `sys-duplicate-consecutivo-${proforma.id}-${activeNum}`,
+            kind: 'warning',
+            source: 'system',
+            title: `Consecutivo Nº ${activeNum} duplicado`,
+            message: `Ya existe otra proforma con el Nº ${activeNum} en ${origins.join(' y ')} (${sampleClient}). Ajusta o sincroniza el consecutivo para evitar choques.`,
+            createdAt: nowIso,
+            read: false,
+            actionSection: 'history',
+            actionLabel: 'Revisar en Proformas',
+          });
+        }
+      }
+    }
+
     if (cloudConfig.lastStatus === 'error') {
       items.push({
         id: 'sys-proformas-send-error',
@@ -1994,8 +2237,13 @@ export default function App() {
   }, [
     isProformaConfirmed,
     totals.total,
+    proforma.id,
     proforma.consecutivo,
     proforma.clientProject.moneda,
+    proforma.clientProject.cliente,
+    proforma.clientProject.proyecto,
+    history,
+    remoteHistory,
     cloudConfig.lastStatus,
     cloudConfig.lastMessage,
     cloudConfig.aranLastStatus,
@@ -2020,6 +2268,9 @@ export default function App() {
         }}
         onSendToSheet={() => void handleSendProformaToSheet()}
         onImportDraftFile={(file) => void handleImportDraftFile(file)}
+        onOpenImportFromSheet={handleOpenImportFromSheetModal}
+        autoRefreshMinutes={autoRefreshMinutes}
+        onChangeAutoRefreshMinutes={handleChangeAutoRefreshMinutes}
         showIntegrationTab={showIntegrationTab}
         onToggleIntegrationTab={() => {
           setShowIntegrationTab((prev) => {
@@ -2558,6 +2809,9 @@ export default function App() {
                     totals={totals}
                     mainLogo={mainLogo}
                     footerLogos={footerLogos}
+                    canEditVisualRefs={isProformaConfirmed}
+                    onChangeVisualReferenceSize={handleChangeVisualReferenceSize}
+                    onReorderVisualReferences={handleReorderVisualReferences}
                   />
                 </section>
               )}
@@ -2574,12 +2828,16 @@ export default function App() {
                 : ''
             }`}
           >
-            <div className="mx-auto max-w-[816px]">
+            <div className="mx-auto max-w-[1060px]">
               <ProformaPreview
                 data={proforma}
                 totals={totals}
                 mainLogo={mainLogo}
                 footerLogos={footerLogos}
+                canEditVisualRefs={isProformaConfirmed}
+                showPageThumbnails
+                onChangeVisualReferenceSize={handleChangeVisualReferenceSize}
+                onReorderVisualReferences={handleReorderVisualReferences}
               />
             </div>
           </div>
@@ -2620,6 +2878,7 @@ export default function App() {
               saveIntegrationTabEnabled(true);
               setActiveSection('integration');
             }}
+            onPreviewRecord={handlePreviewHistoryRecord}
             onOpenRecord={handleOpenRecord}
             onDuplicateRecord={handleDuplicateRecord}
             onDeleteRecord={handleDeleteRecord}
@@ -2764,6 +3023,126 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {showSendToSheetConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="send-sheet-dialog-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
+        >
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32] dark:bg-zinc-800 dark:text-[#D59B69]">
+                <CloudUpload className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h2
+                  id="send-sheet-dialog-title"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
+                >
+                  ¿Enviar Proforma Nº {proforma.consecutivo} al Google Sheet?
+                </h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  Se registrará o actualizará esta cotización en la pestaña{' '}
+                  <strong className="text-zinc-900 dark:text-zinc-100">
+                    PROFORMAS
+                  </strong>{' '}
+                  de tu Google Sheet conectado.
+                </p>
+
+                <div className="mt-3 space-y-1 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 text-xs dark:border-zinc-800 dark:bg-zinc-800/60">
+                  <div>
+                    <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                      Consecutivo:{' '}
+                    </span>
+                    <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                      Nº {proforma.consecutivo}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                      Cliente:{' '}
+                    </span>
+                    <span className="text-zinc-800 dark:text-zinc-200">
+                      {proforma.clientProject.cliente.trim() || 'Sin definir'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                      Proyecto:{' '}
+                    </span>
+                    <span className="text-zinc-800 dark:text-zinc-200">
+                      {proforma.clientProject.proyecto.trim() || 'Sin definir'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                      Total:{' '}
+                    </span>
+                    <span className="font-mono font-semibold text-[#8C5A32] dark:text-[#D59B69]">
+                      {formatMoney(totals.total, proforma.clientProject.moneda)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSendToSheetConfirm(false)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void executeSendProformaToSheet()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              >
+                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Sí, enviar al Sheet</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ImportFromSheetModal
+        isOpen={sheetPreviewModal.isOpen}
+        mode={sheetPreviewModal.mode}
+        initialRecord={sheetPreviewModal.initialRecord}
+        records={
+          sheetPreviewModal.mode === 'history'
+            ? mergedHistoryForModal
+            : remoteHistory
+        }
+        isLoading={isSyncingRemoteHistory}
+        errorMessage={
+          remoteHistoryFeedback && !remoteHistoryFeedback.ok
+            ? remoteHistoryFeedback.message
+            : undefined
+        }
+        lastSyncedAt={lastRemoteHistorySyncAt}
+        hasWebhookUrl={Boolean(cloudConfig.webhookUrl.trim())}
+        hasUnsavedActiveChanges={
+          isProformaConfirmed && hasUnsavedProformaChanges(proforma, history)
+        }
+        activeConsecutivo={isProformaConfirmed ? proforma.consecutivo : undefined}
+        onRefreshFromSheet={() => void handleSyncHistoryFromSheet(false)}
+        onGoToIntegration={() => {
+          setShowIntegrationTab(true);
+          saveIntegrationTabEnabled(true);
+          setActiveSection('integration');
+        }}
+        onClose={() =>
+          setSheetPreviewModal((prev) => ({ ...prev, isOpen: false }))
+        }
+        onConfirmImport={handleConfirmImportFromSheetRecord}
+        onDuplicateRecord={handleDuplicateRecord}
+        onDeleteRecord={handleDeleteRecord}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { createInitialProforma } from '../data/defaults';
+import { createInitialProforma, normalizeCompanyDefaults } from '../data/defaults';
 import {
   AranSpecTemplate,
   CloudSyncConfig,
@@ -682,10 +682,10 @@ function hydrateProformaFromPartial(
         : `sheet-prof-${consecutivo}`,
     consecutivo,
     proformaType: partial.proformaType ?? base.proformaType,
-    company: {
+    company: normalizeCompanyDefaults({
       ...base.company,
       ...(partial.company ?? {}),
-    },
+    }),
     clientProject: mergedCp,
     items,
     visualReferences: Array.isArray(partial.visualReferences)

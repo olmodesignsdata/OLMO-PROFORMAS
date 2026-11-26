@@ -4,8 +4,6 @@ import {
   Cloud,
   CopyPlus,
   Edit3,
-  Eye,
-  EyeOff,
   FileJson,
   FilePlus2,
   FileSpreadsheet,
@@ -19,7 +17,6 @@ import {
 import { useMemo, useState } from 'react';
 import {
   DEFAULT_PROFORMAS_SHEET_URL,
-  getProformaTypeMeta,
   GRIFERIA_AUTO_FOOTER_LOGOS,
 } from '../data/defaults';
 import { ComputedTotals, SavedProformaRecord } from '../types/proforma';
@@ -34,10 +31,6 @@ import {
   exportProformaToJSON,
   generateProformaPDF,
 } from '../utils/exporters';
-import {
-  loadHistorySidePreviewEnabled,
-  saveHistorySidePreviewEnabled,
-} from '../utils/storage';
 import { PdfIcon } from './PdfIcon';
 import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 
@@ -51,6 +44,7 @@ interface HistoryViewProps {
   sheetSyncFeedback: { ok: boolean; message: string } | null;
   onSyncFromSheet: () => void;
   onGoToIntegration: () => void;
+  onPreviewRecord: (record: SavedProformaRecord) => void;
   onOpenRecord: (record: SavedProformaRecord) => void;
   onDuplicateRecord: (record: SavedProformaRecord) => void;
   onDeleteRecord: (id: string) => void;
@@ -143,6 +137,7 @@ export function HistoryView({
   sheetSyncFeedback,
   onSyncFromSheet,
   onGoToIntegration,
+  onPreviewRecord,
   onOpenRecord,
   onDuplicateRecord,
   onDeleteRecord,
@@ -161,23 +156,9 @@ export function HistoryView({
   const [dateTo, setDateTo] = useState('');
   const [minTotal, setMinTotal] = useState('');
   const [maxTotal, setMaxTotal] = useState('');
-  const [sidePreviewEnabled, setSidePreviewEnabled] = useState<boolean>(() =>
-    loadHistorySidePreviewEnabled()
-  );
-  const [selectedRecordKey, setSelectedRecordKey] = useState<string | null>(
-    null
-  );
 
   const getRecordRowKey = (rec: SavedProformaRecord) =>
     `${rec.source ?? 'local'}-${rec.id}-${rec.consecutivo}`;
-
-  const handleToggleSidePreview = () => {
-    setSidePreviewEnabled((prev) => {
-      const next = !prev;
-      saveHistorySidePreviewEnabled(next);
-      return next;
-    });
-  };
 
   const combinedRecords = useMemo<SavedProformaRecord[]>(
     () => mergeProformaHistoryRecords(records, remoteRecords),
@@ -317,15 +298,6 @@ export function HistoryView({
     maxTotal,
   ]);
 
-  const selectedEntry = useMemo(() => {
-    if (!sidePreviewEnabled || !selectedRecordKey) return null;
-    return (
-      filtered.find(
-        ({ record }) => getRecordRowKey(record) === selectedRecordKey
-      ) ?? null
-    );
-  }, [sidePreviewEnabled, selectedRecordKey, filtered]);
-
   const localCount = records.length;
   const sheetCount = remoteRecords.length;
 
@@ -381,33 +353,6 @@ export function HistoryView({
             sheetUrl={proformasSheetUrl}
             defaultSheetUrl={DEFAULT_PROFORMAS_SHEET_URL}
           />
-
-          <button
-            type="button"
-            onClick={handleToggleSidePreview}
-            aria-pressed={sidePreviewEnabled}
-            title={
-              sidePreviewEnabled
-                ? 'Ocultar el panel de vista previa lateral'
-                : 'Mostrar el panel de vista previa lateral al seleccionar una proforma'
-            }
-            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              sidePreviewEnabled
-                ? 'border-[#8C5A32]/40 bg-[#FAF6F1] text-[#8C5A32] hover:bg-[#F3ECE2] dark:border-[#C68B59]/40 dark:bg-[#8C5A32]/20 dark:text-[#E2B086] dark:hover:bg-[#8C5A32]/30'
-                : 'border-[#DCDAD3] bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700'
-            }`}
-          >
-            {sidePreviewEnabled ? (
-              <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-            ) : (
-              <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
-            )}
-            <span>
-              {sidePreviewEnabled
-                ? 'Vista previa lateral: Activa'
-                : 'Vista previa lateral: Oculta'}
-            </span>
-          </button>
         </div>
       </div>
 
@@ -738,461 +683,169 @@ export function HistoryView({
           )}
         </div>
       ) : (
-        <div
-          className={
-            sidePreviewEnabled
-              ? 'grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-start'
-              : ''
-          }
-        >
-          <div className={sidePreviewEnabled ? 'min-w-0 lg:col-span-8' : ''}>
-            <div className={`overflow-x-auto ${cardSurface}`}>
-              <table className="w-full border-collapse text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
-                    <th className="px-4 py-3">Consecutivo</th>
-                    <th className="px-4 py-3">Cliente</th>
-                    <th className="px-4 py-3">Proyecto</th>
-                    <th className="px-4 py-3">Origen</th>
-                    <th className="px-4 py-3">Fecha</th>
-                    <th className="px-4 py-3 text-right">Ítems</th>
-                    <th className="px-4 py-3 text-right">Total</th>
-                    <th className="px-4 py-3 text-right">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
-                  {filtered.map(({ record: rec, totals, displayTotal }) => {
-                    const isCurrent = rec.id === activeProformaId;
-                    const rowKey = getRecordRowKey(rec);
-                    const isSelected =
-                      sidePreviewEnabled && selectedRecordKey === rowKey;
+        <div className={`overflow-x-auto ${cardSurface}`}>
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
+                <th className="px-4 py-3">Consecutivo</th>
+                <th className="px-4 py-3">Cliente</th>
+                <th className="px-4 py-3">Proyecto</th>
+                <th className="px-4 py-3">Origen</th>
+                <th className="px-4 py-3">Fecha</th>
+                <th className="px-4 py-3 text-right">Ítems</th>
+                <th className="px-4 py-3 text-right">Total</th>
+                <th className="px-4 py-3 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
+              {filtered.map(({ record: rec, totals, displayTotal }) => {
+                const isCurrent = rec.id === activeProformaId;
+                const rowKey = getRecordRowKey(rec);
 
-                    return (
-                      <tr
-                        key={rowKey}
-                        onClick={
-                          sidePreviewEnabled
-                            ? () => setSelectedRecordKey(rowKey)
-                            : undefined
-                        }
-                        aria-selected={sidePreviewEnabled ? isSelected : undefined}
-                        className={`transition-colors ${
-                          sidePreviewEnabled ? 'cursor-pointer' : ''
-                        } ${
-                          isSelected
-                            ? 'bg-[#F5EFE6] ring-1 ring-inset ring-[#8C5A32]/35 dark:bg-[#8C5A32]/20 dark:ring-[#C68B59]/45'
-                            : isCurrent
-                              ? 'bg-[#FAF9F6] hover:bg-[#FAF9F6]/70 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/60'
-                              : 'hover:bg-[#FAF9F6]/70 dark:hover:bg-zinc-800/60'
-                        }`}
+                return (
+                  <tr
+                    key={rowKey}
+                    onClick={() => onPreviewRecord(rec)}
+                    title="Clic para abrir la vista previa de esta proforma"
+                    className={`cursor-pointer transition-colors ${
+                      isCurrent
+                        ? 'bg-[#FAF9F6] hover:bg-[#F5EFE6]/70 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/70'
+                        : 'hover:bg-[#FAF9F6]/90 dark:hover:bg-zinc-800/60'
+                    }`}
+                  >
+                    <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
+                      Nº {rec.consecutivo}
+                      {isCurrent && (
+                        <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
+                          · En edición
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                        {rec.data.clientProject.cliente ||
+                          'Cliente sin nombre'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div className="text-xs text-zinc-700 dark:text-zinc-300">
+                        {rec.data.clientProject.proyecto.trim() || '—'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5 whitespace-nowrap">
+                      {rec.source === 'both' ? (
+                        <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                          Local + Sheet
+                        </span>
+                      ) : rec.source === 'sheet' ? (
+                        <span className="inline-flex items-center rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 text-[11px] font-semibold text-[#8C5A32] dark:border-zinc-700 dark:bg-zinc-800 dark:text-amber-400">
+                          Google Sheet
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                          Local
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
+                      {formatDateSpanish(rec.data.clientProject.fecha)}
+                    </td>
+                    <td className="px-4 py-3.5 text-right font-mono text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
+                      {totals.unidadResumen}
+                    </td>
+                    <td className="px-4 py-3.5 text-right font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
+                      {formatMoney(
+                        displayTotal,
+                        rec.data.clientProject.moneda
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div
+                        className="flex items-center justify-end gap-1"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
-                          Nº {rec.consecutivo}
-                          {isCurrent && (
-                            <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
-                              · En edición
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <div className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {rec.data.clientProject.cliente ||
-                              'Cliente sin nombre'}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <div className="text-xs text-zinc-700 dark:text-zinc-300">
-                            {rec.data.clientProject.proyecto.trim() || '—'}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          {rec.source === 'both' ? (
-                            <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
-                              Local + Sheet
-                            </span>
-                          ) : rec.source === 'sheet' ? (
-                            <span className="inline-flex items-center rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 text-[11px] font-semibold text-[#8C5A32] dark:border-zinc-700 dark:bg-zinc-800 dark:text-amber-400">
-                              Google Sheet
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                              Local
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
-                          {formatDateSpanish(rec.data.clientProject.fecha)}
-                        </td>
-                        <td className="px-4 py-3.5 text-right font-mono text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap tabular-nums">
-                          {totals.unidadResumen}
-                        </td>
-                        <td className="px-4 py-3.5 text-right font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
-                          {formatMoney(
-                            displayTotal,
-                            rec.data.clientProject.moneda
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <div
-                            className="flex items-center justify-end gap-1"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => onOpenRecord(rec)}
-                              title="Leer Datos_JSON y cargar todos los datos editables en el formulario principal"
-                              className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
-                            >
-                              <Edit3
-                                className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
-                                aria-hidden="true"
-                              />
-                              <span>Cargar / Editar</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onDuplicateRecord(rec)}
-                              title="Duplicar con siguiente consecutivo"
-                              className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
-                            >
-                              <CopyPlus
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                              <span>Duplicar</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                generateProformaPDF(
-                                  rec.data,
-                                  totals,
-                                  undefined,
-                                  rec.data.proformaType === 'griferia'
-                                    ? [...GRIFERIA_AUTO_FOOTER_LOGOS, null]
-                                    : []
-                                )
-                              }
-                              title="Descargar PDF"
-                              aria-label={`Descargar PDF Proforma ${rec.consecutivo}`}
-                              className="rounded border border-black bg-black p-1.5 text-white hover:bg-zinc-800 dark:border-zinc-700 dark:bg-black dark:hover:bg-zinc-900 cursor-pointer"
-                            >
-                              <PdfIcon className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                exportProformaToJSON(rec.data, totals)
-                              }
-                              title="Exportar JSON"
-                              aria-label={`Exportar JSON Proforma ${rec.consecutivo}`}
-                              className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
-                            >
-                              <FileJson className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                exportProformaToCSV(rec.data, totals)
-                              }
-                              title="Exportar CSV / Excel"
-                              aria-label={`Exportar CSV Proforma ${rec.consecutivo}`}
-                              className={`rounded p-1.5 transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'icon')}`}
-                            >
-                              <FileSpreadsheet className="h-3.5 w-3.5" />
-                            </button>
-                            {rec.source !== 'sheet' && (
-                              <button
-                                type="button"
-                                onClick={() => onDeleteRecord(rec.id)}
-                                title="Eliminar del historial local"
-                                aria-label={`Eliminar Proforma ${rec.consecutivo}`}
-                                className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {sidePreviewEnabled && (
-            <aside
-              aria-label="Vista previa lateral de proforma"
-              className="no-print lg:col-span-4 lg:sticky lg:top-20"
-            >
-              {!selectedEntry ? (
-                <div className={`px-6 py-12 text-center ${cardSurface}`}>
-                  <Eye
-                    className="mx-auto h-7 w-7 text-[#8C5A32] dark:text-[#C68B59]"
-                    aria-hidden="true"
-                  />
-                  <p className="mt-3 font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    Vista previa lateral
-                  </p>
-                  <p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-                    Selecciona una fila de la lista para ver el resumen rápido
-                    de la proforma (datos de proyecto, desglose e ítems de
-                    Datos_JSON) y tomar acciones inmediatas.
-                  </p>
-                </div>
-              ) : (
-                (() => {
-                  const {
-                    record: selRec,
-                    totals: selTotals,
-                    displayTotal: selTotal,
-                  } = selectedEntry;
-                  const cp = selRec.data.clientProject;
-                  const typeMeta = getProformaTypeMeta(
-                    selRec.data.proformaType
-                  );
-                  const isSelCurrent = selRec.id === activeProformaId;
-                  const previewItems = selRec.data.items ?? [];
-                  const visibleItems = previewItems.slice(0, 8);
-                  const remainingItemsCount = Math.max(
-                    0,
-                    previewItems.length - visibleItems.length
-                  );
-
-                  return (
-                    <div className={`overflow-hidden ${cardSurface}`}>
-                      {/* Cabecera de vista previa */}
-                      <div className="border-b border-[#E5E4DF] bg-[#FAF9F6] px-4 py-3.5 dark:border-zinc-800 dark:bg-zinc-800/70">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-mono text-base font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
-                                Proforma Nº {selRec.consecutivo}
-                              </span>
-                              {selRec.source === 'both' ? (
-                                <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-semibold text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
-                                  Local + Sheet
-                                </span>
-                              ) : selRec.source === 'sheet' ? (
-                                <span className="inline-flex items-center rounded border border-[#DCDAD3] bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#8C5A32] dark:border-zinc-700 dark:bg-zinc-800 dark:text-amber-400">
-                                  Google Sheet
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center rounded border border-zinc-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                                  Local
-                                </span>
-                              )}
-                              {isSelCurrent && (
-                                <span className="text-[11px] font-semibold text-[#8C5A32] dark:text-amber-400">
-                                  · En edición
-                                </span>
-                              )}
-                            </div>
-                            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                              {typeMeta.label} · {formatDateSpanish(cp.fecha)}
-                            </p>
-                          </div>
-
+                        <button
+                          type="button"
+                          onClick={() => onOpenRecord(rec)}
+                          title="Leer Datos_JSON y cargar todos los datos editables en el formulario principal"
+                          className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
+                        >
+                          <Edit3
+                            className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400"
+                            aria-hidden="true"
+                          />
+                          <span>Cargar / Editar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDuplicateRecord(rec)}
+                          title="Duplicar con siguiente consecutivo"
+                          className="inline-flex items-center gap-1 rounded border border-[#E5E4DF] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
+                        >
+                          <CopyPlus
+                            className="h-3.5 w-3.5"
+                            aria-hidden="true"
+                          />
+                          <span>Duplicar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            generateProformaPDF(
+                              rec.data,
+                              totals,
+                              undefined,
+                              rec.data.proformaType === 'griferia'
+                                ? [...GRIFERIA_AUTO_FOOTER_LOGOS, null]
+                                : []
+                            )
+                          }
+                          title="Descargar PDF"
+                          aria-label={`Descargar PDF Proforma ${rec.consecutivo}`}
+                          className="rounded border border-black bg-black p-1.5 text-white hover:bg-zinc-800 dark:border-zinc-700 dark:bg-black dark:hover:bg-zinc-900 cursor-pointer"
+                        >
+                          <PdfIcon className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            exportProformaToJSON(rec.data, totals)
+                          }
+                          title="Exportar JSON"
+                          aria-label={`Exportar JSON Proforma ${rec.consecutivo}`}
+                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
+                        >
+                          <FileJson className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            exportProformaToCSV(rec.data, totals)
+                          }
+                          title="Exportar CSV / Excel"
+                          aria-label={`Exportar CSV Proforma ${rec.consecutivo}`}
+                          className={`rounded p-1.5 transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'icon')}`}
+                        >
+                          <FileSpreadsheet className="h-3.5 w-3.5" />
+                        </button>
+                        {rec.source !== 'sheet' && (
                           <button
                             type="button"
-                            onClick={() => setSelectedRecordKey(null)}
-                            title="Cerrar selección"
-                            aria-label="Cerrar selección de vista previa"
-                            className="rounded p-1 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+                            onClick={() => onDeleteRecord(rec.id)}
+                            title="Eliminar del historial local"
+                            aria-label={`Eliminar Proforma ${rec.consecutivo}`}
+                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
                           >
-                            <X className="h-4 w-4" aria-hidden="true" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                        </div>
+                        )}
                       </div>
-
-                      <div className="space-y-4 p-4">
-                        {/* Datos principales */}
-                        <dl className="grid grid-cols-1 gap-2.5 text-xs sm:grid-cols-2">
-                          <div className="sm:col-span-2">
-                            <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                              Cliente
-                            </dt>
-                            <dd className="mt-0.5 font-semibold text-zinc-900 dark:text-zinc-100">
-                              {cp.cliente.trim() || 'Cliente sin nombre'}
-                            </dd>
-                            {(cp.contacto.trim() ||
-                              cp.telefono.trim() ||
-                              cp.correo.trim()) && (
-                              <dd className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-                                {[
-                                  cp.contacto.trim(),
-                                  cp.telefono.trim(),
-                                  cp.correo.trim(),
-                                ]
-                                  .filter(Boolean)
-                                  .join(' · ')}
-                              </dd>
-                            )}
-                          </div>
-
-                          <div className="sm:col-span-2">
-                            <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                              Proyecto
-                            </dt>
-                            <dd className="mt-0.5 text-zinc-800 dark:text-zinc-200">
-                              {cp.proyecto.trim() || '—'}
-                            </dd>
-                          </div>
-
-                          <div>
-                            <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                              Tipo de Cotización
-                            </dt>
-                            <dd className="mt-0.5 text-zinc-800 dark:text-zinc-200">
-                              {typeMeta.label}
-                            </dd>
-                          </div>
-
-                          <div>
-                            <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                              Moneda / Validez
-                            </dt>
-                            <dd className="mt-0.5 text-zinc-800 dark:text-zinc-200">
-                              {cp.moneda || 'USD ($)'} ·{' '}
-                              {cp.validez || '15 Días'}
-                            </dd>
-                          </div>
-                        </dl>
-
-                        {/* Resumen de totales */}
-                        <div className="rounded-lg border border-[#E5E4DF] bg-[#FAF9F6] p-3 text-xs dark:border-zinc-800 dark:bg-zinc-800/50">
-                          <div className="flex items-center justify-between py-0.5 text-zinc-600 dark:text-zinc-400">
-                            <span>Subtotal ({selTotals.unidadResumen})</span>
-                            <span className="font-mono font-medium text-zinc-900 tabular-nums dark:text-zinc-100">
-                              {formatMoney(selTotals.subtotal, cp.moneda)}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between py-0.5 text-zinc-600 dark:text-zinc-400">
-                            <span>IVA ({selRec.data.taxRate}%)</span>
-                            <span className="font-mono font-medium text-zinc-900 tabular-nums dark:text-zinc-100">
-                              {formatMoney(selTotals.impuesto, cp.moneda)}
-                            </span>
-                          </div>
-                          <div className="mt-1.5 flex items-center justify-between border-t border-[#E5E4DF] pt-1.5 text-sm font-bold text-[#8C5A32] dark:border-zinc-700 dark:text-[#D59B69]">
-                            <span>Total</span>
-                            <span className="font-mono tabular-nums">
-                              {formatMoney(selTotal, cp.moneda)}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Detalle extraído de Datos_JSON */}
-                        <div>
-                          <div className="mb-1.5 flex items-center justify-between">
-                            <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                              Detalle / Líneas ({previewItems.length})
-                            </span>
-                            <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
-                              {selTotals.unidadResumen}
-                            </span>
-                          </div>
-
-                          {previewItems.length === 0 ? (
-                            <p className="rounded-lg border border-dashed border-[#E5E4DF] px-3 py-3 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                              Sin ítems detallados disponibles.
-                            </p>
-                          ) : (
-                            <div className="max-h-60 divide-y divide-[#F0EFEA] overflow-y-auto rounded-lg border border-[#E5E4DF] bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-950/60">
-                              {visibleItems.map((item, idx) => {
-                                const lineTotal =
-                                  typeof item.valorUnitario === 'number' &&
-                                  Number(item.valorUnitario) > 0 &&
-                                  Number(item.valor) === 0
-                                    ? Number(item.cantidad || 0) *
-                                      Number(item.valorUnitario)
-                                    : Number(item.valor || 0);
-                                return (
-                                  <div
-                                    key={item.id || idx}
-                                    className="px-3 py-2 text-xs"
-                                  >
-                                    <div className="flex items-start justify-between gap-2">
-                                      <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                                        {item.producto.trim() ||
-                                          `Ítem ${idx + 1}`}
-                                      </span>
-                                      <span className="font-mono font-semibold text-zinc-800 tabular-nums shrink-0 dark:text-zinc-200">
-                                        {formatMoney(lineTotal, cp.moneda)}
-                                      </span>
-                                    </div>
-                                    <div className="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                                      <span className="line-clamp-2">
-                                        {item.descripcion.trim() || 'Sin descripción'}
-                                      </span>
-                                      <span className="font-mono tabular-nums shrink-0">
-                                        {item.cantidad} {item.unidad}
-                                      </span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                              {remainingItemsCount > 0 && (
-                                <div className="bg-[#FAF9F6] px-3 py-1.5 text-center text-[11px] font-medium text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
-                                  + {remainingItemsCount} ítem(s) adicional(es)
-                                  al cargar en el editor
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Acciones existentes para tomar decisiones */}
-                        <div className="flex flex-wrap items-center gap-2 border-t border-[#E5E4DF] pt-3 dark:border-zinc-800">
-                          <button
-                            type="button"
-                            onClick={() => onOpenRecord(selRec)}
-                            title="Leer Datos_JSON y cargar todos los datos editables en el formulario principal"
-                            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 whitespace-nowrap cursor-pointer"
-                          >
-                            <Edit3
-                              className="h-3.5 w-3.5"
-                              aria-hidden="true"
-                            />
-                            <span>Seleccionar y Editar</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => onDuplicateRecord(selRec)}
-                            title="Duplicar con siguiente consecutivo"
-                            className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 whitespace-nowrap cursor-pointer"
-                          >
-                            <CopyPlus
-                              className="h-3.5 w-3.5"
-                              aria-hidden="true"
-                            />
-                            <span>Duplicar</span>
-                          </button>
-
-                          {selRec.source !== 'sheet' && (
-                            <button
-                              type="button"
-                              onClick={() => onDeleteRecord(selRec.id)}
-                              title="Eliminar del historial local"
-                              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 dark:border-red-800/80 dark:bg-red-950/60 dark:text-red-300 dark:hover:bg-red-900/60 whitespace-nowrap cursor-pointer"
-                            >
-                              <Trash2
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                              <span>Eliminar</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()
-              )}
-            </aside>
-          )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

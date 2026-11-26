@@ -9,10 +9,12 @@ import {
   DEFAULT_PROFORMAS_SHEET_URL,
   DEFAULT_SPECS_SHEET_URL,
   INITIAL_CONSECUTIVO,
+  normalizeCompanyDefaults,
 } from '../data/defaults';
 import {
   AppNotification,
   AranSpecTemplate,
+  AutoRefreshMinutes,
   BankAccountInfo,
   ClientsImportConfig,
   CloudSyncConfig,
@@ -53,6 +55,7 @@ const KEYS = {
   HISTORY_SIDE_PREVIEW_ENABLED: 'olmo_proforma_history_side_preview_v1',
   INTEGRATION_TAB_ENABLED: 'olmo_proforma_integration_tab_enabled_v1',
   ACTIVE_PROFORMA_CONFIRMED: 'olmo_proforma_active_confirmed_v1',
+  AUTO_REFRESH_MINUTES: 'olmo_proforma_auto_refresh_minutes_v1',
 };
 
 export function getNextConsecutivo(): number {
@@ -291,7 +294,7 @@ export function loadSavedCompanyDefaults(): CompanyInfo {
   try {
     const raw = localStorage.getItem(KEYS.COMPANY_DEFAULTS);
     if (!raw) return { ...DEFAULT_COMPANY_INFO };
-    return { ...DEFAULT_COMPANY_INFO, ...JSON.parse(raw) };
+    return normalizeCompanyDefaults(JSON.parse(raw) as Partial<CompanyInfo>);
   } catch {
     return { ...DEFAULT_COMPANY_INFO };
   }
@@ -791,6 +794,27 @@ export function loadActiveProformaConfirmed(): boolean {
 export function saveActiveProformaConfirmed(confirmed: boolean): void {
   try {
     localStorage.setItem(KEYS.ACTIVE_PROFORMA_CONFIRMED, String(confirmed));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadAutoRefreshMinutes(): AutoRefreshMinutes {
+  try {
+    const raw = localStorage.getItem(KEYS.AUTO_REFRESH_MINUTES);
+    const parsed = Number(raw);
+    if (parsed === 5 || parsed === 10 || parsed === 30) {
+      return parsed;
+    }
+    return 5;
+  } catch {
+    return 5;
+  }
+}
+
+export function saveAutoRefreshMinutes(minutes: AutoRefreshMinutes): void {
+  try {
+    localStorage.setItem(KEYS.AUTO_REFRESH_MINUTES, String(minutes));
   } catch {
     // ignore
   }

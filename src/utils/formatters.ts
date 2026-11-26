@@ -1,4 +1,9 @@
-import { ComputedTotals, ProformaData } from '../types/proforma';
+import {
+  CompanyInfo,
+  ComputedTotals,
+  ProformaData,
+  VisualReferenceSize,
+} from '../types/proforma';
 
 export function getCurrencySymbol(moneda: string): string {
   if (moneda.includes('₡') || moneda.toUpperCase().includes('CRC')) return '₡';
@@ -158,3 +163,78 @@ export function normalizeSpreadsheetParagraphs(rawText: string): string {
     .filter(Boolean)
     .join('\n\n');
 }
+
+export function getCompanyHeaderLines(company: CompanyInfo): string[] {
+  const razon = (company.razonSocial ?? '').trim();
+  const cedula = (company.cedulaJuridica ?? '').trim();
+  const tel = (company.telefono ?? '').trim();
+  const correo = (company.correo ?? '').trim();
+  const web = (company.sitioWeb ?? '').trim();
+  const direccion = (company.direccion ?? '').trim();
+
+  const line2 = [
+    cedula ? `Céd. Jur.: ${cedula}` : '',
+    tel ? `Tel: ${tel}` : '',
+  ]
+    .filter(Boolean)
+    .join('  ·  ');
+
+  const line3 = [correo, web].filter(Boolean).join('  ·  ');
+
+  return [razon, line2, line3, direccion].filter(Boolean);
+}
+
+export function getCompanyFooterText(company: CompanyInfo): string {
+  return [
+    (company.razonSocial ?? '').trim(),
+    (company.correo ?? '').trim(),
+    (company.telefono ?? '').trim(),
+  ]
+    .filter(Boolean)
+    .join('  ·  ');
+}
+
+export function normalizeVisualReferenceSize(
+  size?: string
+): VisualReferenceSize {
+  if (size === 'small' || size === 'large' || size === 'medium') {
+    return size;
+  }
+  return 'medium';
+}
+
+export function getVisualReferenceColumnWeight(
+  size?: VisualReferenceSize
+): number {
+  const normalized = normalizeVisualReferenceSize(size);
+  if (normalized === 'small') return 2; // hasta 3 por fila (6 / 2 = 3)
+  if (normalized === 'large') return 6; // 1 por fila (6 / 6 = 1)
+  return 3; // mediano: hasta 2 por fila (6 / 3 = 2)
+}
+
+export function packVisualReferenceRows<
+  T extends { size?: VisualReferenceSize },
+>(items: T[]): T[][] {
+  const rows: T[][] = [];
+  let currentRow: T[] = [];
+  let currentWeight = 0;
+
+  for (const item of items) {
+    const weight = getVisualReferenceColumnWeight(item.size);
+    if (currentRow.length > 0 && currentWeight + weight > 6) {
+      rows.push(currentRow);
+      currentRow = [item];
+      currentWeight = weight;
+    } else {
+      currentRow.push(item);
+      currentWeight += weight;
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+}
+

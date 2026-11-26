@@ -4,13 +4,22 @@ import {
   DEFAULT_OLMO_MAIN_LOGO,
   getProformaTypeMeta,
 } from '../data/defaults';
-import { ComputedTotals, LogoAsset, ProformaData } from '../types/proforma';
+import {
+  ComputedTotals,
+  LogoAsset,
+  ProformaData,
+  VisualReferenceSize,
+} from '../types/proforma';
 import {
   buildPdfFileName,
   formatDateSpanish,
   formatMoney,
+  getCompanyFooterText,
+  getCompanyHeaderLines,
   getCurrencyCode,
   normalizeSpreadsheetParagraphs,
+  normalizeVisualReferenceSize,
+  packVisualReferenceRows,
 } from './formatters';
 import {
   rasterizeImageSrcForPdf,
@@ -206,6 +215,7 @@ function fitLogoInBox(
 export interface PdfGenerationResult {
   skippedExternalImages: number;
   fileName: string;
+  canceled?: boolean;
 }
 
 export async function generateProformaPDF(
@@ -279,9 +289,9 @@ export async function generateProformaPDF(
         )
       : [];
 
-  const loadedVisualRefs = (data.visualReferences ?? []).filter((ref) =>
-    Boolean(ref.imageDataUrl?.trim())
-  );
+  const loadedVisualRefs = [...(data.visualReferences ?? [])]
+    .filter((ref) => Boolean(ref.imageDataUrl?.trim()))
+    .sort((a, b) => a.slotIndex - b.slotIndex);
   const rasterVisualRefs = (
     await Promise.all(
       loadedVisualRefs.map(async (ref) => {
@@ -295,12 +305,18 @@ export async function generateProformaPDF(
         return {
           raster,
           caption: ref.caption.trim(),
+          size: normalizeVisualReferenceSize(ref.size),
         };
       })
     )
   ).filter(
-    (entry): entry is { raster: RasterizedPdfLogo; caption: string } =>
-      entry !== null
+    (
+      entry
+    ): entry is {
+      raster: RasterizedPdfLogo;
+      caption: string;
+      size: VisualReferenceSize;
+    } => entry !== null
   );
 
   const hasFooterLogos = rasterFooterLogos.length > 0;
@@ -382,18 +398,20 @@ export async function generateProformaPDF(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(...mutedText);
-  const companyLines = [
-    data.company.razonSocial,
-    `Céd. Jur.: ${data.company.cedulaJuridica}  ·  Tel: ${data.company.telefono}`,
-    `${data.company.correo}  ·  ${data.company.sitioWeb}`,
-    data.company.direccion,
-  ].filter(Boolean);
+  const companyLines = getCompanyHeaderLines(data.company);
+  const companyMaxW = Math.max(60, boxX - margin - 6);
 
-  companyLines.forEach((line, idx) => {
-    doc.text(line, margin, companyStartY + idx * 3.8);
+  let companyCursorY = companyStartY;
+  companyLines.forEach((line) => {
+    const wrapped: string[] = doc.splitTextToSize(line, companyMaxW);
+    wrapped.forEach((wLine) => {
+      doc.text(wLine, margin, companyCursorY);
+      companyCursorY += 3.8;
+    });
   });
 
-  const leftBottomY = companyStartY + Math.max(0, companyLines.length - 1) * 3.8;
+  const leftBottomY =
+    companyCursorY > companyStartY ? companyCursorY - 3.8 : companyStartY;
 
   // Caja Proforma derecha
   const boxTopY = headerTopY;
@@ -785,41 +803,51 @@ export async function generateProformaPDF(
     doc.setDrawColor(...accentBronze);
     doc.setLineWidth(0.5);
     doc.line(margin, y, margin + 46, y);
-    y += 6;
+    y += 5.5;
 
-    const gridGap = 6;
-    const cardW = (contentWidth - gridGap) / 2;
-    const imgBoxH = 54;
+    const gridGap = 5;
+    const colUnitW = (contentWidth - gridGap * 5) / 6;
     const imgPad = 3;
-    const imgAreaH = imgBoxH + imgPad * 2;
+    const packedRows = packVisualReferenceRows(rasterVisualRefs);
 
-    const measureCard = (entry: {
-      raster: RasterizedPdfLogo;
-      caption: string;
-    }) => {
-      if (!entry.caption) {
-        return { captionLines: [] as string[], cardH: imgAreaH };
-      }
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.2);
-      const captionLines: string[] = doc.splitTextToSize(
-        entry.caption,
-        cardW - 6
-      );
-      const captionH = captionLines.length * 3.8 + 4.5;
-      return { captionLines, cardH: imgAreaH + captionH };
+    const getCardWidthMm = (size: VisualReferenceSize): number => {
+      if (size === 'small') return colUnitW * 2 + gridGap;
+      if (size === 'large') return contentWidth;
+      return colUnitW * 3 + gridGap * 2;
     };
 
-    for (let i = 0; i < rasterVisualRefs.length; i += 2) {
-      const leftItem = rasterVisualRefs[i];
-      const rightItem = rasterVisualRefs[i + 1] ?? null;
+    for (const row of packedRows) {
+      const rowHasLarge = row.some((r) => r.size === 'large');
+      const rowHasMedium = row.some((r) => r.size === 'medium');
+      const imgBoxH = rowHasLarge ? 58 : rowHasMedium ? 50 : 38;
+      const imgAreaH = imgBoxH + imgPad * 2;
 
-      const leftMetrics = measureCard(leftItem);
-      const rightMetrics = rightItem ? measureCard(rightItem) : null;
-      const rowH = Math.max(
-        leftMetrics.cardH,
-        rightMetrics ? rightMetrics.cardH : 0
-      );
+      const rowCards = row.map((entry) => {
+        const cardW = getCardWidthMm(entry.size);
+        if (!entry.caption) {
+          return {
+            entry,
+            cardW,
+            captionLines: [] as string[],
+            cardH: imgAreaH,
+          };
+        }
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.2);
+        const captionLines: string[] = doc.splitTextToSize(
+          entry.caption,
+          cardW - 6
+        );
+        const captionH = captionLines.length * 3.8 + 4.5;
+        return {
+          entry,
+          cardW,
+          captionLines,
+          cardH: imgAreaH + captionH,
+        };
+      });
+
+      const rowH = Math.max(...rowCards.map((c) => c.cardH));
 
       if (y + rowH > pageHeight - bottomReservedMm) {
         doc.addPage();
@@ -827,29 +855,32 @@ export async function generateProformaPDF(
         y = 24;
       }
 
-      const drawCard = (
-        entry: { raster: RasterizedPdfLogo; caption: string },
-        metrics: { captionLines: string[]; cardH: number },
-        cardX: number
-      ) => {
+      let cursorX = margin;
+      for (const card of rowCards) {
         doc.setFillColor(255, 255, 255);
         doc.setDrawColor(...lightBorder);
         doc.setLineWidth(0.3);
-        doc.rect(cardX, y, cardW, metrics.cardH, 'FD');
+        doc.rect(cursorX, y, card.cardW, card.cardH, 'FD');
 
         doc.setFillColor(...subtleBg);
-        doc.rect(cardX + 0.15, y + 0.15, cardW - 0.3, imgAreaH - 0.15, 'F');
+        doc.rect(
+          cursorX + 0.15,
+          y + 0.15,
+          card.cardW - 0.3,
+          imgAreaH - 0.15,
+          'F'
+        );
 
         const fitted = fitLogoInBox(
-          entry.raster.width,
-          entry.raster.height,
-          cardW - imgPad * 2,
+          card.entry.raster.width,
+          card.entry.raster.height,
+          card.cardW - imgPad * 2,
           imgBoxH
         );
-        const drawX = cardX + (cardW - fitted.w) / 2;
+        const drawX = cursorX + (card.cardW - fitted.w) / 2;
         const drawY = y + (imgAreaH - fitted.h) / 2;
         doc.addImage(
-          entry.raster.dataUrl,
+          card.entry.raster.dataUrl,
           'PNG',
           drawX,
           drawY,
@@ -859,24 +890,26 @@ export async function generateProformaPDF(
           'FAST'
         );
 
-        if (metrics.captionLines.length > 0) {
+        if (card.captionLines.length > 0) {
           doc.setDrawColor(...lightBorder);
           doc.setLineWidth(0.25);
-          doc.line(cardX, y + imgAreaH, cardX + cardW, y + imgAreaH);
+          doc.line(
+            cursorX,
+            y + imgAreaH,
+            cursorX + card.cardW,
+            y + imgAreaH
+          );
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(8.2);
           doc.setTextColor(...charcoal);
-          doc.text(metrics.captionLines, cardX + 3, y + imgAreaH + 4.5);
+          doc.text(card.captionLines, cursorX + 3, y + imgAreaH + 4.5);
         }
-      };
 
-      drawCard(leftItem, leftMetrics, margin);
-      if (rightItem && rightMetrics) {
-        drawCard(rightItem, rightMetrics, margin + cardW + gridGap);
+        cursorX += card.cardW + gridGap;
       }
 
-      y += rowH + 6;
+      y += rowH + 5;
     }
   }
 
@@ -1177,12 +1210,14 @@ export async function generateProformaPDF(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.8);
   doc.setTextColor(...mutedText);
-  doc.text(
-    data.signatures.representanteNombre || data.company.razonSocial,
-    leftSigX + sigWidth / 2,
-    y + 19.5,
-    { align: 'center' }
-  );
+  const resolvedRepSigner =
+    data.signatures.representanteNombre.trim() ||
+    data.company.razonSocial.trim();
+  if (resolvedRepSigner) {
+    doc.text(resolvedRepSigner, leftSigX + sigWidth / 2, y + 19.5, {
+      align: 'center',
+    });
+  }
   doc.text('Fecha: _____ / _____ / ________', leftSigX + sigWidth / 2, y + 24.5, {
     align: 'center',
   });
@@ -1217,6 +1252,8 @@ export async function generateProformaPDF(
 
   // Pie de página global con logos cargados (solo si hay al menos 1) y numeración
   const totalPages = doc.getNumberOfPages();
+  const companyFooterText = getCompanyFooterText(data.company);
+
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
 
@@ -1259,11 +1296,9 @@ export async function generateProformaPDF(
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(...mutedText);
-      doc.text(
-        `${data.company.razonSocial}  ·  ${data.company.correo}  ·  ${data.company.telefono}`,
-        margin,
-        footerY
-      );
+      if (companyFooterText) {
+        doc.text(companyFooterText, margin, footerY);
+      }
       doc.text(
         `Proforma Nº ${data.consecutivo}  ·  Página ${i} de ${totalPages}`,
         pageWidth - margin,
@@ -1279,11 +1314,9 @@ export async function generateProformaPDF(
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(...mutedText);
-      doc.text(
-        `${data.company.razonSocial}  ·  ${data.company.correo}  ·  ${data.company.telefono}`,
-        margin,
-        footerY
-      );
+      if (companyFooterText) {
+        doc.text(companyFooterText, margin, footerY);
+      }
       doc.text(
         `Proforma Nº ${data.consecutivo}  ·  Página ${i} de ${totalPages}`,
         pageWidth - margin,
@@ -1299,6 +1332,48 @@ export async function generateProformaPDF(
     'pdf',
     data.clientProject.cliente
   );
-  doc.save(fileName);
+  const pdfBlob = doc.output('blob');
+
+  const pickerWindow = window as Window & {
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      types?: Array<{
+        description?: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<{
+      createWritable: () => Promise<{
+        write: (data: Blob) => Promise<void>;
+        close: () => Promise<void>;
+      }>;
+    }>;
+  };
+
+  if (typeof pickerWindow.showSaveFilePicker === 'function') {
+    try {
+      const fileHandle = await pickerWindow.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: 'Documento PDF',
+            accept: { 'application/pdf': ['.pdf'] },
+          },
+        ],
+      });
+      const writable = await fileHandle.createWritable();
+      await writable.write(pdfBlob);
+      await writable.close();
+      return { skippedExternalImages, fileName };
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return { skippedExternalImages, fileName, canceled: true };
+      }
+      // Si el navegador/iframe restringe File System Access API, usar descarga estándar
+      triggerDownload(pdfBlob, fileName);
+      return { skippedExternalImages, fileName };
+    }
+  }
+
+  triggerDownload(pdfBlob, fileName);
   return { skippedExternalImages, fileName };
 }

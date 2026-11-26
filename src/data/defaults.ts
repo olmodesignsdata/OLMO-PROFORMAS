@@ -29,7 +29,7 @@ export const DEFAULT_SPECS_SHEET_URL =
   'https://docs.google.com/spreadsheets/d/1Sosw-nl5Nx_W2i1a-4TUmu97lxn2NrnFNnr6I1RQNqs/edit';
 
 export const DEFAULT_NOTAS_FINALES =
-  'Para formalizar la orden de producción, sírvase remitir esta proforma firmada junto con el comprobante del primer pago al correo proyectos@olmodiseno.com.';
+  'Para formalizar la orden de producción, sírvase remitir esta proforma firmada junto con el comprobante del primer pago al agente de ventas asigando';
 
 export const DEFAULT_OLMO_MAIN_LOGO: LogoAsset = {
   id: 'default-olmo-bn',
@@ -105,22 +105,76 @@ export const CURRENCY_OPTIONS = [
 ];
 
 export const DEFAULT_COMPANY_INFO: CompanyInfo = {
-  nombreComercial: 'OLMO',
-  razonSocial: 'OLMO DISEÑO Y MOBILIARIO S.A.',
-  cedulaJuridica: '3-101-000000',
-  telefono: '+506 2200-0000',
-  correo: 'proyectos@olmodiseno.com',
-  direccion: 'Escazú, San José, Costa Rica',
-  sitioWeb: 'www.olmodiseno.com',
+  nombreComercial: 'Olmo',
+  razonSocial: 'G FIVE CO SRL',
+  cedulaJuridica: '3-102-911183',
+  telefono: '6032-5000',
+  correo: '',
+  direccion: 'Santa Ana, San José. Costa Rica',
+  sitioWeb: '',
 };
 
+export function normalizeCompanyDefaults(
+  raw?: Partial<CompanyInfo> | null
+): CompanyInfo {
+  const resolveField = (
+    rawVal: string | undefined,
+    isLegacyFn: (trimmed: string) => boolean,
+    defaultVal: string
+  ): string => {
+    if (rawVal === undefined || rawVal === null) return defaultVal;
+    const trimmed = String(rawVal).trim();
+    if (trimmed === '') return '';
+    if (isLegacyFn(trimmed)) return defaultVal;
+    return String(rawVal);
+  };
+
+  return {
+    nombreComercial: resolveField(
+      raw?.nombreComercial,
+      (v) => v === 'OLMO',
+      DEFAULT_COMPANY_INFO.nombreComercial
+    ),
+    razonSocial: resolveField(
+      raw?.razonSocial,
+      (v) => /^olmo\s+dise[nñ]o\s+y\s+mobiliario(\s+s\.?a\.?)?$/i.test(v),
+      DEFAULT_COMPANY_INFO.razonSocial
+    ),
+    cedulaJuridica: resolveField(
+      raw?.cedulaJuridica,
+      (v) => v === '3-101-000000',
+      DEFAULT_COMPANY_INFO.cedulaJuridica
+    ),
+    telefono: resolveField(
+      raw?.telefono,
+      (v) => v === '2222-0000' || v === '2200-0000',
+      DEFAULT_COMPANY_INFO.telefono
+    ),
+    correo: resolveField(
+      raw?.correo,
+      (v) => /^proyectos@olmodiseno\.com$/i.test(v),
+      DEFAULT_COMPANY_INFO.correo
+    ),
+    sitioWeb: resolveField(
+      raw?.sitioWeb,
+      (v) => /^(https?:\/\/)?(www\.)?olmodiseno\.com\/?$/i.test(v),
+      DEFAULT_COMPANY_INFO.sitioWeb
+    ),
+    direccion: resolveField(
+      raw?.direccion,
+      (v) => /^escaz[uú],?\s*san\s+jos[eé],?\s*costa\s+rica$/i.test(v),
+      DEFAULT_COMPANY_INFO.direccion
+    ),
+  };
+}
+
 export const DEFAULT_BANK_ACCOUNT: BankAccountInfo = {
-  entidadBancaria: 'BAC Credomatic',
-  nombre: 'OLMO DISEÑO Y MOBILIARIO S.A.',
-  cedulaJuridica: '3-101-000000',
+  entidadBancaria: 'Banco Promerica',
+  nombre: 'G FIVE CO SRL',
+  cedulaJuridica: '3-102-911183',
   moneda: 'Dólares (USD)',
-  cuenta: '900000000',
-  cuentaIban: 'CR00010200009000000000',
+  cuenta: '#40000006739441',
+  cuentaIban: 'CR25011610400067394410',
 };
 
 export const DEFAULT_PAYMENT_SCHEDULE: PaymentScheduleItem[] = [

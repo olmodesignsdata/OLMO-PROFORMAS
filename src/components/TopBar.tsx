@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Clock,
   CloudUpload,
   Download,
   FileJson,
@@ -20,7 +21,12 @@ import {
   X,
 } from 'lucide-react';
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
-import { AppNotification, AppSection, ThemeMode } from '../types/proforma';
+import {
+  AppNotification,
+  AppSection,
+  AutoRefreshMinutes,
+  ThemeMode,
+} from '../types/proforma';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import { PdfIcon } from './PdfIcon';
 
@@ -31,6 +37,9 @@ interface TopBarProps {
   onExportCSV: () => void;
   onSendToSheet: () => void;
   onImportDraftFile: (file: File) => void;
+  onOpenImportFromSheet: () => void;
+  autoRefreshMinutes: AutoRefreshMinutes;
+  onChangeAutoRefreshMinutes: (minutes: AutoRefreshMinutes) => void;
   showIntegrationTab: boolean;
   onToggleIntegrationTab: () => void;
   isProformaConfirmed: boolean;
@@ -53,6 +62,9 @@ export function TopBar({
   onExportCSV,
   onSendToSheet,
   onImportDraftFile,
+  onOpenImportFromSheet,
+  autoRefreshMinutes,
+  onChangeAutoRefreshMinutes,
   showIntegrationTab,
   onToggleIntegrationTab,
   isProformaConfirmed,
@@ -488,7 +500,7 @@ export function TopBar({
                 role="menu"
                 aria-label="Menú Archivo"
                 className={`absolute right-0 top-full z-50 mt-2 rounded-xl border border-[#DCDAD3] bg-white p-1.5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 ${
-                  activeSection === 'dashboard' ? 'w-72' : 'w-56'
+                  activeSection === 'dashboard' ? 'w-72' : 'w-64'
                 }`}
               >
                 {activeSection === 'dashboard' ? (
@@ -708,6 +720,24 @@ export function TopBar({
                             />
                             <span>Importar .JSON</span>
                           </button>
+
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setShowFileMenu(false);
+                              setShowImportSubmenu(false);
+                              onOpenImportFromSheet();
+                            }}
+                            title="Leer y previsualizar proformas registradas en el Sheet PROFORMAS antes de importarlas al editor"
+                            className="flex w-full items-center gap-2 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-2 text-left text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                          >
+                            <FileSpreadsheet
+                              className="h-3.5 w-3.5 shrink-0 text-[#8C5A32] dark:text-[#C68B59]"
+                              aria-hidden="true"
+                            />
+                            <span>Importar desde Sheet (PROFORMAS)</span>
+                          </button>
                         </div>
                       )}
                     </div>
@@ -784,6 +814,46 @@ export function TopBar({
                     </div>
                   </>
                 )}
+
+                {/* Selector compartido de frecuencia de auto-refresco (visible en todas las pestañas con Archivo) */}
+                <div className="mt-1.5 border-t border-[#E5E4DF] px-2 pt-2 pb-1.5 dark:border-zinc-800">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock
+                        className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                        aria-hidden="true"
+                      />
+                      <span>Auto-refresco</span>
+                    </span>
+                    <span className="text-[10px] font-normal text-zinc-500 dark:text-zinc-400">
+                      Proformas y Clientes
+                    </span>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Frecuencia de auto-refresco de Proformas y Clientes"
+                    className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+                  >
+                    {([5, 10, 30] as AutoRefreshMinutes[]).map((mins) => {
+                      const isSelected = autoRefreshMinutes === mins;
+                      return (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => onChangeAutoRefreshMinutes(mins)}
+                          aria-pressed={isSelected}
+                          className={`rounded-md px-2 py-1 font-mono text-[11px] font-semibold transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-zinc-900 text-white shadow-2xs dark:bg-[#C68B59] dark:text-zinc-950'
+                              : 'text-zinc-600 hover:bg-white hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:hover:text-zinc-100'
+                          }`}
+                        >
+                          {mins} min
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
           </div>

@@ -1,5 +1,5 @@
-import { AlertTriangle, Printer } from 'lucide-react';
-import { useState } from 'react';
+import { AlertTriangle, GripVertical, Printer } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import {
   DEFAULT_OLMO_MAIN_LOGO,
   getProformaTypeMeta,
@@ -9,12 +9,17 @@ import {
   LogoAsset,
   ProformaData,
   VisualReferenceItem,
+  VisualReferenceSize,
 } from '../types/proforma';
 import {
   formatDateSpanish,
   formatMoney,
+  getCompanyFooterText,
+  getCompanyHeaderLines,
   getCurrencyCode,
   normalizeSpreadsheetParagraphs,
+  normalizeVisualReferenceSize,
+  packVisualReferenceRows,
 } from '../utils/formatters';
 import { ResilientImage } from './ResilientImage';
 
@@ -23,17 +28,29 @@ interface ProformaPreviewProps {
   totals: ComputedTotals;
   mainLogo: LogoAsset;
   footerLogos: Array<LogoAsset | null>;
+  canEditVisualRefs?: boolean;
+  showPageThumbnails?: boolean;
+  onChangeVisualReferenceSize?: (
+    refId: string,
+    nextSize: VisualReferenceSize
+  ) => void;
+  onReorderVisualReferences?: (fromId: string, toId: string) => void;
 }
-
-const REFS_PER_PAGE = 4;
 
 export function ProformaPreview({
   data,
   totals,
   mainLogo,
   footerLogos,
+  canEditVisualRefs = false,
+  showPageThumbnails = false,
+  onChangeVisualReferenceSize,
+  onReorderVisualReferences,
 }: ProformaPreviewProps) {
   const [zoom, setZoom] = useState<number>(100);
+  const [activePageId, setActivePageId] = useState<string>('proforma-page-1');
+  const [draggedRefId, setDraggedRefId] = useState<string | null>(null);
+  const [dragOverRefId, setDragOverRefId] = useState<string | null>(null);
 
   const proformaType = data.proformaType ?? 'mobiliario';
   const typeMeta = getProformaTypeMeta(proformaType);
@@ -43,13 +60,52 @@ export function ProformaPreview({
   const activeFooterLogos = footerLogos.filter(
     (logo): logo is LogoAsset => logo !== null && Boolean(logo.dataUrl)
   );
+  const companyHeaderLines = getCompanyHeaderLines(data.company);
+  const companyFooterText = getCompanyFooterText(data.company);
 
-  const loadedVisualRefs = (data.visualReferences ?? []).filter((ref) =>
-    Boolean(ref.imageDataUrl?.trim())
-  );
-  const visualRefPages: VisualReferenceItem[][] = [];
-  for (let i = 0; i < loadedVisualRefs.length; i += REFS_PER_PAGE) {
-    visualRefPages.push(loadedVisualRefs.slice(i, i + REFS_PER_PAGE));
+  const loadedVisualRefs = [...(data.visualReferences ?? [])]
+    .filter((ref) => Boolean(ref.imageDataUrl?.trim()))
+    .sort((a, b) => a.slotIndex - b.slotIndex);
+
+  const packedVisualRows = packVisualReferenceRows(loadedVisualRefs);
+  const visualRefPages: VisualReferenceItem[][][] = [];
+  const maxBodyBudgetPx = activeFooterLogos.length > 0 ? 790 : 830;
+  let currentPageRows: VisualReferenceItem[][] = [];
+  let currentPageHeightPx = 0;
+
+  for (const row of packedVisualRows) {
+    const hasLarge = row.some(
+      (r) => normalizeVisualReferenceSize(r.size) === 'large'
+    );
+    const hasMedium = row.some(
+      (r) => normalizeVisualReferenceSize(r.size) === 'medium'
+    );
+    const imgBoxHeightPx = hasLarge ? 210 : hasMedium ? 204 : 152;
+    const maxCaptionLines = row.reduce((maxLines, item) => {
+      const cap = item.caption.trim();
+      if (!cap) return maxLines;
+      const itemSize = normalizeVisualReferenceSize(item.size);
+      const charsPerLine =
+        itemSize === 'large' ? 92 : itemSize === 'small' ? 28 : 44;
+      return Math.max(maxLines, Math.ceil(cap.length / charsPerLine));
+    }, 0);
+    const captionPx = maxCaptionLines > 0 ? 18 + maxCaptionLines * 16 : 0;
+    const estimatedRowPx = imgBoxHeightPx + captionPx + 16;
+
+    if (
+      currentPageRows.length > 0 &&
+      currentPageHeightPx + estimatedRowPx > maxBodyBudgetPx
+    ) {
+      visualRefPages.push(currentPageRows);
+      currentPageRows = [row];
+      currentPageHeightPx = estimatedRowPx;
+    } else {
+      currentPageRows.push(row);
+      currentPageHeightPx += estimatedRowPx;
+    }
+  }
+  if (currentPageRows.length > 0) {
+    visualRefPages.push(currentPageRows);
   }
 
   const totalPages = 3 + visualRefPages.length;
@@ -61,23 +117,102 @@ export function ProformaPreview({
     activePayments.length > 0 ? activePayments : totals.paymentRows;
 
   const scrollToPage = (pageId: string) => {
+    setActivePageId(pageId);
     const el = document.getElementById(pageId);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
 
-  const navButtons = [
-    { id: 'proforma-page-1', label: 'Pág. 1 · Productos' },
-    ...(visualRefPages.length > 0
-      ? [{ id: 'proforma-page-refs-0', label: 'Pág. 2 · Referencias' }]
-      : []),
-    { id: 'proforma-page-2', label: `Pág. ${termsPageNumber} · Términos` },
+  type ThumbnailKind = 'products' | 'refs' | 'terms' | 'bank';
+  const pageThumbnails: Array<{
+    id: string;
+    pageNumber: number;
+    shortTitle: string;
+    navLabel: string;
+    kind: ThumbnailKind;
+    refsCount?: number;
+  }> = [
+    {
+      id: 'proforma-page-1',
+      pageNumber: 1,
+      shortTitle: 'Productos y Totales',
+      navLabel: 'Pág. 1 · Productos',
+      kind: 'products',
+    },
+    ...visualRefPages.map((pageRows, pageIdx) => ({
+      id: `proforma-page-refs-${pageIdx}`,
+      pageNumber: 2 + pageIdx,
+      shortTitle:
+        pageIdx === 0 ? 'Referencias Visuales' : 'Referencias (cont.)',
+      navLabel:
+        pageIdx === 0
+          ? `Pág. ${2 + pageIdx} · Referencias`
+          : `Pág. ${2 + pageIdx} · Ref. (${pageIdx + 1})`,
+      kind: 'refs' as const,
+      refsCount: pageRows.reduce((acc, r) => acc + r.length, 0),
+    })),
+    {
+      id: 'proforma-page-2',
+      pageNumber: termsPageNumber,
+      shortTitle: 'Términos y Especif.',
+      navLabel: `Pág. ${termsPageNumber} · Términos`,
+      kind: 'terms',
+    },
     {
       id: 'proforma-page-3',
-      label: `Pág. ${bankPageNumber} · Banco y Firmas`,
+      pageNumber: bankPageNumber,
+      shortTitle: 'Banco, Pagos y Firmas',
+      navLabel: `Pág. ${bankPageNumber} · Banco y Firmas`,
+      kind: 'bank',
     },
   ];
+
+  const pageIdsKey = pageThumbnails.map((p) => p.id).join('|');
+
+  useEffect(() => {
+    if (!showPageThumbnails) return;
+    const ids = pageIdsKey.split('|').filter(Boolean);
+    if (ids.length === 0) return;
+
+    const elements = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    if (elements.length === 0) return;
+
+    const ratios = new Map<string, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          ratios.set(entry.target.id, entry.intersectionRatio);
+        });
+        let bestId = ids[0];
+        let bestRatio = -1;
+        ids.forEach((id) => {
+          const ratio = ratios.get(id) ?? 0;
+          if (ratio > bestRatio) {
+            bestRatio = ratio;
+            bestId = id;
+          }
+        });
+        if (bestRatio > 0) {
+          setActivePageId(bestId);
+        }
+      },
+      {
+        threshold: [0.1, 0.25, 0.5, 0.75],
+        rootMargin: '-80px 0px -20% 0px',
+      }
+    );
+
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [showPageThumbnails, pageIdsKey]);
+
+  const navButtons = pageThumbnails.map((thumb) => ({
+    id: thumb.id,
+    label: thumb.navLabel,
+  }));
 
   return (
     <div className="flex flex-col">
@@ -92,7 +227,11 @@ export function ProformaPreview({
               key={btn.id}
               type="button"
               onClick={() => scrollToPage(btn.id)}
-              className="rounded-md border border-[#E5E4DF] bg-[#FAF9F6] px-2.5 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showPageThumbnails && activePageId === btn.id
+                  ? 'border-[#8C5A32] bg-[#FAF6F1] text-zinc-900 dark:border-[#C68B59] dark:bg-zinc-800 dark:text-zinc-100'
+                  : 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700'
+              }`}
             >
               {btn.label}
             </button>
@@ -140,62 +279,74 @@ export function ProformaPreview({
         </div>
       )}
 
-      {/* Contenedor de hojas Letter */}
-      <div className="print-only-container flex flex-col items-center gap-6 pb-8">
+      {/* Contenedor principal de hojas Letter + panel lateral de miniaturas en Vista Previa */}
+      <div
+        className={
+          showPageThumbnails ? 'flex items-start justify-center gap-6' : ''
+        }
+      >
         <div
-          className="flex w-full flex-col items-center gap-6 origin-top transition-transform duration-150"
-          style={
-            zoom !== 100
-              ? {
-                  transform: `scale(${zoom / 100})`,
-                  marginBottom: `${(zoom - 100) * 18}px`,
-                }
-              : undefined
-          }
+          className={`print-only-container flex flex-col items-center gap-6 pb-8 ${
+            showPageThumbnails ? 'min-w-0 flex-1' : 'w-full'
+          }`}
         >
-          {/* ================================================================
-              PÁGINA 1: ENCABEZADO, CLIENTE/PROYECTO, TABLA Y TOTALES
-              ================================================================ */}
-          <article
-            id="proforma-page-1"
-            className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
+          <div
+            className="flex w-full flex-col items-center gap-6 origin-top transition-transform duration-150"
+            style={
+              zoom !== 100
+                ? {
+                    transform: `scale(${zoom / 100})`,
+                    marginBottom: `${(zoom - 100) * 18}px`,
+                  }
+                : undefined
+            }
           >
-            <div>
-              {/* Encabezado Principal */}
-              <div className="flex flex-col justify-between gap-6 border-b-2 border-zinc-900 pb-5 sm:flex-row sm:items-start">
-                <div className="min-w-0 flex-1">
-                  {/* Logo principal fijo OLMO B.N. */}
-                  <div className="flex h-14 max-w-[210px] items-center">
-                    <ResilientImage
-                      src={effectiveMainLogo.dataUrl}
-                      alt={effectiveMainLogo.name || 'OLMO B.N.'}
-                      crossOrigin="anonymous"
-                      className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
-                      fallback={
-                        <img
-                          src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
-                          alt="OLMO B.N."
-                          crossOrigin="anonymous"
-                          className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
-                        />
-                      }
-                    />
-                  </div>
+            {/* ================================================================
+                PÁGINA 1: ENCABEZADO, CLIENTE/PROYECTO, TABLA Y TOTALES
+                ================================================================ */}
+            <article
+              id="proforma-page-1"
+              className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
+            >
+              <div>
+                {/* Encabezado Principal */}
+                <div className="flex flex-col justify-between gap-6 border-b-2 border-zinc-900 pb-5 sm:flex-row sm:items-start">
+                  <div className="min-w-0 flex-1">
+                    {/* Logo principal fijo OLMO B.N. */}
+                    <div className="flex h-14 max-w-[210px] items-center">
+                      <ResilientImage
+                        src={effectiveMainLogo.dataUrl}
+                        alt={effectiveMainLogo.name || 'OLMO B.N.'}
+                        crossOrigin="anonymous"
+                        className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
+                        fallback={
+                          <img
+                            src={DEFAULT_OLMO_MAIN_LOGO.dataUrl}
+                            alt="OLMO B.N."
+                            crossOrigin="anonymous"
+                            className="max-h-14 max-w-[210px] w-auto h-auto object-contain object-left"
+                          />
+                        }
+                      />
+                    </div>
 
-                  <div className="mt-2.5 space-y-0.5 text-[11.5px] leading-relaxed text-zinc-600">
-                    <p className="font-medium text-zinc-800">
-                      {data.company.razonSocial}
-                    </p>
-                    <p>
-                      Céd. Jur.: {data.company.cedulaJuridica} · Tel:{' '}
-                      {data.company.telefono}
-                    </p>
-                    <p>
-                      {data.company.correo} · {data.company.sitioWeb}
-                    </p>
-                    <p>{data.company.direccion}</p>
+                    {companyHeaderLines.length > 0 && (
+                      <div className="mt-2.5 w-full max-w-none space-y-0.5 text-[11.5px] leading-relaxed text-zinc-600">
+                        {companyHeaderLines.map((line, idx) => (
+                          <p
+                            key={idx}
+                            className={`w-full max-w-none break-words ${
+                              idx === 0 && data.company.razonSocial.trim()
+                                ? 'font-medium text-zinc-800'
+                                : ''
+                            }`}
+                          >
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
 
                 {/* Caja Consecutivo */}
                 <div className="min-w-[210px] shrink-0 rounded border border-[#E5E4DF] bg-[#FAF9F6] px-4 py-3 text-right sm:text-center">
@@ -557,10 +708,7 @@ export function ProformaPreview({
                 </div>
               )}
               <div className="flex items-center justify-between gap-4">
-                <span>
-                  {data.company.razonSocial} · {data.company.correo} ·{' '}
-                  {data.company.telefono}
-                </span>
+                <span>{companyFooterText}</span>
                 <span className="font-mono tabular-nums whitespace-nowrap">
                   Proforma Nº {data.consecutivo} · Página 1 de {totalPages}
                 </span>
@@ -610,37 +758,207 @@ export function ProformaPreview({
                   </div>
 
                   <section className="mt-6">
-                    <h2 className="inline-block border-b-2 border-[#8C5A32] pb-1 text-[12px] font-bold tracking-wider text-zinc-900">
-                      {pageIdx === 0
-                        ? 'REFERENCIAS VISUALES'
-                        : 'REFERENCIAS VISUALES (CONTINUACIÓN)'}
-                    </h2>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h2 className="inline-block border-b-2 border-[#8C5A32] pb-1 text-[12px] font-bold tracking-wider text-zinc-900">
+                        {pageIdx === 0
+                          ? 'REFERENCIAS VISUALES'
+                          : 'REFERENCIAS VISUALES (CONTINUACIÓN)'}
+                      </h2>
+                      {canEditVisualRefs && (
+                        <span className="no-print text-[10.5px] text-zinc-500">
+                          Arrastra entre espacios para reordenar o cambia tamaño (P / M / G)
+                        </span>
+                      )}
+                    </div>
 
-                    <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
-                      {pageRefs.map((ref) => {
-                        const cleanCaption = ref.caption.trim();
+                    <div className="mt-5 space-y-4 overflow-hidden">
+                      {pageRefs.map((row, rowIdx) => {
+                        const rowHasLarge = row.some(
+                          (r) =>
+                            normalizeVisualReferenceSize(r.size) === 'large'
+                        );
+                        const rowHasMedium = row.some(
+                          (r) =>
+                            normalizeVisualReferenceSize(r.size) === 'medium'
+                        );
+                        const boxHeightClass = rowHasLarge
+                          ? 'h-[210px]'
+                          : rowHasMedium
+                            ? 'h-[204px]'
+                            : 'h-[152px]';
+
                         return (
-                          <figure
-                            key={ref.id}
-                            className="proforma-row flex flex-col overflow-hidden border border-[#E5E4DF] bg-white"
+                          <div
+                            key={`refs-row-${pageIdx}-${rowIdx}`}
+                            className="grid grid-cols-6 gap-4 overflow-hidden"
                           >
-                            <div className="flex h-[240px] items-center justify-center bg-[#FAF9F6] p-3">
-                              <ResilientImage
-                                src={ref.imageDataUrl}
-                                alt={
-                                  cleanCaption ||
-                                  ref.name ||
-                                  'Referencia visual'
-                                }
-                                className="max-h-full max-w-full w-auto h-auto object-contain"
-                              />
-                            </div>
-                            {cleanCaption ? (
-                              <figcaption className="border-t border-[#E5E4DF] bg-white px-3.5 py-2.5 text-[11.5px] leading-snug text-zinc-800">
-                                {cleanCaption}
-                              </figcaption>
-                            ) : null}
-                          </figure>
+                            {row.map((ref) => {
+                              const cleanCaption = ref.caption.trim();
+                              const itemSize = normalizeVisualReferenceSize(
+                                ref.size
+                              );
+                              const colSpanClass =
+                                itemSize === 'small'
+                                  ? 'col-span-6 sm:col-span-2'
+                                  : itemSize === 'large'
+                                    ? 'col-span-6'
+                                    : 'col-span-6 sm:col-span-3';
+                              const isInteractive =
+                                canEditVisualRefs &&
+                                Boolean(onReorderVisualReferences) &&
+                                Boolean(onChangeVisualReferenceSize);
+                              const isDragging = draggedRefId === ref.id;
+                              const isDropTarget =
+                                dragOverRefId === ref.id &&
+                                draggedRefId !== ref.id;
+
+                              return (
+                                <figure
+                                  key={ref.id}
+                                  draggable={isInteractive}
+                                  onDragStart={
+                                    isInteractive
+                                      ? (e) => {
+                                          setDraggedRefId(ref.id);
+                                          e.dataTransfer.effectAllowed = 'move';
+                                          e.dataTransfer.setData(
+                                            'text/plain',
+                                            ref.id
+                                          );
+                                        }
+                                      : undefined
+                                  }
+                                  onDragOver={
+                                    isInteractive
+                                      ? (e) => {
+                                          e.preventDefault();
+                                          e.dataTransfer.dropEffect = 'move';
+                                          if (dragOverRefId !== ref.id) {
+                                            setDragOverRefId(ref.id);
+                                          }
+                                        }
+                                      : undefined
+                                  }
+                                  onDragLeave={
+                                    isInteractive
+                                      ? () => {
+                                          if (dragOverRefId === ref.id) {
+                                            setDragOverRefId(null);
+                                          }
+                                        }
+                                      : undefined
+                                  }
+                                  onDrop={
+                                    isInteractive
+                                      ? (e) => {
+                                          e.preventDefault();
+                                          const fromId =
+                                            draggedRefId ||
+                                            e.dataTransfer.getData(
+                                              'text/plain'
+                                            );
+                                          if (fromId) {
+                                            onReorderVisualReferences?.(
+                                              fromId,
+                                              ref.id
+                                            );
+                                          }
+                                          setDraggedRefId(null);
+                                          setDragOverRefId(null);
+                                        }
+                                      : undefined
+                                  }
+                                  onDragEnd={
+                                    isInteractive
+                                      ? () => {
+                                          setDraggedRefId(null);
+                                          setDragOverRefId(null);
+                                        }
+                                      : undefined
+                                  }
+                                  className={`proforma-row group relative flex min-w-0 flex-col overflow-hidden border bg-white transition-all ${colSpanClass} ${
+                                    isDropTarget
+                                      ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/35'
+                                      : 'border-[#E5E4DF]'
+                                  } ${isDragging ? 'opacity-45' : ''}`}
+                                >
+                                  {isInteractive && (
+                                    <div className="no-print flex items-center justify-between gap-1 border-b border-[#ECEAE3] bg-[#FAF9F6] px-2 py-1 text-[10px] text-zinc-600">
+                                      <span
+                                        title="Arrastra para mover de espacio"
+                                        className="inline-flex cursor-grab items-center gap-1 font-medium active:cursor-grabbing"
+                                      >
+                                        <GripVertical
+                                          className="h-3 w-3 text-zinc-400"
+                                          aria-hidden="true"
+                                        />
+                                        <span>Mover</span>
+                                      </span>
+                                      <div className="inline-flex items-center gap-0.5 rounded border border-[#DCDAD3] bg-white p-0.5">
+                                        {(
+                                          [
+                                            {
+                                              val: 'small' as VisualReferenceSize,
+                                              short: 'P',
+                                              title: 'Pequeño (hasta 3/fila)',
+                                            },
+                                            {
+                                              val: 'medium' as VisualReferenceSize,
+                                              short: 'M',
+                                              title: 'Mediano (hasta 2/fila)',
+                                            },
+                                            {
+                                              val: 'large' as VisualReferenceSize,
+                                              short: 'G',
+                                              title: 'Grande (1/fila · expandido)',
+                                            },
+                                          ] as const
+                                        ).map((opt) => (
+                                          <button
+                                            key={opt.val}
+                                            type="button"
+                                            title={opt.title}
+                                            onClick={() =>
+                                              onChangeVisualReferenceSize?.(
+                                                ref.id,
+                                                opt.val
+                                              )
+                                            }
+                                            className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] font-semibold cursor-pointer ${
+                                              itemSize === opt.val
+                                                ? 'bg-zinc-900 text-white'
+                                                : 'text-zinc-500 hover:text-zinc-900'
+                                            }`}
+                                          >
+                                            {opt.short}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div
+                                    className={`flex ${boxHeightClass} items-center justify-center overflow-hidden bg-[#FAF9F6] p-3`}
+                                  >
+                                    <ResilientImage
+                                      src={ref.imageDataUrl}
+                                      alt={
+                                        cleanCaption ||
+                                        ref.name ||
+                                        'Referencia visual'
+                                      }
+                                      className="max-h-full max-w-full w-auto h-auto object-contain"
+                                    />
+                                  </div>
+                                  {cleanCaption ? (
+                                    <figcaption className="border-t border-[#E5E4DF] bg-white px-3.5 py-2 text-[11.5px] leading-snug text-zinc-800 break-words">
+                                      {cleanCaption}
+                                    </figcaption>
+                                  ) : null}
+                                </figure>
+                              );
+                            })}
+                          </div>
                         );
                       })}
                     </div>
@@ -666,10 +984,7 @@ export function ProformaPreview({
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-4">
-                    <span>
-                      {data.company.razonSocial} · {data.company.correo} ·{' '}
-                      {data.company.telefono}
-                    </span>
+                    <span>{companyFooterText}</span>
                     <span className="font-mono tabular-nums whitespace-nowrap">
                       Proforma Nº {data.consecutivo} · Página {pageNum} de{' '}
                       {totalPages}
@@ -775,10 +1090,7 @@ export function ProformaPreview({
                 </div>
               )}
               <div className="flex items-center justify-between gap-4">
-                <span>
-                  {data.company.razonSocial} · {data.company.correo} ·{' '}
-                  {data.company.telefono}
-                </span>
+                <span>{companyFooterText}</span>
                 <span className="font-mono tabular-nums whitespace-nowrap">
                   Proforma Nº {data.consecutivo} · Página {termsPageNumber} de{' '}
                   {totalPages}
@@ -954,8 +1266,9 @@ export function ProformaPreview({
                         'FIRMA REPRESENTANTE OLMO'}
                     </div>
                     <div className="mt-0.5 text-[11px] text-zinc-500">
-                      {data.signatures.representanteNombre ||
-                        data.company.razonSocial}
+                      {data.signatures.representanteNombre.trim() ||
+                        data.company.razonSocial.trim() ||
+                        '\u00A0'}
                     </div>
                     <div className="mt-1.5 text-[10.5px] text-zinc-400">
                       Fecha: _____ / _____ / ________
@@ -999,10 +1312,7 @@ export function ProformaPreview({
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-4">
-                  <span>
-                    {data.company.razonSocial} · {data.company.correo} ·{' '}
-                    {data.company.telefono}
-                  </span>
+                  <span className="min-w-0 flex-1">{companyFooterText}</span>
                   <span className="font-mono tabular-nums whitespace-nowrap">
                     Proforma Nº {data.consecutivo} · Página {bankPageNumber} de{' '}
                     {totalPages}
@@ -1012,6 +1322,135 @@ export function ProformaPreview({
             </div>
           </article>
         </div>
+      </div>
+
+        {showPageThumbnails && (
+          <aside
+            aria-label="Miniaturas de páginas"
+            className="no-print hidden lg:flex w-48 shrink-0 flex-col gap-2.5 sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl border border-[#E3E1DA] bg-white/95 p-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
+          >
+            <div className="flex items-center justify-between border-b border-[#ECEAE3] pb-2 dark:border-zinc-800">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
+                Páginas
+              </span>
+              <span className="rounded bg-[#FAF6F1] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#8C5A32] tabular-nums dark:bg-zinc-800 dark:text-[#D59B69]">
+                {totalPages}
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-2.5">
+              {pageThumbnails.map((thumb) => {
+                const isActive = activePageId === thumb.id;
+                return (
+                  <button
+                    key={thumb.id}
+                    type="button"
+                    onClick={() => scrollToPage(thumb.id)}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`group flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-all cursor-pointer ${
+                      isActive
+                        ? 'border-[#8C5A32] bg-[#FAF6F1] ring-1 ring-[#8C5A32]/30 dark:border-[#C68B59] dark:bg-zinc-800 dark:ring-[#C68B59]/30'
+                        : 'border-[#E5E4DF] bg-[#FAF9F6]/70 hover:border-zinc-400 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/60 dark:hover:border-zinc-600 dark:hover:bg-zinc-800/80'
+                    }`}
+                  >
+                    {/* Miniatura visual proporcional hoja Carta */}
+                    <div className="relative flex aspect-[8.5/11] w-full flex-col justify-between overflow-hidden rounded border border-[#DCDAD3] bg-white p-2 shadow-2xs dark:border-zinc-700">
+                      <div className="space-y-1.5">
+                        {/* Encabezado miniatura */}
+                        <div className="flex items-center justify-between border-b border-zinc-200 pb-1">
+                          <div className="h-1.5 w-7 rounded-xs bg-zinc-800" />
+                          <div className="h-1 w-5 rounded-xs bg-zinc-300" />
+                        </div>
+
+                        {thumb.kind === 'products' && (
+                          <div className="space-y-1.5">
+                            <div className="grid grid-cols-2 gap-1">
+                              <div className="h-3 rounded-xs bg-zinc-100 border border-zinc-200" />
+                              <div className="h-3 rounded-xs bg-zinc-100 border border-zinc-200" />
+                            </div>
+                            <div className="overflow-hidden rounded-xs border border-zinc-200">
+                              <div className="h-1.5 bg-zinc-800" />
+                              <div className="space-y-0.5 p-0.5">
+                                <div className="h-1 rounded-xs bg-zinc-200" />
+                                <div className="h-1 rounded-xs bg-zinc-100" />
+                                <div className="h-1 rounded-xs bg-zinc-200" />
+                                <div className="h-1 rounded-xs bg-zinc-100" />
+                              </div>
+                            </div>
+                            <div className="flex justify-end">
+                              <div className="h-3.5 w-1/2 rounded-xs bg-zinc-900" />
+                            </div>
+                          </div>
+                        )}
+
+                        {thumb.kind === 'refs' && (
+                          <div className="space-y-1">
+                            <div className="h-1 w-10 rounded-xs bg-[#8C5A32]" />
+                            <div className="grid grid-cols-2 gap-1">
+                              {Array.from({
+                                length: Math.min(4, Math.max(2, thumb.refsCount ?? 2)),
+                              }).map((_, i) => (
+                                <div
+                                  key={i}
+                                  className="h-6 rounded-xs border border-zinc-200 bg-zinc-100"
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {thumb.kind === 'terms' && (
+                          <div className="space-y-1">
+                            <div className="h-1 w-9 rounded-xs bg-[#8C5A32]" />
+                            <div className="space-y-0.5">
+                              <div className="h-0.5 w-full bg-zinc-300" />
+                              <div className="h-0.5 w-11/12 bg-zinc-300" />
+                              <div className="h-0.5 w-full bg-zinc-200" />
+                              <div className="h-0.5 w-4/5 bg-zinc-200" />
+                            </div>
+                            <div className="mt-1 h-1 w-11 rounded-xs bg-[#8C5A32]" />
+                            <div className="space-y-1">
+                              <div className="h-4 rounded-xs border border-zinc-200 bg-zinc-50" />
+                              <div className="h-4 rounded-xs border border-zinc-200 bg-zinc-50" />
+                            </div>
+                          </div>
+                        )}
+
+                        {thumb.kind === 'bank' && (
+                          <div className="space-y-1.5">
+                            <div className="h-1 w-10 rounded-xs bg-[#8C5A32]" />
+                            <div className="h-5 rounded-xs border border-zinc-200 bg-zinc-50" />
+                            <div className="h-5 rounded-xs border border-zinc-200 bg-zinc-100" />
+                            <div className="grid grid-cols-2 gap-2 pt-2">
+                              <div className="border-b border-zinc-700 pt-2" />
+                              <div className="border-b border-zinc-700 pt-2" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between border-t border-zinc-200 pt-1">
+                        <div className="h-0.5 w-8 bg-zinc-300" />
+                        <span className="font-mono text-[8px] font-bold text-zinc-700 tabular-nums">
+                          {thumb.pageNumber}/{totalPages}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1 px-0.5">
+                      <span className="truncate text-[11px] font-medium text-zinc-800 dark:text-zinc-200">
+                        {thumb.shortTitle}
+                      </span>
+                      <span className="shrink-0 font-mono text-[10px] font-semibold text-zinc-500 tabular-nums dark:text-zinc-400">
+                        P.{thumb.pageNumber}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

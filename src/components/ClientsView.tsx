@@ -126,6 +126,12 @@ export function ClientsView({
   >(null);
   const [pushingClientId, setPushingClientId] = useState<string | null>(null);
   const [isSubmittingToSheet, setIsSubmittingToSheet] = useState(false);
+  const [pendingSheetConfirm, setPendingSheetConfirm] = useState<{
+    payload: ClientDraftPayload;
+    editingTargetId?: string;
+    rowClientId?: string;
+    mode: 'form-sheet' | 'form-auto' | 'row';
+  } | null>(null);
   const [importFeedback, setImportFeedback] = useState<{
     ok: boolean;
     message: string;
@@ -210,14 +216,13 @@ export function ClientsView({
       ubicacion: formState.ubicacion.trim(),
     };
 
-    onSaveClient(cleanPayload, editingId ?? undefined);
-
     const hasAppsScript = Boolean(importConfig.appsScriptUrl.trim());
     const shouldSync =
       forceSyncToSheet || (hasAppsScript && importConfig.autoSyncToSheet);
 
     if (shouldSync) {
       if (!hasAppsScript) {
+        onSaveClient(cleanPayload, editingId ?? undefined);
         setIsImportOpen(true);
         const msg =
           'Cliente guardado localmente. Configura primero la URL de Google Apps Script (/exec) de clientes para enviarlo a la pestaña CLIENTES.';
@@ -226,11 +231,16 @@ export function ClientsView({
         closeForm();
         return;
       }
-      setIsSubmittingToSheet(true);
-      await pushClientPayloadToSheet(cleanPayload);
-      setIsSubmittingToSheet(false);
+
+      setPendingSheetConfirm({
+        payload: cleanPayload,
+        editingTargetId: editingId ?? undefined,
+        mode: forceSyncToSheet ? 'form-sheet' : 'form-auto',
+      });
+      return;
     }
 
+    onSaveClient(cleanPayload, editingId ?? undefined);
     closeForm();
   };
 
@@ -239,7 +249,7 @@ export function ClientsView({
     void saveClientAndOptionallySync(false);
   };
 
-  const handleRowSyncToSheet = async (client: SavedClient) => {
+  const handleRowSyncToSheet = (client: SavedClient) => {
     if (!importConfig.appsScriptUrl.trim()) {
       setIsImportOpen(true);
       setSyncBanner({
@@ -249,14 +259,49 @@ export function ClientsView({
       });
       return;
     }
-    setPushingClientId(client.id);
-    await pushClientPayloadToSheet({
-      cliente: client.cliente,
-      contacto: client.contacto,
-      telefono: client.telefono,
-      correo: client.correo,
-      ubicacion: client.ubicacion,
+    setPendingSheetConfirm({
+      payload: {
+        cliente: client.cliente,
+        contacto: client.contacto,
+        telefono: client.telefono,
+        correo: client.correo,
+        ubicacion: client.ubicacion,
+      },
+      rowClientId: client.id,
+      mode: 'row',
     });
+  };
+
+  const handleConfirmSaveLocalOnly = () => {
+    if (!pendingSheetConfirm) return;
+    if (pendingSheetConfirm.mode !== 'row') {
+      onSaveClient(
+        pendingSheetConfirm.payload,
+        pendingSheetConfirm.editingTargetId
+      );
+      closeForm();
+    }
+    setPendingSheetConfirm(null);
+  };
+
+  const handleExecutePendingSheetSync = async () => {
+    if (!pendingSheetConfirm) return;
+    const current = pendingSheetConfirm;
+    setPendingSheetConfirm(null);
+
+    if (current.mode !== 'row') {
+      onSaveClient(current.payload, current.editingTargetId);
+      setIsSubmittingToSheet(true);
+      await pushClientPayloadToSheet(current.payload);
+      setIsSubmittingToSheet(false);
+      closeForm();
+      return;
+    }
+
+    if (current.rowClientId) {
+      setPushingClientId(current.rowClientId);
+    }
+    await pushClientPayloadToSheet(current.payload);
     setPushingClientId(null);
   };
 
@@ -1359,6 +1404,116 @@ export function ClientsView({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {pendingSheetConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="client-sheet-confirm-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
+        >
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32] dark:bg-zinc-800 dark:text-[#D59B69]">
+                <CloudUpload className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h2
+                  id="client-sheet-confirm-title"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
+                >
+                  {pendingSheetConfirm.mode === 'row'
+                    ? '¿Enviar cliente al Google Sheet?'
+                    : pendingSheetConfirm.editingTargetId
+                      ? '¿Guardar y enviar cambios al Google Sheet?'
+                      : '¿Guardar y enviar nuevo cliente al Google Sheet?'}
+                </h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  Se enviará este registro a la pestaña{' '}
+                  <strong className="text-zinc-900 dark:text-zinc-100">
+                    {importConfig.sheetName || DEFAULT_CLIENTS_SHEET_NAME}
+                  </strong>{' '}
+                  de tu Google Sheet de Clientes.
+                </p>
+
+                <div className="mt-3 space-y-1 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 text-xs dark:border-zinc-800 dark:bg-zinc-800/60">
+                  <div>
+                    <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                      Cliente:{' '}
+                    </span>
+                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                      {pendingSheetConfirm.payload.cliente}
+                    </span>
+                  </div>
+                  {pendingSheetConfirm.payload.contacto && (
+                    <div>
+                      <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                        Contacto:{' '}
+                      </span>
+                      <span className="text-zinc-800 dark:text-zinc-200">
+                        {pendingSheetConfirm.payload.contacto}
+                      </span>
+                    </div>
+                  )}
+                  {(pendingSheetConfirm.payload.telefono ||
+                    pendingSheetConfirm.payload.correo) && (
+                    <div>
+                      <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                        Tel / Correo:{' '}
+                      </span>
+                      <span className="text-zinc-800 dark:text-zinc-200">
+                        {[
+                          pendingSheetConfirm.payload.telefono,
+                          pendingSheetConfirm.payload.correo,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                  )}
+                  {pendingSheetConfirm.payload.ubicacion && (
+                    <div>
+                      <span className="font-semibold text-zinc-600 dark:text-zinc-400">
+                        Ubicación:{' '}
+                      </span>
+                      <span className="text-zinc-800 dark:text-zinc-200">
+                        {pendingSheetConfirm.payload.ubicacion}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingSheetConfirm(null)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                Cancelar
+              </button>
+              {pendingSheetConfirm.mode === 'form-auto' && (
+                <button
+                  type="button"
+                  onClick={handleConfirmSaveLocalOnly}
+                  className="rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                >
+                  Solo guardar local
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleExecutePendingSheetSync()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 cursor-pointer dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              >
+                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Sí, enviar al Sheet</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
