@@ -10,6 +10,7 @@ import {
   ChevronUp,
   ChevronsDownUp,
   ChevronsUpDown,
+  Columns2,
   Copy,
   FileSpreadsheet,
   GripVertical,
@@ -17,6 +18,7 @@ import {
   Link2,
   Loader2,
   Maximize2,
+  PanelLeft,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -56,6 +58,7 @@ import {
   TerminoTemplate,
   VisualReferenceItem,
   VisualReferenceSize,
+  WorkspaceLayoutMode,
 } from '../types/proforma';
 import { findBestTerminoForProformaType } from '../utils/cloudSync';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
@@ -125,6 +128,8 @@ interface EditorPanelProps {
   onSyncAranTemplates: () => void;
   onGoToIntegration: () => void;
   isSplitScrollContainer?: boolean;
+  layoutMode?: WorkspaceLayoutMode;
+  onChangeLayoutMode?: (mode: WorkspaceLayoutMode) => void;
 }
 
 type EditorTab = 'cliente' | 'productos' | 'referencias' | 'terminos' | 'banco';
@@ -171,6 +176,8 @@ export function EditorPanel({
   onSyncAranTemplates,
   onGoToIntegration,
   isSplitScrollContainer = false,
+  layoutMode = 'split',
+  onChangeLayoutMode,
 }: EditorPanelProps) {
   const [activeTab, setActiveTab] = useState<EditorTab>('cliente');
   const [clientFilterQuery, setClientFilterQuery] = useState('');
@@ -1321,31 +1328,70 @@ export function EditorPanel({
       ref={editorRootRef}
       className="flex flex-col rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
     >
-      {/* Navegación por pestañas del formulario */}
+      {/* Selector Dividido / Solo Editor centrado encima + sub-pestañas sticky del formulario */}
       <div
-        className={`sticky z-10 flex items-center gap-1.5 overflow-x-auto rounded-t-xl border-b border-[#E5E4DF] bg-[#FAF9F6] px-2.5 py-2 shadow-[0_1px_2px_rgba(24,24,27,0.03)] dark:border-zinc-800 dark:bg-zinc-900 ${
+        className={`sticky z-10 rounded-t-xl border-b border-[#E5E4DF] bg-[#FAF9F6] shadow-[0_1px_2px_rgba(24,24,27,0.03)] dark:border-zinc-800 dark:bg-zinc-900 ${
           isSplitScrollContainer
             ? 'top-[var(--olmo-workspace-top,0px)] xl:top-0'
             : 'top-[var(--olmo-workspace-top,0px)]'
         }`}
       >
-        {tabs.map((tab) => {
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => handleSelectEditorTab(tab.id)}
-              className={`rounded-lg px-3 py-2 text-xs whitespace-nowrap shrink-0 transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8C5A32] dark:focus-visible:ring-amber-500 ${
-                active
-                  ? 'border border-[#DCDAD3] border-b-2 border-b-[#8C5A32] bg-white font-semibold text-zinc-900 shadow-xs dark:border-zinc-700 dark:border-b-amber-500 dark:bg-zinc-800 dark:text-zinc-100'
-                  : 'border border-transparent font-medium text-zinc-600 hover:bg-white/75 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-              }`}
+        {onChangeLayoutMode && (
+          <div className="hidden xl:flex items-center justify-center border-b border-[#ECEAE3] px-3 py-1.5 dark:border-zinc-800">
+            <div
+              role="group"
+              aria-label="Modo de vista del editor"
+              className="inline-flex items-center rounded-md border border-[#E5E4DF] bg-white p-0.5 shadow-2xs dark:border-zinc-700 dark:bg-zinc-950"
             >
-              {tab.label}
-            </button>
-          );
-        })}
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode('split')}
+                aria-pressed={layoutMode === 'split'}
+                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                  layoutMode === 'split'
+                    ? 'bg-[#FAF6F1] font-semibold text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                }`}
+              >
+                <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Dividido</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode('editor')}
+                aria-pressed={layoutMode === 'editor'}
+                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                  layoutMode === 'editor'
+                    ? 'bg-[#FAF6F1] font-semibold text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
+                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                }`}
+              >
+                <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Solo Editor</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5 overflow-x-auto px-2.5 py-2">
+          {tabs.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => handleSelectEditorTab(tab.id)}
+                className={`rounded-lg px-3 py-2 text-xs whitespace-nowrap shrink-0 transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8C5A32] dark:focus-visible:ring-amber-500 ${
+                  active
+                    ? 'border border-[#DCDAD3] border-b-2 border-b-[#8C5A32] bg-white font-semibold text-zinc-900 shadow-xs dark:border-zinc-700 dark:border-b-amber-500 dark:bg-zinc-800 dark:text-zinc-100'
+                    : 'border border-transparent font-medium text-zinc-600 hover:bg-white/75 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {savedBanner && (

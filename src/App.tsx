@@ -2,15 +2,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   CloudUpload,
-  Columns2,
   FileJson,
   FilePlus2,
   Loader2,
   Lock,
-  PanelLeft,
-  Redo2,
   Save,
-  Undo2,
   Upload,
   XCircle,
 } from 'lucide-react';
@@ -82,10 +78,7 @@ import {
   parseProformaFromJsonInput,
   sendProformaToWebhook,
 } from './utils/cloudSync';
-import {
-  exportProformaToCSV,
-  generateProformaPDF,
-} from './utils/exporters';
+import { generateProformaPDF } from './utils/exporters';
 import { computeProformaTotals, formatMoney } from './utils/formatters';
 import {
   ClientImportRow,
@@ -2509,13 +2502,15 @@ export default function App() {
         activeSection={activeSection}
         onSelectSection={setActiveSection}
         onDownloadPDF={() => void handleDownloadPDF()}
-        onExportCSV={() => {
-          if (!isProformaConfirmed) return;
-          exportProformaToCSV(proforma, totals);
-        }}
         onSendToSheet={() => void handleSendProformaToSheet()}
         onImportDraftFile={(file) => void handleImportDraftFile(file)}
         onOpenImportFromSheet={handleOpenImportFromSheetModal}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        undoCount={undoCount}
+        redoCount={redoCount}
         autoRefreshMinutes={autoRefreshMinutes}
         onChangeAutoRefreshMinutes={handleChangeAutoRefreshMinutes}
         showIntegrationTab={showIntegrationTab}
@@ -2822,77 +2817,6 @@ export default function App() {
             </div>
           )}
 
-        {/* Barra compacta de vista y Deshacer/Rehacer (visible en Editor y Vista Previa) */}
-        {(activeSection === 'editor' || activeSection === 'preview') && (
-          <div className="no-print mb-4 flex flex-wrap items-center justify-end gap-2">
-            {activeSection === 'editor' && (
-              <div className="hidden xl:flex items-center rounded-md border border-[#E5E4DF] bg-white p-0.5 shadow-2xs dark:border-zinc-700 dark:bg-zinc-900">
-                <button
-                  type="button"
-                  onClick={() => setLayoutMode('split')}
-                  className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                    layoutMode === 'split'
-                      ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
-                      : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                  }`}
-                >
-                  <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Dividido</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLayoutMode('editor')}
-                  className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                    layoutMode === 'editor'
-                      ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
-                      : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                  }`}
-                >
-                  <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Solo Editor</span>
-                </button>
-              </div>
-            )}
-
-            {/* Deshacer / Rehacer */}
-            <div className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-white shadow-2xs dark:border-zinc-700 dark:bg-zinc-900">
-              <button
-                type="button"
-                onClick={handleUndo}
-                disabled={!isProformaConfirmed || !canUndo}
-                title={
-                  !isProformaConfirmed
-                    ? 'Selecciona o crea una proforma primero'
-                    : canUndo
-                      ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
-                      : 'No hay cambios anteriores para deshacer'
-                }
-                className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
-              >
-                <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Deshacer</span>
-              </button>
-              <span className="h-4 w-px bg-[#E5E4DF] dark:bg-zinc-700" aria-hidden="true" />
-              <button
-                type="button"
-                onClick={handleRedo}
-                disabled={!isProformaConfirmed || !canRedo}
-                title={
-                  !isProformaConfirmed
-                    ? 'Selecciona o crea una proforma primero'
-                    : canRedo
-                      ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y / Ctrl+Shift+Z`
-                      : 'No hay cambios posteriores para rehacer'
-                }
-                className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
-              >
-                <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Rehacer</span>
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Vista principal según sección */}
         {activeSection === 'editor' && (
           <div
@@ -2953,6 +2877,8 @@ export default function App() {
                   onSyncAranTemplates={() => void handleSyncAranTemplates(false)}
                   onGoToIntegration={() => setActiveSection('integration')}
                   isSplitScrollContainer={layoutMode === 'split'}
+                  layoutMode={layoutMode}
+                  onChangeLayoutMode={setLayoutMode}
                 />
               </section>
 

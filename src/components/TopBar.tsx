@@ -17,8 +17,10 @@ import {
   Lock,
   Moon,
   Plus,
+  Redo2,
   SlidersHorizontal,
   Sun,
+  Undo2,
   Upload,
   X,
 } from 'lucide-react';
@@ -36,10 +38,15 @@ interface TopBarProps {
   activeSection: AppSection;
   onSelectSection: (section: AppSection) => void;
   onDownloadPDF: () => void;
-  onExportCSV: () => void;
   onSendToSheet: () => void;
   onImportDraftFile: (file: File) => void;
   onOpenImportFromSheet: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoCount: number;
+  redoCount: number;
   autoRefreshMinutes: AutoRefreshMinutes;
   onChangeAutoRefreshMinutes: (minutes: AutoRefreshMinutes) => void;
   showIntegrationTab: boolean;
@@ -73,10 +80,15 @@ export function TopBar({
   activeSection,
   onSelectSection,
   onDownloadPDF,
-  onExportCSV,
   onSendToSheet,
   onImportDraftFile,
   onOpenImportFromSheet,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  undoCount,
+  redoCount,
   autoRefreshMinutes,
   onChangeAutoRefreshMinutes,
   showIntegrationTab,
@@ -241,8 +253,8 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zona 3: Guardado local + Campana de notificaciones + Interruptor Claro / Modo Oscuro + Botón PDF negro */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        {/* Zona 3: Guardado local + Campana de notificaciones + Deshacer/Rehacer + Menú Archivo */}
+        <div className="flex items-center gap-2 shrink-0">
           {/* Indicador de guardado local inmediatamente a la izquierda de la campana */}
           {isProformaConfirmed && (
             <span
@@ -465,36 +477,47 @@ export function TopBar({
             )}
           </div>
 
+          {/* Deshacer / Rehacer inmediatamente a la izquierda de Archivo */}
           <div
             role="group"
-            aria-label="Seleccionar tema de la interfaz"
-            className="inline-flex items-center rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="Historial de cambios"
+            className="inline-flex items-center rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] shadow-2xs dark:border-zinc-700 dark:bg-zinc-800"
           >
             <button
               type="button"
-              onClick={() => onChangeThemeMode('light')}
-              aria-pressed={themeMode === 'light'}
-              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors duration-150 cursor-pointer ${
-                themeMode === 'light'
-                  ? 'bg-white text-zinc-900 shadow-xs'
-                  : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-              }`}
+              onClick={onUndo}
+              disabled={!isProformaConfirmed || !canUndo}
+              title={
+                !isProformaConfirmed
+                  ? 'Selecciona o crea una proforma primero'
+                  : canUndo
+                    ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
+                    : 'No hay cambios anteriores para deshacer'
+              }
+              className="inline-flex items-center gap-1 rounded-l-lg px-2.5 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
             >
-              <Sun className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-              <span>Claro</span>
+              <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Deshacer</span>
             </button>
+            <span
+              className="h-4 w-px bg-[#DCDAD3] dark:bg-zinc-700"
+              aria-hidden="true"
+            />
             <button
               type="button"
-              onClick={() => onChangeThemeMode('dark')}
-              aria-pressed={themeMode === 'dark'}
-              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors duration-150 cursor-pointer ${
-                themeMode === 'dark'
-                  ? 'bg-zinc-950 text-zinc-100 shadow-xs'
-                  : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-              }`}
+              onClick={onRedo}
+              disabled={!isProformaConfirmed || !canRedo}
+              title={
+                !isProformaConfirmed
+                  ? 'Selecciona o crea una proforma primero'
+                  : canRedo
+                    ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y / Ctrl+Shift+Z`
+                    : 'No hay cambios posteriores para rehacer'
+              }
+              className="inline-flex items-center gap-1 rounded-r-lg px-2.5 py-2 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
             >
-              <Moon className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-              <span>Modo Oscuro</span>
+              <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Rehacer</span>
             </button>
           </div>
 
@@ -547,9 +570,7 @@ export function TopBar({
               <div
                 role="menu"
                 aria-label="Menú Archivo"
-                className={`absolute right-0 top-full z-50 mt-2 rounded-xl border border-[#DCDAD3] bg-white p-1.5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 ${
-                  activeSection === 'dashboard' ? 'w-72' : 'w-64'
-                }`}
+                className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-[#DCDAD3] bg-white p-1.5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
               >
                 {activeSection === 'dashboard' ? (
                   <button
@@ -645,25 +666,21 @@ export function TopBar({
                           <button
                             type="button"
                             role="menuitem"
-                            disabled={!isProformaConfirmed}
-                            title={
-                              isProformaConfirmed
-                                ? 'Exportar cotización en formato CSV (listo para descargar)'
-                                : 'Selecciona, crea o importa una proforma antes de exportar'
-                            }
-                            onClick={() => {
-                              if (!isProformaConfirmed) return;
-                              setShowFileMenu(false);
-                              setShowExportSubmenu(false);
-                              onExportCSV();
-                            }}
-                            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer ${getConnectionButtonClasses(true, 'outline')}`}
+                            disabled
+                            aria-disabled="true"
+                            title="Exportar CSV (no disponible por ahora)"
+                            className="flex w-full items-center justify-between gap-2 rounded-md border border-[#E5E4DF] bg-zinc-100 px-3 py-2 text-left text-xs font-medium text-zinc-400 opacity-75 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
                           >
-                            <FileSpreadsheet
-                              className="h-3.5 w-3.5 shrink-0"
-                              aria-hidden="true"
-                            />
-                            <span>Exportar CSV</span>
+                            <span className="inline-flex items-center gap-2">
+                              <Lock
+                                className="h-3.5 w-3.5 shrink-0"
+                                aria-hidden="true"
+                              />
+                              <span>Exportar CSV</span>
+                            </span>
+                            <span className="text-[10px] font-semibold">
+                              No disponible
+                            </span>
                           </button>
 
                           <button
@@ -882,6 +899,67 @@ export function TopBar({
                     </div>
                   </>
                 )}
+
+                {/* Alternancia de Tema (Modo Claro / Modo Oscuro) dentro de Archivo */}
+                <div className="mt-1.5 border-t border-[#E5E4DF] px-2 pt-2 pb-1 dark:border-zinc-800">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-zinc-700 dark:text-zinc-300">
+                    <span className="inline-flex items-center gap-1.5">
+                      {themeMode === 'dark' ? (
+                        <Moon
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Sun
+                          className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>Apariencia</span>
+                    </span>
+                    <span className="text-[10px] font-normal text-zinc-500 dark:text-zinc-400">
+                      Tema visual
+                    </span>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Seleccionar tema de la interfaz"
+                    className="mt-1.5 grid grid-cols-2 gap-1 rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onChangeThemeMode('light')}
+                      aria-pressed={themeMode === 'light'}
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-colors duration-150 cursor-pointer ${
+                        themeMode === 'light'
+                          ? 'bg-white text-zinc-900 shadow-xs'
+                          : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                      }`}
+                    >
+                      <Sun
+                        className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                        aria-hidden="true"
+                      />
+                      <span>Modo Claro</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChangeThemeMode('dark')}
+                      aria-pressed={themeMode === 'dark'}
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-colors duration-150 cursor-pointer ${
+                        themeMode === 'dark'
+                          ? 'bg-zinc-950 text-zinc-100 shadow-xs'
+                          : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                      }`}
+                    >
+                      <Moon
+                        className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]"
+                        aria-hidden="true"
+                      />
+                      <span>Modo Oscuro</span>
+                    </button>
+                  </div>
+                </div>
 
                 {/* Selector compartido de frecuencia de auto-refresco (visible en todas las pestañas con Archivo) */}
                 <div className="mt-1.5 border-t border-[#E5E4DF] px-2 pt-2 pb-1.5 dark:border-zinc-800">

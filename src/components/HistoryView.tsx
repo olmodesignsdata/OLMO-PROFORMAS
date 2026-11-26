@@ -32,10 +32,7 @@ import {
   formatDateSpanish,
   formatMoney,
 } from '../utils/formatters';
-import {
-  exportProformaToCSV,
-  generateProformaPDF,
-} from '../utils/exporters';
+import { generateProformaPDF } from '../utils/exporters';
 import { CompareProformasModal } from './CompareProformasModal';
 import { PdfIcon } from './PdfIcon';
 import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
@@ -955,12 +952,11 @@ export function HistoryView({
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            exportProformaToCSV(rec.data, totals)
-                          }
-                          title="Exportar CSV"
-                          aria-label={`Exportar CSV Proforma ${rec.consecutivo}`}
-                          className={`rounded p-1.5 transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'icon')}`}
+                          disabled
+                          aria-disabled="true"
+                          title="Exportar CSV (no disponible por ahora)"
+                          aria-label={`Exportar CSV Proforma ${rec.consecutivo} (no disponible por ahora)`}
+                          className="rounded border border-[#E5E4DF] bg-zinc-100 p-1.5 text-zinc-400 opacity-50 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
                         >
                           <FileSpreadsheet className="h-3.5 w-3.5" />
                         </button>
