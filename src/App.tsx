@@ -1,11 +1,13 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  CloudUpload,
   Columns2,
   FileJson,
   FilePlus2,
   HardDrive,
   Loader2,
+  Lock,
   PanelLeft,
   Redo2,
   Save,
@@ -79,9 +81,11 @@ import {
   processLogoUrl,
   rasterizeLogoForPdf,
 } from './utils/logoUtils';
+import { getConnectionButtonClasses } from './utils/connectionStyles';
 import {
   computeNextConsecutivoFromRecords,
   deleteProformaFromHistory,
+  loadActiveProformaConfirmed,
   loadAranTemplatesCache,
   loadClientsImportConfig,
   loadCloudConfig,
@@ -103,6 +107,7 @@ import {
   loadTerminosTemplatesCache,
   loadThemeMode,
   reserveNextConsecutivo,
+  saveActiveProformaConfirmed,
   saveAranTemplatesCache,
   saveBankDefaults,
   saveClientsImportConfig,
@@ -315,6 +320,10 @@ export default function App() {
     return setNextConsecutivo(computed);
   });
 
+  const [isProformaConfirmed, setIsProformaConfirmed] = useState<boolean>(() =>
+    loadActiveProformaConfirmed()
+  );
+
   const {
     proforma,
     canUndo,
@@ -331,23 +340,25 @@ export default function App() {
       savedLocal,
       loadRemoteHistoryCache().records
     );
-    const draft = loadDraftProforma();
-    if (draft) {
-      const normalized = normalizeProformaClientContact(draft);
-      const base = isUntouchedLegacySampleDraft(normalized)
-        ? {
-            ...normalized,
-            items: [createEmptyProductLine()],
-          }
-        : normalized;
-      const isSavedLocally = savedLocal.some((rec) => rec.id === base.id);
-      if (!isSavedLocally && !hasProformaUserContent(base)) {
-        return {
-          ...base,
-          consecutivo: computedNext,
-        };
+    if (loadActiveProformaConfirmed()) {
+      const draft = loadDraftProforma();
+      if (draft) {
+        const normalized = normalizeProformaClientContact(draft);
+        const base = isUntouchedLegacySampleDraft(normalized)
+          ? {
+              ...normalized,
+              items: [createEmptyProductLine()],
+            }
+          : normalized;
+        const isSavedLocally = savedLocal.some((rec) => rec.id === base.id);
+        if (!isSavedLocally && !hasProformaUserContent(base)) {
+          return {
+            ...base,
+            consecutivo: computedNext,
+          };
+        }
+        return base;
       }
-      return base;
     }
     const initial = createInitialProforma(computedNext, true);
     initial.company = loadSavedCompanyDefaults();
@@ -449,6 +460,7 @@ export default function App() {
   const totals = useMemo(() => computeProformaTotals(proforma), [proforma]);
 
   const latestProformaRef = useRef(proforma);
+  const latestIsProformaConfirmedRef = useRef(isProformaConfirmed);
   const latestTotalsRef = useRef(totals);
   const latestHistoryRef = useRef(history);
   const latestRemoteHistoryRef = useRef(remoteHistory);
@@ -468,6 +480,7 @@ export default function App() {
   const autosaveTimerRef = useRef<number | null>(null);
 
   latestProformaRef.current = proforma;
+  latestIsProformaConfirmedRef.current = isProformaConfirmed;
   latestTotalsRef.current = totals;
   latestHistoryRef.current = history;
   latestRemoteHistoryRef.current = remoteHistory;
@@ -475,6 +488,12 @@ export default function App() {
   latestCloudConfigRef.current = cloudConfig;
   latestSavedClientsRef.current = savedClients;
   latestClientsImportConfigRef.current = clientsImportConfig;
+
+  const confirmActiveProforma = useCallback(() => {
+    setIsProformaConfirmed(true);
+    latestIsProformaConfirmedRef.current = true;
+    saveActiveProformaConfirmed(true);
+  }, []);
 
   // Aplicar clase .dark en <html> para Modo Oscuro en toda la interfaz de trabajo (sin afectar el documento final/PDF)
   useEffect(() => {
@@ -536,6 +555,9 @@ export default function App() {
 
   const persistLocalBackup = useCallback(
     (forceHistoryBackup: boolean): string | null => {
+      if (!latestIsProformaConfirmedRef.current) {
+        return null;
+      }
       const currentDraft = latestProformaRef.current;
       const currentTotals = latestTotalsRef.current;
       const savedAt = saveDraftProforma(currentDraft);
@@ -578,6 +600,12 @@ export default function App() {
 
   // Autoguardado continuo con debounce de 650 ms al editar la cotización activa
   useEffect(() => {
+    if (!isProformaConfirmed) {
+      isInitialAutosaveMountRef.current = false;
+      setAutosaveStatus('idle');
+      return;
+    }
+
     if (isInitialAutosaveMountRef.current) {
       isInitialAutosaveMountRef.current = false;
       // Garantizar que el borrador inicial quede persistido si no existía
@@ -607,11 +635,12 @@ export default function App() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [proforma, persistLocalBackup]);
+  }, [proforma, isProformaConfirmed, persistLocalBackup]);
 
   // Respaldo inmediato si se cierra o recarga la pestaña antes de que venza el debounce
   useEffect(() => {
     const handleFlushOnExit = () => {
+      if (!latestIsProformaConfirmedRef.current) return;
       if (autosaveTimerRef.current !== null) {
         window.clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
@@ -647,6 +676,7 @@ export default function App() {
   }, []);
 
   const handleUndo = useCallback(() => {
+    if (!latestIsProformaConfirmedRef.current) return;
     const restored = undo();
     if (restored) {
       hasEditedSinceLoadRef.current = true;
@@ -655,6 +685,7 @@ export default function App() {
   }, [undo, showToast]);
 
   const handleRedo = useCallback(() => {
+    if (!latestIsProformaConfirmedRef.current) return;
     const restored = redo();
     if (restored) {
       hasEditedSinceLoadRef.current = true;
@@ -665,6 +696,7 @@ export default function App() {
   // Atajos de teclado globales (Ctrl+Z / Cmd+Z y Ctrl+Y / Ctrl+Shift+Z / Cmd+Shift+Z)
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isProformaConfirmed) return;
       if (activeSection !== 'editor' && activeSection !== 'preview') return;
       if (showNewQuoteConfirm || pendingLoadDraft) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
@@ -690,6 +722,7 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    isProformaConfirmed,
     activeSection,
     showNewQuoteConfirm,
     pendingLoadDraft,
@@ -700,6 +733,13 @@ export default function App() {
   ]);
 
   const handleSaveNowLocal = () => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Primero selecciona, crea o importa una proforma para poder guardarla.',
+        true
+      );
+      return;
+    }
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -718,6 +758,13 @@ export default function App() {
   };
 
   const handleSaveToHistory = async () => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Primero selecciona, crea o importa una proforma para guardarla en el historial.',
+        true
+      );
+      return;
+    }
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -767,7 +814,9 @@ export default function App() {
   const executeNewProforma = () => {
     // Calcula automáticamente el consecutivo más alto entre PROFORMAS e historial local + 1
     const reserved = reserveNextConsecutivo(
-      hasProformaUserContent(proforma) ? proforma.consecutivo : undefined,
+      isProformaConfirmed && hasProformaUserContent(proforma)
+        ? proforma.consecutivo
+        : undefined,
       latestRemoteHistoryRef.current
     );
     setNextConsecutivoState(reserved);
@@ -776,6 +825,7 @@ export default function App() {
     fresh.bankAccount = loadSavedBankDefaults();
     fresh.signatures.representanteNombre =
       proforma.signatures.representanteNombre;
+    confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(fresh);
     setShowNewQuoteConfirm(false);
@@ -784,7 +834,7 @@ export default function App() {
   };
 
   const handleRequestNewProforma = () => {
-    if (hasUnsavedProformaChanges(proforma, history)) {
+    if (isProformaConfirmed && hasUnsavedProformaChanges(proforma, history)) {
       setShowNewQuoteConfirm(true);
       return;
     }
@@ -797,6 +847,7 @@ export default function App() {
   };
 
   const handleSyncNextConsecutivo = () => {
+    if (!isProformaConfirmed) return;
     const nextNum = setNextConsecutivo(
       computeNextConsecutivoFromRecords(
         latestHistoryRef.current,
@@ -813,6 +864,13 @@ export default function App() {
   };
 
   const handleDownloadPDF = async () => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de generar el PDF.',
+        true
+      );
+      return;
+    }
     try {
       const result = await generateProformaPDF(
         proforma,
@@ -849,6 +907,13 @@ export default function App() {
   };
 
   const handleSendProformaToSheet = async () => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de enviarla al Sheet.',
+        true
+      );
+      return;
+    }
     if (!cloudConfig.webhookUrl.trim()) {
       showToast(
         'Falta configurar la URL de Google Apps Script (/exec) en la pestaña Integración antes de enviar la proforma al Google Sheet.',
@@ -1084,6 +1149,20 @@ export default function App() {
         JSON.parse(JSON.stringify(record.data)) as ProformaData
       );
 
+    if (!isProformaConfirmed) {
+      const loaded = normalizeProformaClientContact(
+        JSON.parse(JSON.stringify(candidateData)) as ProformaData
+      );
+      confirmActiveProforma();
+      hasEditedSinceLoadRef.current = false;
+      resetProforma(loaded);
+      setActiveSection('editor');
+      showToast(
+        `Proforma Nº ${loaded.consecutivo} cargada en el editor para continuar editando.`
+      );
+      return;
+    }
+
     const sourceLabel =
       record.source === 'sheet'
         ? record.rawDatosJson
@@ -1108,8 +1187,19 @@ export default function App() {
         );
         return;
       }
+      const normalized = normalizeProformaClientContact(parsed);
+      if (!isProformaConfirmed) {
+        confirmActiveProforma();
+        hasEditedSinceLoadRef.current = false;
+        resetProforma(normalized);
+        setActiveSection('editor');
+        showToast(
+          `Borrador "${file.name}" (Proforma Nº ${normalized.consecutivo}) cargado en el editor.`
+        );
+        return;
+      }
       setPendingLoadDraft({
-        data: normalizeProformaClientContact(parsed),
+        data: normalized,
         sourceLabel: `Archivo portátil "${file.name}"`,
       });
     } catch {
@@ -1122,6 +1212,7 @@ export default function App() {
     const loaded = normalizeProformaClientContact(
       JSON.parse(JSON.stringify(pendingLoadDraft.data)) as ProformaData
     );
+    confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(loaded);
     setPendingLoadDraft(null);
@@ -1138,7 +1229,9 @@ export default function App() {
 
   const handleDuplicateRecord = (record: SavedProformaRecord) => {
     const nextNum = reserveNextConsecutivo(
-      Math.max(proforma.consecutivo, record.consecutivo),
+      isProformaConfirmed
+        ? Math.max(proforma.consecutivo, record.consecutivo)
+        : record.consecutivo,
       latestRemoteHistoryRef.current
     );
     setNextConsecutivoState(nextNum);
@@ -1148,6 +1241,7 @@ export default function App() {
     cloned.id = `prof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     cloned.consecutivo = nextNum;
     cloned.updatedAt = new Date().toISOString();
+    confirmActiveProforma();
     hasEditedSinceLoadRef.current = true;
     resetProforma(cloned);
     setActiveSection('editor');
@@ -1352,6 +1446,13 @@ export default function App() {
   );
 
   const handleUseClientInProforma = (client: SavedClient) => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Primero selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de asignar un cliente.',
+        true
+      );
+      return;
+    }
     hasEditedSinceLoadRef.current = true;
     updateProforma((prev) => ({
       ...prev,
@@ -1711,6 +1812,7 @@ export default function App() {
   }, [handleSyncHistoryFromSheet, handleSyncClientsFromSheet]);
 
   const handleManualConsecutivoChange = (updater: (prev: ProformaData) => ProformaData) => {
+    if (!isProformaConfirmed) return;
     hasEditedSinceLoadRef.current = true;
     updateProforma((prev) => {
       const next = updater(prev);
@@ -1808,7 +1910,7 @@ export default function App() {
     const items: AppNotification[] = [];
     const nowIso = new Date().toISOString();
 
-    if (totals.total <= 0) {
+    if (isProformaConfirmed && totals.total <= 0) {
       items.push({
         id: `sys-zero-total-${proforma.consecutivo}`,
         kind: 'warning',
@@ -1890,6 +1992,7 @@ export default function App() {
         read: notificationState.readIds.includes(n.id),
       }));
   }, [
+    isProformaConfirmed,
     totals.total,
     proforma.consecutivo,
     proforma.clientProject.moneda,
@@ -1910,8 +2013,11 @@ export default function App() {
       <TopBar
         activeSection={activeSection}
         onSelectSection={setActiveSection}
-        onDownloadPDF={handleDownloadPDF}
-        onExportCSV={() => exportProformaToCSV(proforma, totals)}
+        onDownloadPDF={() => void handleDownloadPDF()}
+        onExportCSV={() => {
+          if (!isProformaConfirmed) return;
+          exportProformaToCSV(proforma, totals);
+        }}
         onSendToSheet={() => void handleSendProformaToSheet()}
         onImportDraftFile={(file) => void handleImportDraftFile(file)}
         showIntegrationTab={showIntegrationTab}
@@ -1925,10 +2031,9 @@ export default function App() {
             return next;
           });
         }}
+        isProformaConfirmed={isProformaConfirmed}
         isSendingToSheet={isSendingToSheet}
         isSheetWebhookConnected={isSheetWebhookConnected}
-        historyCount={history.length}
-        clientsCount={savedClients.length}
         themeMode={themeMode}
         onChangeThemeMode={handleChangeThemeMode}
         notificationsEnabled={notificationsEnabled}
@@ -1956,65 +2061,190 @@ export default function App() {
         </div>
       )}
 
-      <main className="mx-auto max-w-[1480px] px-4 py-5 sm:px-6">
-        {/* Desglose superior siempre visible (oculto en la pestaña ESTADÍSTICA) */}
-        {activeSection !== 'dashboard' && (
+      <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6">
+        {/* Desglose superior siempre visible en todas las pestañas excepto INTEGRACIÓN */}
+        {activeSection !== 'integration' && (
           <section
             aria-label="Trabajando en la cotización"
-            className="no-print mb-4 overflow-hidden rounded-xl border border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] transition-colors duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
+            className={`no-print mb-4 overflow-hidden rounded-xl border transition-colors duration-150 ${
+              !isProformaConfirmed
+                ? 'border-red-300 bg-red-50/90 shadow-[0_1px_2px_rgba(220,38,38,0.08)] dark:border-red-800/80 dark:bg-red-950/35 dark:shadow-none'
+                : 'border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none'
+            }`}
           >
-            <div className="border-b border-[#ECEAE3] bg-[#FAF9F6] px-3.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-800/60">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#8C5A32] dark:text-[#D59B69]">
-                Trabajando en la cotización
+            <div
+              className={`flex flex-wrap items-center justify-between gap-2 border-b px-3.5 py-1.5 ${
+                !isProformaConfirmed
+                  ? 'border-red-200 bg-gradient-to-r from-red-100 via-orange-100 to-amber-100 dark:border-red-900/70 dark:from-red-950/80 dark:via-orange-950/70 dark:to-amber-950/60'
+                  : 'border-[#ECEAE3] bg-[#FAF9F6] dark:border-zinc-800 dark:bg-zinc-800/60'
+              }`}
+            >
+              <span
+                className={`inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider ${
+                  !isProformaConfirmed
+                    ? 'text-red-800 dark:text-red-200'
+                    : 'text-[#8C5A32] dark:text-[#D59B69]'
+                }`}
+              >
+                {!isProformaConfirmed && (
+                  <AlertTriangle
+                    className="h-3.5 w-3.5 shrink-0 text-orange-600 dark:text-orange-400"
+                    aria-hidden="true"
+                  />
+                )}
+                <span>
+                  {!isProformaConfirmed
+                    ? 'Trabajando en la cotización · Sin proforma seleccionada o confirmada'
+                    : 'Trabajando en la cotización'}
+                </span>
               </span>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] border-collapse text-left text-xs">
+              <table className="w-full min-w-[820px] border-collapse text-left text-xs">
                 <thead>
-                  <tr className="border-b border-[#F0EEE8] text-[10.5px] font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400">
-                    <th className="w-[120px] px-3.5 py-1.5">Consecutivo</th>
+                  <tr
+                    className={`border-b text-[10.5px] font-semibold uppercase tracking-wide ${
+                      !isProformaConfirmed
+                        ? 'border-red-200/80 text-red-700 dark:border-red-900/60 dark:text-red-300'
+                        : 'border-[#F0EEE8] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400'
+                    }`}
+                  >
+                    <th className="w-[125px] px-3.5 py-1.5">Consecutivo</th>
                     <th className="px-3.5 py-1.5">Cliente</th>
                     <th className="px-3.5 py-1.5">Proyecto</th>
                     <th className="w-[80px] px-3.5 py-1.5 text-center">Ítems</th>
-                    <th className="w-[150px] px-3.5 py-1.5 text-right">Total</th>
+                    <th className="w-[140px] px-3.5 py-1.5 text-right">Total</th>
+                    <th className="w-[330px] px-3.5 py-1.5 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr className="text-zinc-800 dark:text-zinc-100">
-                    <td className="px-3.5 py-2 font-mono font-semibold tabular-nums whitespace-nowrap text-zinc-900 dark:text-zinc-100">
-                      Nº {proforma.consecutivo}
-                    </td>
-                    <td
-                      className="max-w-[260px] truncate px-3.5 py-2 font-medium"
-                      title={proforma.clientProject.cliente || 'Sin definir'}
-                    >
-                      {proforma.clientProject.cliente.trim() || (
-                        <span className="text-zinc-400 dark:text-zinc-500">
-                          Sin definir
+                  <tr
+                    className={
+                      !isProformaConfirmed
+                        ? 'bg-red-50/70 text-red-950 dark:bg-red-950/30 dark:text-red-100'
+                        : 'text-zinc-800 dark:text-zinc-100'
+                    }
+                  >
+                    <td className="px-3.5 py-2 font-mono font-semibold tabular-nums whitespace-nowrap">
+                      {!isProformaConfirmed ? (
+                        <span className="text-red-700 dark:text-red-300">
+                          — Sin confirmar
+                        </span>
+                      ) : (
+                        <span className="text-zinc-900 dark:text-zinc-100">
+                          Nº {proforma.consecutivo}
                         </span>
                       )}
                     </td>
                     <td
-                      className="max-w-[260px] truncate px-3.5 py-2 font-medium"
-                      title={proforma.clientProject.proyecto || 'Sin definir'}
+                      className="max-w-[230px] truncate px-3.5 py-2 font-medium"
+                      title={
+                        isProformaConfirmed
+                          ? proforma.clientProject.cliente || 'Sin definir'
+                          : 'Sin proforma confirmada'
+                      }
                     >
-                      {proforma.clientProject.proyecto.trim() || (
-                        <span className="text-zinc-400 dark:text-zinc-500">
-                          Sin definir
+                      {!isProformaConfirmed ? (
+                        <span className="text-orange-800 dark:text-orange-300">
+                          Selecciona, crea o importa una proforma
                         </span>
+                      ) : (
+                        proforma.clientProject.cliente.trim() || (
+                          <span className="text-zinc-400 dark:text-zinc-500">
+                            Sin definir
+                          </span>
+                        )
+                      )}
+                    </td>
+                    <td
+                      className="max-w-[230px] truncate px-3.5 py-2 font-medium"
+                      title={
+                        isProformaConfirmed
+                          ? proforma.clientProject.proyecto || 'Sin definir'
+                          : '—'
+                      }
+                    >
+                      {!isProformaConfirmed ? (
+                        <span className="text-red-500 dark:text-red-400">—</span>
+                      ) : (
+                        proforma.clientProject.proyecto.trim() || (
+                          <span className="text-zinc-400 dark:text-zinc-500">
+                            Sin definir
+                          </span>
+                        )
                       )}
                     </td>
                     <td className="px-3.5 py-2 text-center font-mono font-semibold tabular-nums whitespace-nowrap">
-                      {proforma.items.length}
+                      {!isProformaConfirmed ? (
+                        <span className="text-red-700 dark:text-red-300">0</span>
+                      ) : (
+                        proforma.items.length
+                      )}
                     </td>
                     <td
                       className={`px-3.5 py-2 text-right font-mono font-semibold tabular-nums whitespace-nowrap ${
-                        totals.total <= 0
-                          ? 'text-amber-700 dark:text-amber-400'
-                          : 'text-[#8C5A32] dark:text-[#D59B69]'
+                        !isProformaConfirmed
+                          ? 'text-red-700 dark:text-red-300'
+                          : totals.total <= 0
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-[#8C5A32] dark:text-[#D59B69]'
                       }`}
                     >
-                      {formatMoney(totals.total, proforma.clientProject.moneda)}
+                      {!isProformaConfirmed
+                        ? '—'
+                        : formatMoney(totals.total, proforma.clientProject.moneda)}
+                    </td>
+                    <td className="px-3.5 py-1.5 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSendProformaToSheet()}
+                          disabled={!isProformaConfirmed || isSendingToSheet}
+                          title={
+                            !isProformaConfirmed
+                              ? 'Selecciona, crea o importa una proforma antes de enviarla al Sheet'
+                              : isSheetWebhookConnected
+                                ? `Conectado: enviar Proforma Nº ${proforma.consecutivo} a la hoja PROFORMAS`
+                                : 'Sin URL o último envío con error: revisa Integración'
+                          }
+                          className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 ${getConnectionButtonClasses(
+                            isSheetWebhookConnected,
+                            'outline'
+                          )}`}
+                        >
+                          {isSendingToSheet ? (
+                            <Loader2
+                              className="h-3.5 w-3.5 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <CloudUpload
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span>
+                            {isSendingToSheet
+                              ? 'Enviando al Sheet...'
+                              : 'Enviar Proforma al Sheet'}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadPDF()}
+                          disabled={!isProformaConfirmed}
+                          title={
+                            isProformaConfirmed
+                              ? `Generar PDF de la Proforma Nº ${proforma.consecutivo}`
+                              : 'Selecciona, crea o importa una proforma antes de generar el PDF'
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-md border border-black bg-black px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 dark:border-zinc-700"
+                        >
+                          <PdfIcon className="h-3.5 w-3.5 text-white" />
+                          <span>Generar PDF</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 </tbody>
@@ -2023,67 +2253,119 @@ export default function App() {
           </section>
         )}
 
+        {/* Aviso de bloqueo en Editor y Vista Previa cuando no hay una proforma confirmada */}
+        {(activeSection === 'editor' || activeSection === 'preview') &&
+          !isProformaConfirmed && (
+            <div
+              role="alert"
+              className="no-print mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-300 bg-gradient-to-r from-red-50 via-orange-50 to-amber-50 px-4 py-3.5 text-xs text-red-950 shadow-xs dark:border-red-800/80 dark:from-red-950/60 dark:via-orange-950/50 dark:to-amber-950/40 dark:text-red-100"
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 rounded-md bg-red-100 p-1.5 text-red-700 dark:bg-red-900/60 dark:text-red-300">
+                  <Lock className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="font-semibold text-red-900 dark:text-red-100">
+                    Edición y vista previa bloqueadas hasta confirmar una proforma
+                  </p>
+                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-orange-900/90 dark:text-orange-200/90">
+                    Para evitar crear cotizaciones accidentales, selecciona una proforma existente en{' '}
+                    <strong>PROFORMAS</strong>, crea una{' '}
+                    <strong>Nueva Cotización</strong> o importa un borrador desde{' '}
+                    <strong>Archivo → Importar → Importar .JSON</strong>.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('history')}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50 whitespace-nowrap cursor-pointer dark:border-red-700 dark:bg-zinc-900 dark:text-red-200 dark:hover:bg-red-950/60"
+                >
+                  <span>Ir a PROFORMAS</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRequestNewProforma}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-orange-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-orange-700 whitespace-nowrap cursor-pointer dark:bg-orange-600 dark:hover:bg-orange-500"
+                >
+                  <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Nueva Cotización</span>
+                </button>
+              </div>
+            </div>
+          )}
+
         {/* Barra de acciones del espacio de trabajo (visible en Editor y Vista Previa) */}
         {(activeSection === 'editor' || activeSection === 'preview') && (
           <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
             {/* Metadatos unboxed con separadores tipográficos e indicador discreto de guardado local */}
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-              <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
-                Proforma Nº {proforma.consecutivo}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="max-w-[220px] truncate font-medium text-zinc-800 dark:text-zinc-200">
-                {proforma.clientProject.cliente || 'Cliente sin definir'}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono tabular-nums">
-                {totals.unidadResumen}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span
-                className={`font-mono font-semibold tabular-nums ${
-                  totals.total <= 0
-                    ? 'text-amber-700 dark:text-amber-400'
-                    : 'text-[#8C5A32] dark:text-[#D59B69]'
-                }`}
-              >
-                Total: {formatMoney(totals.total, proforma.clientProject.moneda)}
-              </span>
-              {totals.total <= 0 && (
-                <span
-                  title="La cotización tiene total menor o igual a 0. Revisa antes de exportar PDF."
-                  className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-700/80 dark:bg-amber-950/60 dark:text-amber-200"
-                >
-                  <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-                  <span>Total ≤ 0</span>
+              {!isProformaConfirmed ? (
+                <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-300">
+                  <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Sin proforma activa confirmada</span>
                 </span>
+              ) : (
+                <>
+                  <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
+                    Proforma Nº {proforma.consecutivo}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="max-w-[220px] truncate font-medium text-zinc-800 dark:text-zinc-200">
+                    {proforma.clientProject.cliente || 'Cliente sin definir'}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums">
+                    {totals.unidadResumen}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span
+                    className={`font-mono font-semibold tabular-nums ${
+                      totals.total <= 0
+                        ? 'text-amber-700 dark:text-amber-400'
+                        : 'text-[#8C5A32] dark:text-[#D59B69]'
+                    }`}
+                  >
+                    Total: {formatMoney(totals.total, proforma.clientProject.moneda)}
+                  </span>
+                  {totals.total <= 0 && (
+                    <span
+                      title="La cotización tiene total menor o igual a 0. Revisa antes de exportar PDF."
+                      className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-700/80 dark:bg-amber-950/60 dark:text-amber-200"
+                    >
+                      <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span>Total ≤ 0</span>
+                    </span>
+                  )}
+                  <span aria-hidden="true">·</span>
+                  <span
+                    title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
+                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                      autosaveStatus === 'error'
+                        ? 'bg-red-50 text-red-700 dark:bg-red-950/70 dark:text-red-300'
+                        : autosaveStatus === 'saving'
+                          ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                          : 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                    }`}
+                  >
+                    {autosaveStatus === 'saving' ? (
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <HardDrive className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    <span>
+                      {autosaveStatus === 'saving'
+                        ? 'Guardando local...'
+                        : autosaveStatus === 'error'
+                          ? 'Error guardado local'
+                          : lastLocalSavedAt
+                            ? `Guardado local ${formatTimeHHMM(lastLocalSavedAt)}`
+                            : 'Autoguardado activo'}
+                    </span>
+                  </span>
+                </>
               )}
-              <span aria-hidden="true">·</span>
-              <span
-                title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
-                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                  autosaveStatus === 'error'
-                    ? 'bg-red-50 text-red-700 dark:bg-red-950/70 dark:text-red-300'
-                    : autosaveStatus === 'saving'
-                      ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
-                      : 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
-                }`}
-              >
-                {autosaveStatus === 'saving' ? (
-                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                ) : (
-                  <HardDrive className="h-3 w-3" aria-hidden="true" />
-                )}
-                <span>
-                  {autosaveStatus === 'saving'
-                    ? 'Guardando local...'
-                    : autosaveStatus === 'error'
-                      ? 'Error guardado local'
-                      : lastLocalSavedAt
-                        ? `Guardado local ${formatTimeHHMM(lastLocalSavedAt)}`
-                        : 'Autoguardado activo'}
-                </span>
-              </span>
             </div>
 
             {/* Botones de acción del documento */}
@@ -2122,11 +2404,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleUndo}
-                  disabled={!canUndo}
+                  disabled={!isProformaConfirmed || !canUndo}
                   title={
-                    canUndo
-                      ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
-                      : 'No hay cambios anteriores para deshacer'
+                    !isProformaConfirmed
+                      ? 'Selecciona o crea una proforma primero'
+                      : canUndo
+                        ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
+                        : 'No hay cambios anteriores para deshacer'
                   }
                   className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
@@ -2137,11 +2421,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleRedo}
-                  disabled={!canRedo}
+                  disabled={!isProformaConfirmed || !canRedo}
                   title={
-                    canRedo
-                      ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y`
-                      : 'No hay cambios posteriores para rehacer'
+                    !isProformaConfirmed
+                      ? 'Selecciona o crea una proforma primero'
+                      : canRedo
+                        ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y`
+                        : 'No hay cambios posteriores para rehacer'
                   }
                   className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
                 >
@@ -2162,8 +2448,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSaveNowLocal}
+                disabled={!isProformaConfirmed}
                 title="Guardar borrador y respaldo en el historial local de inmediato (sin depender de internet)"
-                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 whitespace-nowrap shrink-0 cursor-pointer dark:border-emerald-700/70 dark:bg-emerald-950/60 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
+                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-emerald-700/70 dark:bg-emerald-950/60 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
               >
                 <HardDrive className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Guardar ahora</span>
@@ -2172,7 +2459,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSaveToHistory}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                disabled={!isProformaConfirmed}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
               >
                 <Save className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Guardar en Historial</span>
@@ -2180,14 +2468,16 @@ export default function App() {
 
               <button
                 type="button"
+                disabled={!isProformaConfirmed}
                 onClick={() => {
+                  if (!isProformaConfirmed) return;
                   exportProformaToJSON(proforma, totals);
                   showToast(
                     `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
                   );
                 }}
                 title="Exportar un borrador completo (.json) como respaldo portátil entre computadoras"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
                 <FileJson className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
                 <span>Exportar Borrador (.json)</span>
@@ -2199,99 +2489,99 @@ export default function App() {
         {/* Vista principal según sección */}
         {activeSection === 'editor' && (
           <div
-            className={`grid grid-cols-1 gap-6 ${
-              layoutMode === 'split'
-                ? 'xl:grid-cols-12 xl:items-start'
-                : 'mx-auto max-w-[920px]'
+            aria-disabled={!isProformaConfirmed}
+            className={`w-full ${
+              !isProformaConfirmed
+                ? 'pointer-events-none select-none opacity-45 grayscale-[35%]'
+                : ''
             }`}
           >
-            <section
-              aria-label="Formulario de captura de proforma"
-              className={`no-print olmo-editor-scroll ${
+            <div
+              className={`grid grid-cols-1 gap-6 ${
                 layoutMode === 'split'
-                  ? 'xl:col-span-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1'
-                  : ''
+                  ? 'xl:grid-cols-12 xl:items-start'
+                  : 'mx-auto max-w-[920px]'
               }`}
             >
-              <EditorPanel
-                key={proforma.id}
-                data={proforma}
-                totals={totals}
-                nextStoredConsecutivo={nextConsecutivo}
-                mainLogo={mainLogo}
-                footerLogos={footerLogos}
-                sheetsConfig={sheetsConfig}
-                productTemplates={productTemplates}
-                savedClients={savedClients}
-                onChange={handleManualConsecutivoChange}
-                onSyncNextConsecutivo={handleSyncNextConsecutivo}
-                onSaveCompanyDefaults={handleSaveCompanyDefaults}
-                onSaveBankDefaults={handleSaveBankDefaults}
-                onUploadMainLogo={handleUploadMainLogo}
-                onApplyMainLogoUrl={handleApplyMainLogoUrl}
-                onResetMainLogo={handleResetMainLogo}
-                onUploadFooterLogo={handleUploadFooterLogo}
-                onApplyFooterLogoUrl={handleApplyFooterLogoUrl}
-                onRemoveFooterLogo={handleRemoveFooterLogo}
-                onSheetsConfigChange={handleSheetsConfigChange}
-                onSaveProductTemplate={handleSaveProductTemplate}
-                onDeleteProductTemplate={handleDeleteProductTemplate}
-                onSaveClientToDirectory={handleSaveClientFromEditor}
-                onGoToClientsDirectory={() => setActiveSection('clients')}
-                aranTemplates={aranTemplates}
-                terminosTemplates={terminosTemplates}
-                specsSheetUrl={sheetShortcutUrls.specsSheetUrl}
-                aranScriptUrl={cloudConfig.aranScriptUrl ?? ''}
-                aranLastStatus={cloudConfig.aranLastStatus}
-                aranLastMessage={cloudConfig.aranLastMessage}
-                isSyncingAran={isSyncingAran}
-                onSyncAranTemplates={() => void handleSyncAranTemplates(false)}
-                onGoToIntegration={() => setActiveSection('integration')}
-              />
-            </section>
-
-            {layoutMode === 'split' && (
               <section
-                aria-label="Vista previa del documento en 3 páginas"
-                className="xl:col-span-7"
+                aria-label="Formulario de captura de proforma"
+                className={`no-print olmo-editor-scroll ${
+                  layoutMode === 'split'
+                    ? 'xl:col-span-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1'
+                    : ''
+                }`}
               >
-                <ProformaPreview
+                <EditorPanel
+                  key={proforma.id}
                   data={proforma}
                   totals={totals}
+                  nextStoredConsecutivo={nextConsecutivo}
                   mainLogo={mainLogo}
                   footerLogos={footerLogos}
+                  sheetsConfig={sheetsConfig}
+                  productTemplates={productTemplates}
+                  savedClients={savedClients}
+                  onChange={handleManualConsecutivoChange}
+                  onSyncNextConsecutivo={handleSyncNextConsecutivo}
+                  onSaveCompanyDefaults={handleSaveCompanyDefaults}
+                  onSaveBankDefaults={handleSaveBankDefaults}
+                  onUploadMainLogo={handleUploadMainLogo}
+                  onApplyMainLogoUrl={handleApplyMainLogoUrl}
+                  onResetMainLogo={handleResetMainLogo}
+                  onUploadFooterLogo={handleUploadFooterLogo}
+                  onApplyFooterLogoUrl={handleApplyFooterLogoUrl}
+                  onRemoveFooterLogo={handleRemoveFooterLogo}
+                  onSheetsConfigChange={handleSheetsConfigChange}
+                  onSaveProductTemplate={handleSaveProductTemplate}
+                  onDeleteProductTemplate={handleDeleteProductTemplate}
+                  onSaveClientToDirectory={handleSaveClientFromEditor}
+                  onGoToClientsDirectory={() => setActiveSection('clients')}
+                  aranTemplates={aranTemplates}
+                  terminosTemplates={terminosTemplates}
+                  specsSheetUrl={sheetShortcutUrls.specsSheetUrl}
+                  aranScriptUrl={cloudConfig.aranScriptUrl ?? ''}
+                  aranLastStatus={cloudConfig.aranLastStatus}
+                  aranLastMessage={cloudConfig.aranLastMessage}
+                  isSyncingAran={isSyncingAran}
+                  onSyncAranTemplates={() => void handleSyncAranTemplates(false)}
+                  onGoToIntegration={() => setActiveSection('integration')}
                 />
               </section>
-            )}
+
+              {layoutMode === 'split' && (
+                <section
+                  aria-label="Vista previa del documento en 3 páginas"
+                  className="xl:col-span-7"
+                >
+                  <ProformaPreview
+                    data={proforma}
+                    totals={totals}
+                    mainLogo={mainLogo}
+                    footerLogos={footerLogos}
+                  />
+                </section>
+              )}
+            </div>
           </div>
         )}
 
         {activeSection === 'preview' && (
-          <div className="mx-auto max-w-[860px] space-y-4">
-            <div className="no-print flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
-              <div className="text-xs text-zinc-600 dark:text-zinc-400">
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                  Vista Previa del Documento
-                </span>
-                <span className="ml-2 hidden sm:inline">
-                  · Documento listo para exportar en PDF
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={handleDownloadPDF}
-                className="inline-flex items-center gap-2 rounded-md border border-black bg-black px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-zinc-800 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700"
-              >
-                <PdfIcon className="h-4 w-4 text-white" />
-                <span>Descargar PDF</span>
-              </button>
+          <div
+            aria-disabled={!isProformaConfirmed}
+            className={`w-full ${
+              !isProformaConfirmed
+                ? 'pointer-events-none select-none opacity-45 grayscale-[35%]'
+                : ''
+            }`}
+          >
+            <div className="mx-auto max-w-[816px]">
+              <ProformaPreview
+                data={proforma}
+                totals={totals}
+                mainLogo={mainLogo}
+                footerLogos={footerLogos}
+              />
             </div>
-            <ProformaPreview
-              data={proforma}
-              totals={totals}
-              mainLogo={mainLogo}
-              footerLogos={footerLogos}
-            />
           </div>
         )}
 
@@ -2319,16 +2609,12 @@ export default function App() {
           <HistoryView
             records={history}
             remoteRecords={remoteHistory}
-            activeProformaId={proforma.id}
-            activeConsecutivo={proforma.consecutivo}
+            activeProformaId={isProformaConfirmed ? proforma.id : ''}
             hasAppsScriptUrl={Boolean(cloudConfig.webhookUrl.trim())}
-            hasCloudSendError={cloudConfig.lastStatus === 'error'}
             isSyncingSheet={isSyncingRemoteHistory}
-            isSendingToSheet={isSendingToSheet}
             lastSheetSyncAt={lastRemoteHistorySyncAt}
             sheetSyncFeedback={remoteHistoryFeedback}
             onSyncFromSheet={() => void handleSyncHistoryFromSheet(false)}
-            onSendProforma={() => void handleSendProformaToSheet()}
             onGoToIntegration={() => {
               setShowIntegrationTab(true);
               saveIntegrationTabEnabled(true);

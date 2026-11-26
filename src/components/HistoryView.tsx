@@ -2,7 +2,6 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
-  CloudUpload,
   CopyPlus,
   Edit3,
   Eye,
@@ -11,7 +10,6 @@ import {
   FilePlus2,
   FileSpreadsheet,
   Filter,
-  Loader2,
   RefreshCw,
   Search,
   Settings2,
@@ -47,15 +45,11 @@ interface HistoryViewProps {
   records: SavedProformaRecord[];
   remoteRecords: SavedProformaRecord[];
   activeProformaId: string;
-  activeConsecutivo: number;
   hasAppsScriptUrl: boolean;
   isSyncingSheet: boolean;
-  isSendingToSheet?: boolean;
-  hasCloudSendError?: boolean;
   lastSheetSyncAt?: string;
   sheetSyncFeedback: { ok: boolean; message: string } | null;
   onSyncFromSheet: () => void;
-  onSendProforma?: () => void;
   onGoToIntegration: () => void;
   onOpenRecord: (record: SavedProformaRecord) => void;
   onDuplicateRecord: (record: SavedProformaRecord) => void;
@@ -143,28 +137,23 @@ export function HistoryView({
   records,
   remoteRecords,
   activeProformaId,
-  activeConsecutivo,
   hasAppsScriptUrl,
   isSyncingSheet,
-  isSendingToSheet = false,
   lastSheetSyncAt,
   sheetSyncFeedback,
   onSyncFromSheet,
-  onSendProforma,
   onGoToIntegration,
   onOpenRecord,
   onDuplicateRecord,
   onDeleteRecord,
   onGoToEditor,
   onNewProforma,
-  hasCloudSendError = false,
   proformasSheetUrl = '',
 }: HistoryViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
   const isSheetSyncReady =
     hasAppsScriptUrl && sheetSyncFeedback?.ok !== false;
-  const isCloudSendReady = hasAppsScriptUrl && !hasCloudSendError;
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<HistoryFilterSource>('all');
   const [clientFilter, setClientFilter] = useState('');
@@ -341,11 +330,7 @@ export function HistoryView({
   const sheetCount = remoteRecords.length;
 
   return (
-    <div
-      className={`mx-auto space-y-5 ${
-        sidePreviewEnabled ? 'max-w-[1440px]' : 'max-w-[1200px]'
-      }`}
-    >
+    <div className="w-full space-y-5">
       <div className="space-y-3">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
@@ -396,25 +381,6 @@ export function HistoryView({
             sheetUrl={proformasSheetUrl}
             defaultSheetUrl={DEFAULT_PROFORMAS_SHEET_URL}
           />
-
-          {onSendProforma && (
-            <button
-              type="button"
-              onClick={onSendProforma}
-              disabled={isSendingToSheet}
-              title={`Enviar la Proforma Nº ${activeConsecutivo} al Google Sheet configurado`}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer ${getConnectionButtonClasses(isCloudSendReady, 'outline')}`}
-            >
-              {isSendingToSheet ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              ) : (
-                <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
-              )}
-              <span>
-                {isSendingToSheet ? 'Enviando Proforma...' : 'Enviar Proforma'}
-              </span>
-            </button>
-          )}
 
           <button
             type="button"

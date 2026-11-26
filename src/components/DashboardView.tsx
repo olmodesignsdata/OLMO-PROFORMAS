@@ -407,7 +407,7 @@ export function DashboardView({
   const barFill = isDark ? '#C68B59' : '#8C5A32';
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-5">
+    <div className="w-full space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">

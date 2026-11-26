@@ -553,7 +553,7 @@ export function ClientsView({
     effectiveSyncBanner?.ok !== false;
 
   return (
-    <div className="mx-auto max-w-[1200px] space-y-6">
+    <div className="w-full space-y-6">
       <div className="space-y-3">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">

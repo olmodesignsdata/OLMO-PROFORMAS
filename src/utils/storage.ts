@@ -52,6 +52,7 @@ const KEYS = {
   THEME_MODE: 'olmo_proforma_theme_mode_v1',
   HISTORY_SIDE_PREVIEW_ENABLED: 'olmo_proforma_history_side_preview_v1',
   INTEGRATION_TAB_ENABLED: 'olmo_proforma_integration_tab_enabled_v1',
+  ACTIVE_PROFORMA_CONFIRMED: 'olmo_proforma_active_confirmed_v1',
 };
 
 export function getNextConsecutivo(): number {
@@ -773,6 +774,23 @@ export function loadIntegrationTabEnabled(): boolean {
 export function saveIntegrationTabEnabled(enabled: boolean): void {
   try {
     localStorage.setItem(KEYS.INTEGRATION_TAB_ENABLED, String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadActiveProformaConfirmed(): boolean {
+  try {
+    const raw = localStorage.getItem(KEYS.ACTIVE_PROFORMA_CONFIRMED);
+    return raw === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function saveActiveProformaConfirmed(confirmed: boolean): void {
+  try {
+    localStorage.setItem(KEYS.ACTIVE_PROFORMA_CONFIRMED, String(confirmed));
   } catch {
     // ignore
   }
