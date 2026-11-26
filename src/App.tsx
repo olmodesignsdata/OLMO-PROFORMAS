@@ -5,7 +5,6 @@ import {
   Columns2,
   FileJson,
   FilePlus2,
-  HardDrive,
   Loader2,
   Lock,
   PanelLeft,
@@ -15,7 +14,14 @@ import {
   Upload,
   XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useProformaUndoRedo } from './hooks/useProformaUndoRedo';
 import {
   ClientDraftPayload,
@@ -28,6 +34,13 @@ import { HistoryView, mergeProformaHistoryRecords } from './components/HistoryVi
 import { ImportFromSheetModal } from './components/ImportFromSheetModal';
 import { IntegrationView } from './components/IntegrationView';
 import { PdfIcon } from './components/PdfIcon';
+import {
+  clampPreviewZoom,
+  COMPARE_PREVIEW_ZOOM_STEP,
+  CtrlWheelZoomBox,
+  DEFAULT_COMPARE_PREVIEW_ZOOM,
+  PreviewZoomControls,
+} from './components/PreviewZoomControls';
 import { ProformaPreview } from './components/ProformaPreview';
 import { TopBar } from './components/TopBar';
 import {
@@ -71,7 +84,6 @@ import {
 } from './utils/cloudSync';
 import {
   exportProformaToCSV,
-  exportProformaToJSON,
   generateProformaPDF,
 } from './utils/exporters';
 import { computeProformaTotals, formatMoney } from './utils/formatters';
@@ -298,16 +310,6 @@ function hasUnsavedProformaChanges(
   return hasProformaUserContent(current);
 }
 
-function formatTimeHHMM(isoString: string): string {
-  const dt = new Date(isoString);
-  if (Number.isNaN(dt.getTime())) return '';
-  return dt.toLocaleTimeString('es-CR', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
-
 function isTextEditingElement(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -476,8 +478,31 @@ export default function App() {
     initialRecord: null,
   });
   const [showNewQuoteConfirm, setShowNewQuoteConfirm] = useState(false);
+  const [showCreateOrLoadModal, setShowCreateOrLoadModal] = useState(false);
   const [showCloseQuoteConfirm, setShowCloseQuoteConfirm] = useState(false);
+  const [closeStepConfirm, setCloseStepConfirm] = useState<
+    'discard' | 'save' | null
+  >(null);
+  const [overwriteSheetConfirm, setOverwriteSheetConfirm] = useState<{
+    existingRecord: SavedProformaRecord;
+    closeAfterSave: boolean;
+  } | null>(null);
+  const [overwriteModalTab, setOverwriteModalTab] = useState<
+    'table' | 'previews'
+  >('table');
+  const [overwriteSheetZoom, setOverwriteSheetZoom] = useState<number>(
+    DEFAULT_COMPARE_PREVIEW_ZOOM
+  );
+  const [overwriteNewZoom, setOverwriteNewZoom] = useState<number>(
+    DEFAULT_COMPARE_PREVIEW_ZOOM
+  );
   const [isClosingAndSaving, setIsClosingAndSaving] = useState(false);
+
+  useEffect(() => {
+    if (!overwriteSheetConfirm) return;
+    setOverwriteSheetZoom(DEFAULT_COMPARE_PREVIEW_ZOOM);
+    setOverwriteNewZoom(DEFAULT_COMPARE_PREVIEW_ZOOM);
+  }, [overwriteSheetConfirm]);
   const [pendingLoadDraft, setPendingLoadDraft] = useState<{
     data: ProformaData;
     sourceLabel: string;
@@ -513,6 +538,9 @@ export default function App() {
   const isInitialAutosaveMountRef = useRef(true);
   const hasEditedSinceLoadRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
+  const syncHistoryFromSheetRef = useRef<
+    ((silent?: boolean) => Promise<void>) | null
+  >(null);
 
   latestProformaRef.current = proforma;
   latestIsProformaConfirmedRef.current = isProformaConfirmed;
@@ -703,6 +731,43 @@ export default function App() {
     };
   }, []);
 
+  const [stickyHeaderHeight, setStickyHeaderHeight] = useState<number>(57);
+  const [stickyWorkingBarHeight, setStickyWorkingBarHeight] =
+    useState<number>(0);
+  const workingBarRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const headerEl = document.getElementById('app-topbar-header');
+    const workingEl = workingBarRef.current;
+
+    const updateMeasurements = () => {
+      setStickyHeaderHeight(
+        headerEl ? Math.round(headerEl.getBoundingClientRect().height) : 57
+      );
+      setStickyWorkingBarHeight(
+        workingEl && activeSection !== 'integration'
+          ? Math.round(workingEl.getBoundingClientRect().height)
+          : 0
+      );
+    };
+
+    updateMeasurements();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateMeasurements);
+      return () => window.removeEventListener('resize', updateMeasurements);
+    }
+
+    const observer = new ResizeObserver(updateMeasurements);
+    if (headerEl) observer.observe(headerEl);
+    if (workingEl) observer.observe(workingEl);
+    window.addEventListener('resize', updateMeasurements);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateMeasurements);
+    };
+  }, [activeSection]);
+
   const showToast = useCallback((text: string, isError = false) => {
     setToast({ text, isError });
     setTimeout(() => {
@@ -732,10 +797,12 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!isProformaConfirmed) return;
-      if (activeSection !== 'editor' && activeSection !== 'preview') return;
       if (
         showNewQuoteConfirm ||
+        showCreateOrLoadModal ||
         showCloseQuoteConfirm ||
+        closeStepConfirm ||
+        overwriteSheetConfirm ||
         pendingLoadDraft ||
         showSendToSheetConfirm ||
         sheetPreviewModal.isOpen
@@ -766,9 +833,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     isProformaConfirmed,
-    activeSection,
     showNewQuoteConfirm,
+    showCreateOrLoadModal,
     showCloseQuoteConfirm,
+    closeStepConfirm,
+    overwriteSheetConfirm,
     pendingLoadDraft,
     showSendToSheetConfirm,
     sheetPreviewModal.isOpen,
@@ -777,31 +846,6 @@ export default function App() {
     handleUndo,
     handleRedo,
   ]);
-
-  const handleSaveNowLocal = () => {
-    if (!isProformaConfirmed) {
-      showToast(
-        'Primero selecciona, crea o importa una proforma para poder guardarla.',
-        true
-      );
-      return;
-    }
-    if (autosaveTimerRef.current !== null) {
-      window.clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    const savedAt = persistLocalBackup(true);
-    if (savedAt) {
-      showToast(
-        `Guardado local completado (${formatTimeHHMM(savedAt)}) para la Proforma Nº ${proforma.consecutivo}.`
-      );
-    } else {
-      showToast(
-        'No se pudo guardar localmente en el navegador (espacio insuficiente).',
-        true
-      );
-    }
-  };
 
   const handleSaveToHistory = async () => {
     if (!isProformaConfirmed) {
@@ -831,7 +875,18 @@ export default function App() {
     setNextConsecutivoState(updatedNext);
 
     if (cloudConfig.autoSyncOnSave && cloudConfig.webhookUrl.trim()) {
-      setShowSendToSheetConfirm(true);
+      const existingSheetRecord = latestRemoteHistoryRef.current.find(
+        (rec) => Number(rec.consecutivo) === Number(proforma.consecutivo)
+      );
+      if (existingSheetRecord) {
+        setOverwriteModalTab('table');
+        setOverwriteSheetConfirm({
+          existingRecord: existingSheetRecord,
+          closeAfterSave: false,
+        });
+      } else {
+        setShowSendToSheetConfirm(true);
+      }
       showToast(
         `Proforma Nº ${proforma.consecutivo} guardada en historial local. Confirma para enviarla al Sheet.`
       );
@@ -941,68 +996,14 @@ export default function App() {
     }
   };
 
-  const handleSendProformaToSheet = () => {
-    if (!isProformaConfirmed) {
-      showToast(
-        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de enviarla al Sheet.',
-        true
-      );
-      return;
-    }
-    if (!cloudConfig.webhookUrl.trim()) {
-      showToast(
-        'Falta configurar la URL de Google Apps Script (/exec) en la pestaña Integración antes de enviar la proforma al Google Sheet.',
-        true
-      );
-      return;
-    }
-    setShowSendToSheetConfirm(true);
-  };
-
-  const executeSendProformaToSheet = async () => {
-    setShowSendToSheetConfirm(false);
-    if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
-
-    setIsSendingToSheet(true);
-    try {
-      const res = await sendProformaToWebhook(cloudConfig, proforma, totals);
-
-      const savedAt = saveDraftProforma(proforma);
-      if (savedAt) {
-        setLastLocalSavedAt(savedAt);
-        setAutosaveStatus('saved');
-      }
-      const updatedHistory = saveProformaToHistory(proforma, totals.total);
-      setHistory(updatedHistory);
-      const updatedNext = setNextConsecutivo(
-        computeNextConsecutivoFromRecords(
-          updatedHistory,
-          latestRemoteHistoryRef.current
-        )
-      );
-      setNextConsecutivoState(updatedNext);
-
-      const nextCfg: CloudSyncConfig = {
-        ...cloudConfig,
-        lastSyncedAt: res.ok
-          ? new Date().toISOString()
-          : cloudConfig.lastSyncedAt,
-        lastStatus: res.ok ? 'ok' : 'error',
-        lastMessage: res.message,
-      };
-      setCloudConfig(nextCfg);
-      saveCloudConfig(nextCfg);
-
-      showToast(res.message, !res.ok);
-    } catch {
-      showToast(
-        'Ocurrió un error al enviar la proforma hacia Google Apps Script.',
-        true
-      );
-    } finally {
-      setIsSendingToSheet(false);
-    }
-  };
+  const findExistingSheetProforma = useCallback((consecutivo: number) => {
+    const target = Number(consecutivo);
+    return (
+      latestRemoteHistoryRef.current.find(
+        (rec) => Number(rec.consecutivo) === target
+      ) ?? null
+    );
+  }, []);
 
   const clearActiveProformaSession = useCallback(
     (historyOverride?: SavedProformaRecord[]) => {
@@ -1036,10 +1037,155 @@ export default function App() {
     [resetProforma]
   );
 
+  const sendActiveProformaToSheetAndSync = async ({
+    overwrite,
+    closeAfterSave,
+  }: {
+    overwrite: boolean;
+    closeAfterSave: boolean;
+  }) => {
+    if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
+    const currentNum = proforma.consecutivo;
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+
+    setIsSendingToSheet(true);
+    if (closeAfterSave) {
+      setIsClosingAndSaving(true);
+    }
+
+    try {
+      const res = await sendProformaToWebhook(cloudConfig, proforma, totals, {
+        overwrite,
+      });
+
+      if (!closeAfterSave) {
+        const savedAt = saveDraftProforma(proforma);
+        if (savedAt) {
+          setLastLocalSavedAt(savedAt);
+          setAutosaveStatus('saved');
+        }
+      }
+
+      const updatedHistory = saveProformaToHistory(proforma, totals.total);
+      setHistory(updatedHistory);
+      latestHistoryRef.current = updatedHistory;
+      const updatedNext = setNextConsecutivo(
+        computeNextConsecutivoFromRecords(
+          updatedHistory,
+          latestRemoteHistoryRef.current
+        )
+      );
+      setNextConsecutivoState(updatedNext);
+
+      const nextCfg: CloudSyncConfig = {
+        ...cloudConfig,
+        lastSyncedAt: res.ok
+          ? new Date().toISOString()
+          : cloudConfig.lastSyncedAt,
+        lastStatus: res.ok ? 'ok' : 'error',
+        lastMessage: res.message,
+      };
+      setCloudConfig(nextCfg);
+      saveCloudConfig(nextCfg);
+
+      if (!res.ok) {
+        showToast(
+          closeAfterSave
+            ? `Se guardó en el historial local, pero falló el envío al Sheet: ${res.message}`
+            : res.message,
+          true
+        );
+        return;
+      }
+
+      setShowSendToSheetConfirm(false);
+      setOverwriteSheetConfirm(null);
+      setShowCloseQuoteConfirm(false);
+      setCloseStepConfirm(null);
+
+      if (closeAfterSave) {
+        clearActiveProformaSession(updatedHistory);
+      }
+
+      await syncHistoryFromSheetRef.current?.(true);
+
+      if (closeAfterSave) {
+        showToast(
+          overwrite
+            ? `Proforma Nº ${currentNum} sobrescrita en el Sheet PROFORMAS y cerrada.`
+            : `Proforma Nº ${currentNum} guardada en el Sheet PROFORMAS y cerrada.`
+        );
+      } else {
+        showToast(res.message, false);
+      }
+    } catch {
+      showToast(
+        closeAfterSave
+          ? 'Se guardó en el historial local, pero ocurrió un error al enviar la proforma al Google Sheet.'
+          : 'Ocurrió un error al enviar la proforma hacia Google Apps Script.',
+        true
+      );
+    } finally {
+      setIsSendingToSheet(false);
+      setIsClosingAndSaving(false);
+    }
+  };
+
+  const handleSendProformaToSheet = () => {
+    if (!isProformaConfirmed) {
+      showToast(
+        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de enviarla al Sheet.',
+        true
+      );
+      return;
+    }
+    if (!cloudConfig.webhookUrl.trim()) {
+      showToast(
+        'Falta configurar la URL de Google Apps Script (/exec) en la pestaña Integración antes de enviar la proforma al Google Sheet.',
+        true
+      );
+      return;
+    }
+
+    const existingSheetRecord = findExistingSheetProforma(proforma.consecutivo);
+    if (existingSheetRecord) {
+      setOverwriteModalTab('table');
+      setOverwriteSheetConfirm({
+        existingRecord: existingSheetRecord,
+        closeAfterSave: false,
+      });
+      return;
+    }
+
+    setShowSendToSheetConfirm(true);
+  };
+
+  const executeSendProformaToSheet = async () => {
+    setShowSendToSheetConfirm(false);
+    await sendActiveProformaToSheetAndSync({
+      overwrite: false,
+      closeAfterSave: false,
+    });
+  };
+
+  const executeOverwriteSendToSheet = async () => {
+    if (!overwriteSheetConfirm) return;
+    const { closeAfterSave } = overwriteSheetConfirm;
+    await sendActiveProformaToSheetAndSync({
+      overwrite: true,
+      closeAfterSave,
+    });
+  };
+
   const handleCloseQuoteWithoutSaving = () => {
-    if (isClosingAndSaving) return;
+    if (isClosingAndSaving || isSendingToSheet) return;
     const closedNum = proforma.consecutivo;
     setShowCloseQuoteConfirm(false);
+    setCloseStepConfirm(null);
+    setOverwriteSheetConfirm(null);
     clearActiveProformaSession();
     showToast(
       `Cotización Nº ${closedNum} cerrada sin guardar ni enviar al historial.`
@@ -1047,61 +1193,39 @@ export default function App() {
   };
 
   const handleSaveAndCloseQuote = async () => {
-    if (!isProformaConfirmed || isClosingAndSaving) return;
+    if (!isProformaConfirmed || isClosingAndSaving || isSendingToSheet) return;
     const currentNum = proforma.consecutivo;
+
+    if (cloudConfig.webhookUrl.trim()) {
+      const existingSheetRecord = findExistingSheetProforma(currentNum);
+      if (existingSheetRecord) {
+        setShowCloseQuoteConfirm(false);
+        setCloseStepConfirm(null);
+        setOverwriteModalTab('table');
+        setOverwriteSheetConfirm({
+          existingRecord: existingSheetRecord,
+          closeAfterSave: true,
+        });
+        return;
+      }
+
+      await sendActiveProformaToSheetAndSync({
+        overwrite: false,
+        closeAfterSave: true,
+      });
+      return;
+    }
+
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-
     const updatedHistory = saveProformaToHistory(proforma, totals.total);
     setHistory(updatedHistory);
     latestHistoryRef.current = updatedHistory;
 
-    if (cloudConfig.webhookUrl.trim()) {
-      setIsClosingAndSaving(true);
-      try {
-        const res = await sendProformaToWebhook(
-          cloudConfig,
-          proforma,
-          totals
-        );
-        const nextCfg: CloudSyncConfig = {
-          ...cloudConfig,
-          lastSyncedAt: res.ok
-            ? new Date().toISOString()
-            : cloudConfig.lastSyncedAt,
-          lastStatus: res.ok ? 'ok' : 'error',
-          lastMessage: res.message,
-        };
-        setCloudConfig(nextCfg);
-        saveCloudConfig(nextCfg);
-
-        if (!res.ok) {
-          showToast(
-            `Se guardó en el historial local, pero falló el envío al Sheet: ${res.message}`,
-            true
-          );
-          return;
-        }
-
-        setShowCloseQuoteConfirm(false);
-        clearActiveProformaSession(updatedHistory);
-        showToast(
-          `Proforma Nº ${currentNum} guardada en historial, enviada al Sheet y cerrada.`
-        );
-      } catch {
-        showToast(
-          'Se guardó en el historial local, pero ocurrió un error al enviar la proforma al Google Sheet.',
-          true
-        );
-      } finally {
-        setIsClosingAndSaving(false);
-      }
-      return;
-    }
-
     setShowCloseQuoteConfirm(false);
+    setCloseStepConfirm(null);
     clearActiveProformaSession(updatedHistory);
     showToast(
       `Proforma Nº ${currentNum} guardada en historial local y cerrada.`
@@ -1848,6 +1972,8 @@ export default function App() {
     [resetProforma, showToast]
   );
 
+  syncHistoryFromSheetRef.current = handleSyncHistoryFromSheet;
+
   const handleSyncClientsFromSheet = useCallback(
     async (
       silent = false
@@ -2367,7 +2493,18 @@ export default function App() {
     Boolean(cloudConfig.webhookUrl.trim()) && cloudConfig.lastStatus !== 'error';
 
   return (
-    <div className="min-h-screen bg-[#F3F2EE] text-zinc-900 transition-colors duration-150 dark:bg-zinc-950 dark:text-zinc-100">
+    <div
+      style={
+        {
+          '--olmo-header-h': `${stickyHeaderHeight}px`,
+          '--olmo-workspace-top': `${
+            stickyHeaderHeight +
+            (activeSection !== 'integration' ? stickyWorkingBarHeight : 0)
+          }px`,
+        } as CSSProperties
+      }
+      className="min-h-screen bg-[#F3F2EE] text-zinc-900 transition-colors duration-150 dark:bg-zinc-950 dark:text-zinc-100"
+    >
       <TopBar
         activeSection={activeSection}
         onSelectSection={setActiveSection}
@@ -2393,6 +2530,8 @@ export default function App() {
           });
         }}
         isProformaConfirmed={isProformaConfirmed}
+        autosaveStatus={autosaveStatus}
+        lastLocalSavedAt={lastLocalSavedAt}
         isSendingToSheet={isSendingToSheet}
         isSheetWebhookConnected={isSheetWebhookConnected}
         themeMode={themeMode}
@@ -2423,14 +2562,15 @@ export default function App() {
       )}
 
       <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6">
-        {/* Desglose superior siempre visible en todas las pestañas excepto INTEGRACIÓN */}
+        {/* Desglose superior sticky siempre visible en todas las pestañas excepto INTEGRACIÓN */}
         {activeSection !== 'integration' && (
           <section
+            ref={workingBarRef}
             aria-label="Trabajando en la cotización"
-            className={`no-print mb-4 overflow-hidden rounded-xl border transition-colors duration-150 ${
+            className={`no-print sticky top-[var(--olmo-header-h,57px)] z-20 mb-4 overflow-hidden rounded-xl border transition-colors duration-150 ${
               !isProformaConfirmed
-                ? 'border-red-300 bg-red-50/90 shadow-[0_1px_2px_rgba(220,38,38,0.08)] dark:border-red-800/80 dark:bg-red-950/35 dark:shadow-none'
-                : 'border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none'
+                ? 'border-red-300 bg-red-50 shadow-[0_4px_12px_-4px_rgba(220,38,38,0.14)] dark:border-red-800/80 dark:bg-[#261114] dark:shadow-none'
+                : 'border-[#E3E1DA] bg-white shadow-[0_4px_12px_-4px_rgba(24,24,27,0.08)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none'
             }`}
           >
             <div
@@ -2557,39 +2697,49 @@ export default function App() {
                     </td>
                     <td className="px-3.5 py-1.5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleSendProformaToSheet()}
-                          disabled={!isProformaConfirmed || isSendingToSheet}
-                          title={
-                            !isProformaConfirmed
-                              ? 'Selecciona, crea o importa una proforma antes de enviarla al Sheet'
-                              : isSheetWebhookConnected
+                        {!isProformaConfirmed ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowCreateOrLoadModal(true)}
+                            title="Crear una nueva cotización o cargar una proforma existente"
+                            className="inline-flex items-center gap-1.5 rounded-md bg-orange-600 px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs transition-colors hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer dark:bg-orange-600 dark:hover:bg-orange-500"
+                          >
+                            <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Crear o cargar una proforma</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleSendProformaToSheet()}
+                            disabled={isSendingToSheet}
+                            title={
+                              isSheetWebhookConnected
                                 ? `Conectado: enviar Proforma Nº ${proforma.consecutivo} a la hoja PROFORMAS`
                                 : 'Sin URL o último envío con error: revisa Integración'
-                          }
-                          className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 ${getConnectionButtonClasses(
-                            isSheetWebhookConnected,
-                            'outline'
-                          )}`}
-                        >
-                          {isSendingToSheet ? (
-                            <Loader2
-                              className="h-3.5 w-3.5 animate-spin"
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <CloudUpload
-                              className="h-3.5 w-3.5"
-                              aria-hidden="true"
-                            />
-                          )}
-                          <span>
-                            {isSendingToSheet
-                              ? 'Enviando al Sheet...'
-                              : 'Enviar Proforma al Sheet'}
-                          </span>
-                        </button>
+                            }
+                            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 ${getConnectionButtonClasses(
+                              isSheetWebhookConnected,
+                              'outline'
+                            )}`}
+                          >
+                            {isSendingToSheet ? (
+                              <Loader2
+                                className="h-3.5 w-3.5 animate-spin"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <CloudUpload
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span>
+                              {isSendingToSheet
+                                ? 'Enviando al Sheet...'
+                                : 'Enviar Proforma al Sheet'}
+                            </span>
+                          </button>
+                        )}
 
                         <button
                           type="button"
@@ -2672,191 +2822,72 @@ export default function App() {
             </div>
           )}
 
-        {/* Barra de acciones del espacio de trabajo (visible en Editor y Vista Previa) */}
+        {/* Barra compacta de vista y Deshacer/Rehacer (visible en Editor y Vista Previa) */}
         {(activeSection === 'editor' || activeSection === 'preview') && (
-          <div className="no-print mb-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#E3E1DA] bg-white/95 px-4 py-3 shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
-            {/* Metadatos unboxed con separadores tipográficos e indicador discreto de guardado local */}
-            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-              {!isProformaConfirmed ? (
-                <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-300">
-                  <Lock className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Sin proforma activa confirmada</span>
-                </span>
-              ) : (
-                <>
-                  <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
-                    Proforma Nº {proforma.consecutivo}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span className="max-w-[220px] truncate font-medium text-zinc-800 dark:text-zinc-200">
-                    {proforma.clientProject.cliente || 'Cliente sin definir'}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono tabular-nums">
-                    {totals.unidadResumen}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span
-                    className={`font-mono font-semibold tabular-nums ${
-                      totals.total <= 0
-                        ? 'text-amber-700 dark:text-amber-400'
-                        : 'text-[#8C5A32] dark:text-[#D59B69]'
-                    }`}
-                  >
-                    Total: {formatMoney(totals.total, proforma.clientProject.moneda)}
-                  </span>
-                  {totals.total <= 0 && (
-                    <span
-                      title="La cotización tiene total menor o igual a 0. Revisa antes de exportar PDF."
-                      className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-700/80 dark:bg-amber-950/60 dark:text-amber-200"
-                    >
-                      <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-                      <span>Total ≤ 0</span>
-                    </span>
-                  )}
-                  <span aria-hidden="true">·</span>
-                  <span
-                    title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
-                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                      autosaveStatus === 'error'
-                        ? 'bg-red-50 text-red-700 dark:bg-red-950/70 dark:text-red-300'
-                        : autosaveStatus === 'saving'
-                          ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
-                          : 'bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
-                    }`}
-                  >
-                    {autosaveStatus === 'saving' ? (
-                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <HardDrive className="h-3 w-3" aria-hidden="true" />
-                    )}
-                    <span>
-                      {autosaveStatus === 'saving'
-                        ? 'Guardando local...'
-                        : autosaveStatus === 'error'
-                          ? 'Error guardado local'
-                          : lastLocalSavedAt
-                            ? `Guardado local ${formatTimeHHMM(lastLocalSavedAt)}`
-                            : 'Autoguardado activo'}
-                    </span>
-                  </span>
-                </>
-              )}
-            </div>
-
-            {/* Botones de acción del documento */}
-            <div className="flex flex-wrap items-center gap-2">
-              {activeSection === 'editor' && (
-                <div className="hidden xl:flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 mr-1 dark:border-zinc-700 dark:bg-zinc-800">
-                  <button
-                    type="button"
-                    onClick={() => setLayoutMode('split')}
-                    className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                      layoutMode === 'split'
-                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
-                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                    }`}
-                  >
-                    <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Dividido</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLayoutMode('editor')}
-                    className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                      layoutMode === 'editor'
-                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
-                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                    }`}
-                  >
-                    <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Solo Editor</span>
-                  </button>
-                </div>
-              )}
-
-              {/* Deshacer / Rehacer */}
-              <div className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-white dark:border-zinc-700 dark:bg-zinc-800">
+          <div className="no-print mb-4 flex flex-wrap items-center justify-end gap-2">
+            {activeSection === 'editor' && (
+              <div className="hidden xl:flex items-center rounded-md border border-[#E5E4DF] bg-white p-0.5 shadow-2xs dark:border-zinc-700 dark:bg-zinc-900">
                 <button
                   type="button"
-                  onClick={handleUndo}
-                  disabled={!isProformaConfirmed || !canUndo}
-                  title={
-                    !isProformaConfirmed
-                      ? 'Selecciona o crea una proforma primero'
-                      : canUndo
-                        ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
-                        : 'No hay cambios anteriores para deshacer'
-                  }
-                  className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  onClick={() => setLayoutMode('split')}
+                  className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                    layoutMode === 'split'
+                      ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
+                      : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
                 >
-                  <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Deshacer</span>
+                  <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Dividido</span>
                 </button>
-                <span className="h-4 w-px bg-[#E5E4DF] dark:bg-zinc-700" aria-hidden="true" />
                 <button
                   type="button"
-                  onClick={handleRedo}
-                  disabled={!isProformaConfirmed || !canRedo}
-                  title={
-                    !isProformaConfirmed
-                      ? 'Selecciona o crea una proforma primero'
-                      : canRedo
-                        ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y`
-                        : 'No hay cambios posteriores para rehacer'
-                  }
-                  className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  onClick={() => setLayoutMode('editor')}
+                  className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                    layoutMode === 'editor'
+                      ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-800 dark:text-zinc-100'
+                      : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
                 >
-                  <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Rehacer</span>
+                  <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Solo Editor</span>
                 </button>
               </div>
+            )}
 
+            {/* Deshacer / Rehacer */}
+            <div className="inline-flex items-center rounded-md border border-[#DCDAD3] bg-white shadow-2xs dark:border-zinc-700 dark:bg-zinc-900">
               <button
                 type="button"
-                onClick={handleRequestNewProforma}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                onClick={handleUndo}
+                disabled={!isProformaConfirmed || !canUndo}
+                title={
+                  !isProformaConfirmed
+                    ? 'Selecciona o crea una proforma primero'
+                    : canUndo
+                      ? `Deshacer (${undoCount} paso${undoCount === 1 ? '' : 's'}) · Ctrl+Z`
+                      : 'No hay cambios anteriores para deshacer'
+                }
+                className="inline-flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
-                <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Nueva Cotización</span>
+                <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Deshacer</span>
               </button>
-
+              <span className="h-4 w-px bg-[#E5E4DF] dark:bg-zinc-700" aria-hidden="true" />
               <button
                 type="button"
-                onClick={handleSaveNowLocal}
-                disabled={!isProformaConfirmed}
-                title="Guardar borrador y respaldo en el historial local de inmediato (sin depender de internet)"
-                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-emerald-700/70 dark:bg-emerald-950/60 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
+                onClick={handleRedo}
+                disabled={!isProformaConfirmed || !canRedo}
+                title={
+                  !isProformaConfirmed
+                    ? 'Selecciona o crea una proforma primero'
+                    : canRedo
+                      ? `Rehacer (${redoCount} paso${redoCount === 1 ? '' : 's'}) · Ctrl+Y / Ctrl+Shift+Z`
+                      : 'No hay cambios posteriores para rehacer'
+                }
+                className="inline-flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
-                <HardDrive className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Guardar ahora</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSaveToHistory}
-                disabled={!isProformaConfirmed}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
-              >
-                <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Guardar en Historial</span>
-              </button>
-
-              <button
-                type="button"
-                disabled={!isProformaConfirmed}
-                onClick={() => {
-                  if (!isProformaConfirmed) return;
-                  exportProformaToJSON(proforma, totals);
-                  showToast(
-                    `Borrador Proforma Nº ${proforma.consecutivo} exportado en formato .json.`
-                  );
-                }}
-                title="Exportar un borrador completo (.json) como respaldo portátil entre computadoras"
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              >
-                <FileJson className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#C68B59]" aria-hidden="true" />
-                <span>Exportar Borrador (.json)</span>
+                <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Rehacer</span>
               </button>
             </div>
           </div>
@@ -2883,7 +2914,7 @@ export default function App() {
                 aria-label="Formulario de captura de proforma"
                 className={`no-print olmo-editor-scroll ${
                   layoutMode === 'split'
-                    ? 'xl:col-span-5 xl:sticky xl:top-20 xl:max-h-[calc(100vh-5.5rem)] xl:overflow-y-auto xl:pr-1'
+                    ? 'xl:col-span-5 xl:sticky xl:top-[calc(var(--olmo-workspace-top,155px)+12px)] xl:max-h-[calc(100vh-var(--olmo-workspace-top,155px)-24px)] xl:overflow-y-auto xl:pr-1'
                     : ''
                 }`}
               >
@@ -2921,6 +2952,7 @@ export default function App() {
                   isSyncingAran={isSyncingAran}
                   onSyncAranTemplates={() => void handleSyncAranTemplates(false)}
                   onGoToIntegration={() => setActiveSection('integration')}
+                  isSplitScrollContainer={layoutMode === 'split'}
                 />
               </section>
 
@@ -3010,6 +3042,8 @@ export default function App() {
             onGoToEditor={() => setActiveSection('editor')}
             onNewProforma={handleRequestNewProforma}
             proformasSheetUrl={sheetShortcutUrls.proformasSheetUrl}
+            mainLogo={mainLogo}
+            footerLogos={footerLogos}
           />
         )}
 
@@ -3234,6 +3268,77 @@ export default function App() {
         </div>
       )}
 
+      {showCreateOrLoadModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-or-load-dialog-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
+        >
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="flex items-start gap-3">
+              <div className="rounded-md bg-[#FAF6F1] p-2 text-[#8C5A32] dark:bg-zinc-800 dark:text-[#D59B69]">
+                <FilePlus2 className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div className="flex-1">
+                <h2
+                  id="create-or-load-dialog-title"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
+                >
+                  Crear o cargar una proforma
+                </h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  Elige si deseas iniciar una cotización nueva con el siguiente consecutivo disponible o importar una proforma desde Google Sheet (PROFORMAS).
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateOrLoadModal(false);
+                  handleRequestNewProforma();
+                }}
+                className="flex w-full items-center justify-between rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2.5 text-left text-xs font-semibold text-zinc-900 transition-colors hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <FilePlus2 className="h-4 w-4 text-[#8C5A32] dark:text-[#D59B69]" aria-hidden="true" />
+                  <span>Crear nueva cotización</span>
+                </span>
+                <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Nº {nextConsecutivo}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateOrLoadModal(false);
+                  handleOpenImportFromSheetModal();
+                }}
+                className="flex w-full items-center justify-between rounded-lg border border-[#DCDAD3] bg-white px-3.5 py-2.5 text-left text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <CloudUpload className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  <span>Importar desde Google Sheet (PROFORMAS)</span>
+                </span>
+              </button>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCreateOrLoadModal(false)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCloseQuoteConfirm && (
         <div
           role="dialog"
@@ -3308,35 +3413,472 @@ export default function App() {
               <button
                 type="button"
                 disabled={isClosingAndSaving}
-                onClick={handleCloseQuoteWithoutSaving}
+                onClick={() => {
+                  setShowCloseQuoteConfirm(false);
+                  setCloseStepConfirm('discard');
+                }}
                 className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-red-700 disabled:opacity-45 cursor-pointer dark:bg-red-600 dark:hover:bg-red-500"
               >
                 <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Cerrar sin guardar</span>
+                <span>Salir sin guardar</span>
               </button>
               <button
                 type="button"
                 disabled={isClosingAndSaving}
-                onClick={() => void handleSaveAndCloseQuote()}
+                onClick={() => {
+                  setShowCloseQuoteConfirm(false);
+                  setCloseStepConfirm('save');
+                }}
                 className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:opacity-45 cursor-pointer dark:bg-emerald-600 dark:hover:bg-emerald-500"
               >
-                {isClosingAndSaving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                <span>
-                  {isClosingAndSaving
-                    ? 'Guardando y enviando...'
-                    : cloudConfig.webhookUrl.trim()
-                      ? 'Guardar, enviar al Sheet y cerrar'
-                      : 'Guardar y cerrar'}
-                </span>
+                <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Guardar y cerrar</span>
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {closeStepConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="close-step-dialog-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-[1px] dark:bg-black/75"
+        >
+          <div
+            className={`w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl dark:bg-zinc-900 ${
+              closeStepConfirm === 'discard'
+                ? 'border-red-300 dark:border-red-800/80'
+                : 'border-emerald-300 dark:border-emerald-800/80'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div
+                className={`rounded-md p-2 ${
+                  closeStepConfirm === 'discard'
+                    ? 'bg-red-100 text-red-700 dark:bg-red-950/70 dark:text-red-300'
+                    : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300'
+                }`}
+              >
+                {closeStepConfirm === 'discard' ? (
+                  <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                ) : (
+                  <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+                )}
+              </div>
+              <div className="flex-1">
+                <h2
+                  id="close-step-dialog-title"
+                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
+                >
+                  {closeStepConfirm === 'discard'
+                    ? '¿Estás seguro de que deseas salir sin guardar?'
+                    : `¿Estás de acuerdo en guardar y cerrar la Proforma Nº ${proforma.consecutivo}?`}
+                </h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  {closeStepConfirm === 'discard'
+                    ? `Se descartará la sesión activa de la Proforma Nº ${proforma.consecutivo} y NO se guardarán ni enviarán cambios al Google Sheet PROFORMAS.`
+                    : cloudConfig.webhookUrl.trim()
+                      ? `Se guardará la Proforma Nº ${proforma.consecutivo} en el historial y se enviará al Google Sheet PROFORMAS antes de cerrar. Si ese consecutivo ya existe en el Sheet, se te pedirá confirmar la sobrescritura.`
+                      : `Se guardará la Proforma Nº ${proforma.consecutivo} en el historial local antes de cerrar la sesión activa.`}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isClosingAndSaving || isSendingToSheet}
+                onClick={() => setCloseStepConfirm(null)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                Cancelar
+              </button>
+              {closeStepConfirm === 'discard' ? (
+                <button
+                  type="button"
+                  disabled={isClosingAndSaving || isSendingToSheet}
+                  onClick={handleCloseQuoteWithoutSaving}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-red-700 disabled:opacity-45 cursor-pointer dark:bg-red-600 dark:hover:bg-red-500"
+                >
+                  <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Sí, salir sin guardar</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isClosingAndSaving || isSendingToSheet}
+                  onClick={() => void handleSaveAndCloseQuote()}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:opacity-45 cursor-pointer dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                >
+                  {isClosingAndSaving || isSendingToSheet ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  <span>
+                    {isClosingAndSaving || isSendingToSheet
+                      ? 'Guardando y enviando...'
+                      : 'Sí, guardar y cerrar'}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {overwriteSheetConfirm && (() => {
+        const existingRec = overwriteSheetConfirm.existingRecord;
+        const parsedSheetData = existingRec.rawDatosJson
+          ? parseProformaFromJsonInput(
+              existingRec.rawDatosJson,
+              existingRec.consecutivo
+            )
+          : null;
+        const existingData = parsedSheetData ?? existingRec.data;
+        const existingTotals = computeProformaTotals(existingData);
+        const existingCurrency = existingData.clientProject.moneda;
+        const existingDisplayTotal =
+          existingTotals.total > 0 ? existingTotals.total : existingRec.total;
+
+        const existingCliente =
+          existingData.clientProject.cliente.trim() || 'Sin definir';
+        const newCliente =
+          proforma.clientProject.cliente.trim() || 'Sin definir';
+        const existingProyecto =
+          existingData.clientProject.proyecto.trim() || 'Sin definir';
+        const newProyecto =
+          proforma.clientProject.proyecto.trim() || 'Sin definir';
+        const existingItemsCount = existingData.items.length;
+        const newItemsCount = proforma.items.length;
+
+        const existingSubtotalStr = formatMoney(
+          existingTotals.subtotal,
+          existingCurrency
+        );
+        const newSubtotalStr = formatMoney(
+          totals.subtotal,
+          proforma.clientProject.moneda
+        );
+        const existingIvaStr = `${existingData.taxRate}% (${formatMoney(
+          existingTotals.impuesto,
+          existingCurrency
+        )})`;
+        const newIvaStr = `${proforma.taxRate}% (${formatMoney(
+          totals.impuesto,
+          proforma.clientProject.moneda
+        )})`;
+        const existingTotalStr = formatMoney(
+          existingDisplayTotal,
+          existingCurrency
+        );
+        const newTotalStr = formatMoney(
+          totals.total,
+          proforma.clientProject.moneda
+        );
+
+        const comparisonRows = [
+          {
+            label: 'Consecutivo',
+            currentVal: `Nº ${existingRec.consecutivo}`,
+            newVal: `Nº ${proforma.consecutivo}`,
+            changed: existingRec.consecutivo !== proforma.consecutivo,
+          },
+          {
+            label: 'Cliente',
+            currentVal: existingCliente,
+            newVal: newCliente,
+            changed: existingCliente !== newCliente,
+          },
+          {
+            label: 'Proyecto',
+            currentVal: existingProyecto,
+            newVal: newProyecto,
+            changed: existingProyecto !== newProyecto,
+          },
+          {
+            label: 'Cantidad de ítems',
+            currentVal: `${existingItemsCount} ítem(s)`,
+            newVal: `${newItemsCount} ítem(s)`,
+            changed: existingItemsCount !== newItemsCount,
+          },
+          {
+            label: 'Subtotal',
+            currentVal: existingSubtotalStr,
+            newVal: newSubtotalStr,
+            changed: existingSubtotalStr !== newSubtotalStr,
+          },
+          {
+            label: 'IVA',
+            currentVal: existingIvaStr,
+            newVal: newIvaStr,
+            changed: existingIvaStr !== newIvaStr,
+          },
+          {
+            label: 'Total',
+            currentVal: existingTotalStr,
+            newVal: newTotalStr,
+            changed: existingTotalStr !== newTotalStr,
+            highlightTotal: true,
+          },
+        ];
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="overwrite-sheet-dialog-title"
+            className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-[1px] dark:bg-black/75"
+          >
+            <div
+              className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-xl border border-amber-300 bg-white shadow-2xl transition-all duration-150 dark:border-amber-800/80 dark:bg-zinc-900 ${
+                overwriteModalTab === 'previews' ? 'max-w-6xl' : 'max-w-2xl'
+              }`}
+            >
+              {/* Encabezado y pestañas internas */}
+              <div className="border-b border-[#E5E4DF] px-5 pt-5 pb-3 dark:border-zinc-800">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-md bg-amber-100 p-2 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300">
+                    <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2
+                      id="overwrite-sheet-dialog-title"
+                      className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
+                    >
+                      ¿Estás seguro que deseas sobrescribir la proforma #{proforma.consecutivo}?
+                    </h2>
+                    <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                      Ya existe una fila para la proforma{' '}
+                      <strong className="font-mono text-zinc-900 dark:text-zinc-100">
+                        #{proforma.consecutivo}
+                      </strong>{' '}
+                      en la pestaña{' '}
+                      <strong className="text-zinc-900 dark:text-zinc-100">
+                        PROFORMAS
+                      </strong>{' '}
+                      de Google Sheets. Si confirmas, se reemplazará la versión actual alojada en el Sheet con los nuevos datos.
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  role="tablist"
+                  aria-label="Modo de comparación de proforma"
+                  className="mt-4 inline-flex items-center rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={overwriteModalTab === 'table'}
+                    onClick={() => setOverwriteModalTab('table')}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                      overwriteModalTab === 'table'
+                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
+                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                    }`}
+                  >
+                    Cuadro comparativo
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={overwriteModalTab === 'previews'}
+                    onClick={() => setOverwriteModalTab('previews')}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                      overwriteModalTab === 'previews'
+                        ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
+                        : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                    }`}
+                  >
+                    Comparar vistas previas
+                  </button>
+                </div>
+              </div>
+
+              {/* Contenido desplazable según pestaña activa */}
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {overwriteModalTab === 'table' ? (
+                  <div className="overflow-hidden rounded-lg border border-[#E5E4DF] dark:border-zinc-800">
+                    <table className="w-full border-collapse text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-[11px] font-semibold uppercase tracking-wide text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
+                          <th className="w-[165px] px-3 py-2">Campo</th>
+                          <th className="px-3 py-2">Versión actual en Sheet</th>
+                          <th className="px-3 py-2">Nueva versión</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EFECE6] dark:divide-zinc-800">
+                        {comparisonRows.map((row) => (
+                          <tr
+                            key={row.label}
+                            className={
+                              row.changed
+                                ? 'bg-amber-50/55 dark:bg-amber-950/20'
+                                : 'bg-white dark:bg-zinc-900'
+                            }
+                          >
+                            <td className="px-3 py-2 font-semibold text-zinc-700 dark:text-zinc-300">
+                              <span>{row.label}</span>
+                              {row.changed && (
+                                <span className="ml-1.5 inline-block rounded bg-amber-100 px-1 py-0.5 text-[9.5px] font-bold uppercase text-amber-800 dark:bg-amber-900/60 dark:text-amber-200">
+                                  Cambia
+                                </span>
+                              )}
+                            </td>
+                            <td
+                              className={`px-3 py-2 text-zinc-600 dark:text-zinc-400 ${
+                                row.highlightTotal ? 'font-mono font-semibold' : ''
+                              }`}
+                            >
+                              {row.currentVal}
+                            </td>
+                            <td
+                              className={`px-3 py-2 font-medium text-zinc-900 dark:text-zinc-100 ${
+                                row.highlightTotal
+                                  ? 'font-mono font-bold text-[#8C5A32] dark:text-[#D59B69]'
+                                  : ''
+                              }`}
+                            >
+                              {row.newVal}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="flex flex-col overflow-hidden rounded-lg border border-[#E5E4DF] bg-[#F5F4EF] dark:border-zinc-700 dark:bg-zinc-950">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E4DF] bg-[#FAF9F6] px-3.5 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                            Versión actual en Sheet (PROFORMAS)
+                          </div>
+                          <div className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                            Nº {existingRec.consecutivo} · {existingCliente} ·{' '}
+                            {existingTotalStr}
+                            {!existingRec.rawDatosJson
+                              ? ' (reconstruida de columnas)'
+                              : ''}
+                          </div>
+                        </div>
+                        <PreviewZoomControls
+                          zoom={overwriteSheetZoom}
+                          defaultZoom={DEFAULT_COMPARE_PREVIEW_ZOOM}
+                          contextLabel="Versión actual en Sheet"
+                          onChangeZoom={setOverwriteSheetZoom}
+                        />
+                      </div>
+                      <CtrlWheelZoomBox
+                        onZoomStep={(dir) =>
+                          setOverwriteSheetZoom((prev) =>
+                            clampPreviewZoom(
+                              prev + dir * COMPARE_PREVIEW_ZOOM_STEP
+                            )
+                          )
+                        }
+                        className="max-h-[54vh] overflow-auto p-3"
+                      >
+                        <div
+                          className="mx-auto w-[816px]"
+                          style={{ zoom: overwriteSheetZoom }}
+                        >
+                          <ProformaPreview
+                            data={existingData}
+                            totals={existingTotals}
+                            mainLogo={mainLogo}
+                            footerLogos={footerLogos}
+                            compactReadOnly
+                            idPrefix="cmp-sheet-"
+                          />
+                        </div>
+                      </CtrlWheelZoomBox>
+                    </div>
+
+                    <div className="flex flex-col overflow-hidden rounded-lg border border-amber-300 bg-[#F5F4EF] dark:border-amber-800/80 dark:bg-zinc-950">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 bg-amber-50/80 px-3.5 py-2 dark:border-amber-900/60 dark:bg-amber-950/40">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                            Nueva versión (a sobrescribir)
+                          </div>
+                          <div className="truncate text-[11px] text-amber-900 dark:text-amber-300">
+                            Nº {proforma.consecutivo} · {newCliente} ·{' '}
+                            {newTotalStr}
+                          </div>
+                        </div>
+                        <PreviewZoomControls
+                          zoom={overwriteNewZoom}
+                          defaultZoom={DEFAULT_COMPARE_PREVIEW_ZOOM}
+                          contextLabel="Nueva versión"
+                          onChangeZoom={setOverwriteNewZoom}
+                        />
+                      </div>
+                      <CtrlWheelZoomBox
+                        onZoomStep={(dir) =>
+                          setOverwriteNewZoom((prev) =>
+                            clampPreviewZoom(
+                              prev + dir * COMPARE_PREVIEW_ZOOM_STEP
+                            )
+                          )
+                        }
+                        className="max-h-[54vh] overflow-auto p-3"
+                      >
+                        <div
+                          className="mx-auto w-[816px]"
+                          style={{ zoom: overwriteNewZoom }}
+                        >
+                          <ProformaPreview
+                            data={proforma}
+                            totals={totals}
+                            mainLogo={mainLogo}
+                            footerLogos={footerLogos}
+                            compactReadOnly
+                            idPrefix="cmp-new-"
+                          />
+                        </div>
+                      </CtrlWheelZoomBox>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Pie fijo con acciones siempre visibles y operativas */}
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#E5E4DF] bg-white px-5 py-3.5 dark:border-zinc-800 dark:bg-zinc-900">
+                <button
+                  type="button"
+                  disabled={isSendingToSheet || isClosingAndSaving}
+                  onClick={() => setOverwriteSheetConfirm(null)}
+                  className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isSendingToSheet || isClosingAndSaving}
+                  onClick={() => void executeOverwriteSendToSheet()}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-amber-700 disabled:opacity-45 cursor-pointer dark:bg-amber-600 dark:hover:bg-amber-500"
+                >
+                  {isSendingToSheet || isClosingAndSaving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  <span>
+                    {isSendingToSheet || isClosingAndSaving
+                      ? 'Sobrescribiendo...'
+                      : overwriteSheetConfirm.closeAfterSave
+                        ? 'Sí, sobrescribir y cerrar'
+                        : 'Sí, sobrescribir proforma'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <ImportFromSheetModal
         isOpen={sheetPreviewModal.isOpen}
@@ -3347,6 +3889,8 @@ export default function App() {
             ? mergedHistoryForModal
             : remoteHistory
         }
+        mainLogo={mainLogo}
+        footerLogos={footerLogos}
         isLoading={isSyncingRemoteHistory}
         errorMessage={
           remoteHistoryFeedback && !remoteHistoryFeedback.ok

@@ -2,6 +2,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Cloud,
+  Columns2,
   CopyPlus,
   Edit3,
   FileJson,
@@ -16,10 +17,15 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import {
+  DEFAULT_OLMO_MAIN_LOGO,
   DEFAULT_PROFORMAS_SHEET_URL,
   GRIFERIA_AUTO_FOOTER_LOGOS,
 } from '../data/defaults';
-import { ComputedTotals, SavedProformaRecord } from '../types/proforma';
+import {
+  ComputedTotals,
+  LogoAsset,
+  SavedProformaRecord,
+} from '../types/proforma';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import {
   computeProformaTotals,
@@ -28,9 +34,9 @@ import {
 } from '../utils/formatters';
 import {
   exportProformaToCSV,
-  exportProformaToJSON,
   generateProformaPDF,
 } from '../utils/exporters';
+import { CompareProformasModal } from './CompareProformasModal';
 import { PdfIcon } from './PdfIcon';
 import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 
@@ -51,6 +57,8 @@ interface HistoryViewProps {
   onGoToEditor: () => void;
   onNewProforma: () => void;
   proformasSheetUrl?: string;
+  mainLogo?: LogoAsset;
+  footerLogos?: Array<LogoAsset | null>;
 }
 
 type HistoryFilterSource = 'all' | 'local' | 'sheet';
@@ -144,6 +152,8 @@ export function HistoryView({
   onGoToEditor,
   onNewProforma,
   proformasSheetUrl = '',
+  mainLogo = DEFAULT_OLMO_MAIN_LOGO,
+  footerLogos = [],
 }: HistoryViewProps) {
   const cardSurface =
     'rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none';
@@ -156,14 +166,53 @@ export function HistoryView({
   const [dateTo, setDateTo] = useState('');
   const [minTotal, setMinTotal] = useState('');
   const [maxTotal, setMaxTotal] = useState('');
+  const [selectedCompareKeys, setSelectedCompareKeys] = useState<string[]>([]);
+  const [showCompareModal, setShowCompareModal] = useState(false);
 
   const getRecordRowKey = (rec: SavedProformaRecord) =>
     `${rec.source ?? 'local'}-${rec.id}-${rec.consecutivo}`;
+
+  const getCompareSelectionKey = (rec: SavedProformaRecord) =>
+    rec.consecutivo > 0 ? `num:${rec.consecutivo}` : `id:${rec.id}`;
 
   const combinedRecords = useMemo<SavedProformaRecord[]>(
     () => mergeProformaHistoryRecords(records, remoteRecords),
     [records, remoteRecords]
   );
+
+  const selectedCompareRecords = useMemo<SavedProformaRecord[]>(() => {
+    const byKey = new Map<string, SavedProformaRecord>();
+    combinedRecords.forEach((rec) => {
+      byKey.set(getCompareSelectionKey(rec), rec);
+    });
+    return selectedCompareKeys
+      .map((key) => byKey.get(key))
+      .filter((rec): rec is SavedProformaRecord => Boolean(rec))
+      .slice(0, 4);
+  }, [combinedRecords, selectedCompareKeys]);
+
+  const selectedCompareKeySet = useMemo(
+    () => new Set(selectedCompareRecords.map(getCompareSelectionKey)),
+    [selectedCompareRecords]
+  );
+
+  const handleToggleCompareRecord = (rec: SavedProformaRecord) => {
+    const key = getCompareSelectionKey(rec);
+    setSelectedCompareKeys((prev) => {
+      const validKeys = new Set(combinedRecords.map(getCompareSelectionKey));
+      const normalizedPrev = prev.filter((k) => validKeys.has(k));
+      if (normalizedPrev.includes(key)) {
+        return normalizedPrev.filter((k) => k !== key);
+      }
+      if (normalizedPrev.length >= 4) {
+        return normalizedPrev;
+      }
+      return [...normalizedPrev, key];
+    });
+  };
+
+  const canCompareSelected =
+    selectedCompareRecords.length >= 2 && selectedCompareRecords.length <= 4;
 
   const enrichedRecords = useMemo<EnrichedHistoryRecord[]>(() => {
     return combinedRecords.map((rec) => {
@@ -683,44 +732,132 @@ export function HistoryView({
           )}
         </div>
       ) : (
-        <div className={`overflow-x-auto ${cardSurface}`}>
-          <table className="w-full border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
-                <th className="px-4 py-3">Consecutivo</th>
-                <th className="px-4 py-3">Cliente</th>
-                <th className="px-4 py-3">Proyecto</th>
-                <th className="px-4 py-3">Origen</th>
-                <th className="px-4 py-3">Fecha</th>
-                <th className="px-4 py-3 text-right">Ítems</th>
-                <th className="px-4 py-3 text-right">Total</th>
-                <th className="px-4 py-3 text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
-              {filtered.map(({ record: rec, totals, displayTotal }) => {
-                const isCurrent = rec.id === activeProformaId;
-                const rowKey = getRecordRowKey(rec);
+        <div className={`overflow-hidden ${cardSurface}`}>
+          {/* Barra de comparación de cotizaciones seleccionadas */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E4DF] bg-[#FAF9F6] px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-800/45">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+              <Columns2
+                className="h-3.5 w-3.5 text-[#8C5A32] dark:text-amber-400 shrink-0"
+                aria-hidden="true"
+              />
+              <span>
+                {selectedCompareRecords.length === 0
+                  ? 'Selecciona entre 2 y 4 cotizaciones para compararlas lado a lado.'
+                  : selectedCompareRecords.length === 1
+                    ? '1 cotización seleccionada. Marca al menos 1 más (máximo 4) para comparar.'
+                    : `${selectedCompareRecords.length} de 4 cotizaciones seleccionadas para comparar (${selectedCompareRecords
+                        .map((r) => `Nº ${r.consecutivo}`)
+                        .join(', ')}).`}
+              </span>
+            </div>
 
-                return (
-                  <tr
-                    key={rowKey}
-                    onClick={() => onPreviewRecord(rec)}
-                    title="Clic para abrir la vista previa de esta proforma"
-                    className={`cursor-pointer transition-colors ${
-                      isCurrent
-                        ? 'bg-[#FAF9F6] hover:bg-[#F5EFE6]/70 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/70'
-                        : 'hover:bg-[#FAF9F6]/90 dark:hover:bg-zinc-800/60'
-                    }`}
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedCompareRecords.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedCompareKeys([])}
+                  className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Limpiar selección</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={!canCompareSelected}
+                onClick={() => setShowCompareModal(true)}
+                title={
+                  canCompareSelected
+                    ? `Comparar ${selectedCompareRecords.length} cotizaciones seleccionadas`
+                    : 'Selecciona entre 2 y 4 cotizaciones para habilitar la comparación'
+                }
+                className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white shadow-2xs transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap shrink-0 cursor-pointer dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+              >
+                <Columns2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>
+                  Comparar seleccionadas
+                  {selectedCompareRecords.length > 0
+                    ? ` (${selectedCompareRecords.length}/4)`
+                    : ''}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-[#E5E4DF] bg-[#FAF9F6] text-xs font-semibold text-zinc-600 dark:border-zinc-800 dark:bg-zinc-800/70 dark:text-zinc-300">
+                  <th
+                    className="w-10 px-3 py-3 text-center"
+                    title="Selecciona hasta 4 cotizaciones para comparar"
                   >
-                    <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
-                      Nº {rec.consecutivo}
-                      {isCurrent && (
-                        <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
-                          · En edición
-                        </span>
-                      )}
-                    </td>
+                    <span className="sr-only">Comparar</span>
+                    <span className="font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
+                      {selectedCompareRecords.length}/4
+                    </span>
+                  </th>
+                  <th className="px-4 py-3">Consecutivo</th>
+                  <th className="px-4 py-3">Cliente</th>
+                  <th className="px-4 py-3">Proyecto</th>
+                  <th className="px-4 py-3">Origen</th>
+                  <th className="px-4 py-3">Fecha</th>
+                  <th className="px-4 py-3 text-right">Ítems</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                  <th className="px-4 py-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E5E4DF] dark:divide-zinc-800">
+                {filtered.map(({ record: rec, totals, displayTotal }) => {
+                  const isCurrent = rec.id === activeProformaId;
+                  const rowKey = getRecordRowKey(rec);
+                  const compareKey = getCompareSelectionKey(rec);
+                  const isChecked = selectedCompareKeySet.has(compareKey);
+                  const isSelectionDisabled =
+                    !isChecked && selectedCompareRecords.length >= 4;
+
+                  return (
+                    <tr
+                      key={rowKey}
+                      onClick={() => onPreviewRecord(rec)}
+                      title="Clic para abrir la vista previa de esta proforma"
+                      className={`cursor-pointer transition-colors ${
+                        isChecked
+                          ? 'bg-[#FAF6F1] hover:bg-[#F5EFE6] dark:bg-amber-950/20 dark:hover:bg-amber-950/30'
+                          : isCurrent
+                            ? 'bg-[#FAF9F6] hover:bg-[#F5EFE6]/70 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/70'
+                            : 'hover:bg-[#FAF9F6]/90 dark:hover:bg-zinc-800/60'
+                      }`}
+                    >
+                      <td
+                        className="px-3 py-3.5 text-center"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          disabled={isSelectionDisabled}
+                          onChange={() => handleToggleCompareRecord(rec)}
+                          aria-label={`Seleccionar Proforma Nº ${rec.consecutivo} para comparar`}
+                          title={
+                            isSelectionDisabled
+                              ? 'Máximo 4 cotizaciones seleccionadas para comparar'
+                              : isChecked
+                                ? `Quitar Proforma Nº ${rec.consecutivo} de la comparación`
+                                : `Seleccionar Proforma Nº ${rec.consecutivo} para comparar`
+                          }
+                          className="h-4 w-4 rounded border-[#CFCBC0] text-[#8C5A32] accent-[#8C5A32] focus:ring-[#8C5A32] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer dark:border-zinc-600 dark:bg-zinc-900"
+                        />
+                      </td>
+                      <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
+                        Nº {rec.consecutivo}
+                        {isCurrent && (
+                          <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
+                            · En edición
+                          </span>
+                        )}
+                      </td>
                     <td className="px-4 py-3.5">
                       <div className="font-medium text-zinc-900 dark:text-zinc-100">
                         {rec.data.clientProject.cliente ||
@@ -808,12 +945,11 @@ export function HistoryView({
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            exportProformaToJSON(rec.data, totals)
-                          }
-                          title="Exportar JSON"
-                          aria-label={`Exportar JSON Proforma ${rec.consecutivo}`}
-                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 cursor-pointer"
+                          disabled
+                          aria-disabled="true"
+                          title="Exportar .json (no disponible por ahora)"
+                          aria-label={`Exportar .json Proforma ${rec.consecutivo} (no disponible por ahora)`}
+                          className="rounded border border-[#E5E4DF] bg-zinc-100 p-1.5 text-zinc-400 opacity-50 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
                         >
                           <FileJson className="h-3.5 w-3.5" />
                         </button>
@@ -822,7 +958,7 @@ export function HistoryView({
                           onClick={() =>
                             exportProformaToCSV(rec.data, totals)
                           }
-                          title="Exportar CSV / Excel"
+                          title="Exportar CSV"
                           aria-label={`Exportar CSV Proforma ${rec.consecutivo}`}
                           className={`rounded p-1.5 transition-colors cursor-pointer ${getConnectionButtonClasses(true, 'icon')}`}
                         >
@@ -844,10 +980,19 @@ export function HistoryView({
                   </tr>
                 );
               })}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
+
+      <CompareProformasModal
+        isOpen={showCompareModal}
+        records={selectedCompareRecords}
+        mainLogo={mainLogo}
+        footerLogos={footerLogos}
+        onClose={() => setShowCompareModal(false)}
+      />
     </div>
   );
 }

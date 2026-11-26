@@ -12,20 +12,34 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { getProformaTypeMeta } from '../data/defaults';
-import { ProformaData, SavedProformaRecord } from '../types/proforma';
+import {
+  DEFAULT_OLMO_MAIN_LOGO,
+  getProformaTypeMeta,
+} from '../data/defaults';
+import { LogoAsset, ProformaData, SavedProformaRecord } from '../types/proforma';
 import { parseProformaFromJsonInput } from '../utils/cloudSync';
 import {
   computeProformaTotals,
   formatDateSpanish,
   formatMoney,
 } from '../utils/formatters';
+import {
+  clampPreviewZoom,
+  COMPARE_PREVIEW_ZOOM_STEP,
+  CtrlWheelZoomBox,
+  PreviewZoomControls,
+} from './PreviewZoomControls';
+import { ProformaPreview } from './ProformaPreview';
+
+const IMPORT_MODAL_DEFAULT_ZOOM = 0.66;
 
 interface ImportFromSheetModalProps {
   isOpen: boolean;
   mode?: 'import' | 'history';
   initialRecord?: SavedProformaRecord | null;
   records: SavedProformaRecord[];
+  mainLogo?: LogoAsset;
+  footerLogos?: Array<LogoAsset | null>;
   isLoading: boolean;
   errorMessage?: string;
   lastSyncedAt?: string;
@@ -45,6 +59,8 @@ export function ImportFromSheetModal({
   mode = 'import',
   initialRecord = null,
   records,
+  mainLogo,
+  footerLogos = [],
   isLoading,
   errorMessage,
   lastSyncedAt,
@@ -60,6 +76,15 @@ export function ImportFromSheetModal({
 }: ImportFromSheetModalProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>('');
+  const [activeDetailTab, setActiveDetailTab] = useState<'summary' | 'preview'>(
+    'summary'
+  );
+  const [previewZoom, setPreviewZoom] = useState<number>(
+    IMPORT_MODAL_DEFAULT_ZOOM
+  );
+  const effectiveMainLogo = mainLogo?.dataUrl
+    ? mainLogo
+    : DEFAULT_OLMO_MAIN_LOGO;
 
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -81,6 +106,8 @@ export function ImportFromSheetModal({
   useEffect(() => {
     if (!isOpen) return;
     setSearchQuery('');
+    setActiveDetailTab('summary');
+    setPreviewZoom(IMPORT_MODAL_DEFAULT_ZOOM);
     if (initialRecord) {
       setSelectedId(initialRecord.id);
     } else {
@@ -148,7 +175,11 @@ export function ImportFromSheetModal({
       aria-labelledby="import-sheet-modal-title"
       className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-[1px] dark:bg-black/75"
     >
-      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-[#E5E4DF] bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+      <div
+        className={`flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl border border-[#E5E4DF] bg-white shadow-2xl transition-all duration-150 dark:border-zinc-700 dark:bg-zinc-900 ${
+          activeDetailTab === 'preview' ? 'max-w-6xl' : 'max-w-5xl'
+        }`}
+      >
         {/* Encabezado */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E4DF] bg-[#FAF9F6] px-5 py-3.5 dark:border-zinc-800 dark:bg-zinc-800/70">
           <div className="flex items-center gap-2.5">
@@ -330,7 +361,97 @@ export function ImportFromSheetModal({
                 Selecciona una proforma de la lista para ver su previsualización.
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3.5">
+                {/* Selector de pestaña interna: Resumen / Vista previa */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div
+                    role="tablist"
+                    aria-label="Modo de visualización de la proforma seleccionada"
+                    className="inline-flex items-center rounded-lg border border-[#DCDAD3] bg-white p-0.5 shadow-2xs dark:border-zinc-700 dark:bg-zinc-800"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeDetailTab === 'summary'}
+                      onClick={() => setActiveDetailTab('summary')}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                        activeDetailTab === 'summary'
+                          ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-950 dark:text-zinc-100'
+                          : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                      }`}
+                    >
+                      Resumen
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={activeDetailTab === 'preview'}
+                      onClick={() => setActiveDetailTab('preview')}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+                        activeDetailTab === 'preview'
+                          ? 'bg-[#FAF6F1] text-zinc-900 shadow-2xs dark:bg-zinc-950 dark:text-zinc-100'
+                          : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                      }`}
+                    >
+                      Vista previa
+                    </button>
+                  </div>
+                  <span className="font-mono text-[11px] font-semibold text-zinc-500 tabular-nums dark:text-zinc-400">
+                    Nº {previewData.consecutivo} ·{' '}
+                    {formatMoney(previewTotals.total, previewData.clientProject.moneda)}
+                  </span>
+                </div>
+
+                {activeDetailTab === 'preview' ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-col overflow-hidden rounded-lg border border-[#E5E4DF] bg-[#F5F4EF] dark:border-zinc-700 dark:bg-zinc-950">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E4DF] bg-[#FAF9F6] px-3.5 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+                        <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                          Vista previa del documento · Nº {previewData.consecutivo}
+                        </span>
+                        <PreviewZoomControls
+                          zoom={previewZoom}
+                          defaultZoom={IMPORT_MODAL_DEFAULT_ZOOM}
+                          contextLabel={`Proforma Nº ${previewData.consecutivo}`}
+                          onChangeZoom={setPreviewZoom}
+                        />
+                      </div>
+                      <CtrlWheelZoomBox
+                        onZoomStep={(dir) =>
+                          setPreviewZoom((prev) =>
+                            clampPreviewZoom(
+                              prev + dir * COMPARE_PREVIEW_ZOOM_STEP
+                            )
+                          )
+                        }
+                        className="max-h-[54vh] overflow-auto p-3"
+                      >
+                        <div
+                          className="mx-auto w-[816px]"
+                          style={{ zoom: previewZoom }}
+                        >
+                          <ProformaPreview
+                            data={previewData}
+                            totals={previewTotals}
+                            mainLogo={effectiveMainLogo}
+                            footerLogos={footerLogos}
+                            compactReadOnly
+                            idPrefix="import-sheet-preview-"
+                          />
+                        </div>
+                      </CtrlWheelZoomBox>
+                    </div>
+                    {selectedRecord.source === 'sheet' && !selectedRecord.rawDatosJson && (
+                      <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span>
+                          Esta fila en el Sheet no incluye columna <code className="font-mono">Datos_JSON</code> completa; la vista previa se reconstruye con los campos resumidos disponibles.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
                 {/* Encabezado de previsualización */}
                 <div className="rounded-lg border border-[#E5E4DF] bg-white p-4 shadow-2xs dark:border-zinc-800 dark:bg-zinc-900">
                   <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#ECEAE3] pb-3 dark:border-zinc-800">
@@ -504,6 +625,8 @@ export function ImportFromSheetModal({
                         : ''}
                       ).
                     </span>
+                  </div>
+                )}
                   </div>
                 )}
               </div>

@@ -11,8 +11,10 @@ import {
   FileJson,
   FileSpreadsheet,
   FolderOpen,
+  HardDrive,
   Info,
   Loader2,
+  Lock,
   Moon,
   Plus,
   SlidersHorizontal,
@@ -43,6 +45,8 @@ interface TopBarProps {
   showIntegrationTab: boolean;
   onToggleIntegrationTab: () => void;
   isProformaConfirmed: boolean;
+  autosaveStatus?: 'idle' | 'saving' | 'saved' | 'error';
+  lastLocalSavedAt?: string | null;
   isSendingToSheet?: boolean;
   isSheetWebhookConnected?: boolean;
   themeMode: ThemeMode;
@@ -53,6 +57,16 @@ interface TopBarProps {
   onMarkNotificationRead: (id: string) => void;
   onDismissNotification: (id: string) => void;
   onAddReminder: (title: string, message: string) => void;
+}
+
+function formatTopBarTimeHHMM(isoString: string): string {
+  const dt = new Date(isoString);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toLocaleTimeString('es-CR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 export function TopBar({
@@ -68,6 +82,8 @@ export function TopBar({
   showIntegrationTab,
   onToggleIntegrationTab,
   isProformaConfirmed,
+  autosaveStatus = 'idle',
+  lastLocalSavedAt = null,
   isSendingToSheet = false,
   isSheetWebhookConnected = false,
   themeMode,
@@ -181,7 +197,10 @@ export function TopBar({
   };
 
   return (
-    <header className="no-print sticky top-0 z-30 border-b border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] backdrop-blur-md transition-colors duration-150 dark:border-zinc-800 dark:bg-zinc-900/95 dark:shadow-none">
+    <header
+      id="app-topbar-header"
+      className="no-print sticky top-0 z-30 border-b border-[#E3E1DA] bg-white/95 shadow-[0_1px_2px_rgba(24,24,27,0.03)] backdrop-blur-md transition-colors duration-150 dark:border-zinc-800 dark:bg-zinc-900/95 dark:shadow-none"
+    >
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-3 sm:px-6">
         {/* Zona 1: Wordmark único en una línea */}
         <button
@@ -222,8 +241,37 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zona 3: Campana de notificaciones + Interruptor Claro / Modo Oscuro + Botón PDF negro */}
+        {/* Zona 3: Guardado local + Campana de notificaciones + Interruptor Claro / Modo Oscuro + Botón PDF negro */}
         <div className="flex items-center gap-2.5 shrink-0">
+          {/* Indicador de guardado local inmediatamente a la izquierda de la campana */}
+          {isProformaConfirmed && (
+            <span
+              title="Respaldo automático continuo en este navegador, incluso sin internet o conexión al script"
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                autosaveStatus === 'error'
+                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/70 dark:bg-red-950/70 dark:text-red-300'
+                  : autosaveStatus === 'saving'
+                    ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/70 dark:text-amber-300'
+                    : 'border-emerald-200 bg-emerald-50/80 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/70 dark:text-emerald-300'
+              }`}
+            >
+              {autosaveStatus === 'saving' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden="true" />
+              ) : (
+                <HardDrive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              )}
+              <span className="tabular-nums">
+                {autosaveStatus === 'saving'
+                  ? 'Guardando local...'
+                  : autosaveStatus === 'error'
+                    ? 'Error guardado local'
+                    : lastLocalSavedAt
+                      ? `Guardado local ${formatTopBarTimeHHMM(lastLocalSavedAt)}`
+                      : 'Autoguardado activo'}
+              </span>
+            </span>
+          )}
+
           {/* Campana de notificaciones persistentes */}
           <div ref={notifPanelRef} className="relative">
             <button
@@ -600,7 +648,7 @@ export function TopBar({
                             disabled={!isProformaConfirmed}
                             title={
                               isProformaConfirmed
-                                ? 'Exportar cotización en formato CSV compatible con Excel (listo para descargar)'
+                                ? 'Exportar cotización en formato CSV (listo para descargar)'
                                 : 'Selecciona, crea o importa una proforma antes de exportar'
                             }
                             onClick={() => {
@@ -615,7 +663,27 @@ export function TopBar({
                               className="h-3.5 w-3.5 shrink-0"
                               aria-hidden="true"
                             />
-                            <span>Exportar CSV / Excel</span>
+                            <span>Exportar CSV</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled
+                            aria-disabled="true"
+                            title="Exportar Excel (no disponible por ahora)"
+                            className="flex w-full items-center justify-between gap-2 rounded-md border border-[#E5E4DF] bg-zinc-100 px-3 py-2 text-left text-xs font-medium text-zinc-400 opacity-75 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <Lock
+                                className="h-3.5 w-3.5 shrink-0"
+                                aria-hidden="true"
+                              />
+                              <span>Exportar Excel</span>
+                            </span>
+                            <span className="text-[10px] font-semibold">
+                              No disponible
+                            </span>
                           </button>
 
                           <button

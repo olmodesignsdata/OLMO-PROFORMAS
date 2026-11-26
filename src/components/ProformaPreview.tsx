@@ -21,6 +21,11 @@ import {
   normalizeVisualReferenceSize,
   packVisualReferenceRows,
 } from '../utils/formatters';
+import {
+  clampPreviewZoom,
+  CtrlWheelZoomBox,
+  PreviewZoomControls,
+} from './PreviewZoomControls';
 import { ResilientImage } from './ResilientImage';
 
 interface ProformaPreviewProps {
@@ -30,6 +35,8 @@ interface ProformaPreviewProps {
   footerLogos: Array<LogoAsset | null>;
   canEditVisualRefs?: boolean;
   showPageThumbnails?: boolean;
+  compactReadOnly?: boolean;
+  idPrefix?: string;
   onChangeVisualReferenceSize?: (
     refId: string,
     nextSize: VisualReferenceSize
@@ -44,11 +51,13 @@ export function ProformaPreview({
   footerLogos,
   canEditVisualRefs = false,
   showPageThumbnails = false,
+  compactReadOnly = false,
+  idPrefix = '',
   onChangeVisualReferenceSize,
   onReorderVisualReferences,
 }: ProformaPreviewProps) {
   const [zoom, setZoom] = useState<number>(100);
-  const [activePageId, setActivePageId] = useState<string>('proforma-page-1');
+  const [activePageId, setActivePageId] = useState<string>(`${idPrefix}proforma-page-1`);
   const [draggedRefId, setDraggedRefId] = useState<string | null>(null);
   const [dragOverRefId, setDragOverRefId] = useState<string | null>(null);
 
@@ -134,14 +143,14 @@ export function ProformaPreview({
     refsCount?: number;
   }> = [
     {
-      id: 'proforma-page-1',
+      id: `${idPrefix}proforma-page-1`,
       pageNumber: 1,
       shortTitle: 'Productos y Totales',
       navLabel: 'Pág. 1 · Productos',
       kind: 'products',
     },
     ...visualRefPages.map((pageRows, pageIdx) => ({
-      id: `proforma-page-refs-${pageIdx}`,
+      id: `${idPrefix}proforma-page-refs-${pageIdx}`,
       pageNumber: 2 + pageIdx,
       shortTitle:
         pageIdx === 0 ? 'Referencias Visuales' : 'Referencias (cont.)',
@@ -153,14 +162,14 @@ export function ProformaPreview({
       refsCount: pageRows.reduce((acc, r) => acc + r.length, 0),
     })),
     {
-      id: 'proforma-page-2',
+      id: `${idPrefix}proforma-page-2`,
       pageNumber: termsPageNumber,
       shortTitle: 'Términos y Especif.',
       navLabel: `Pág. ${termsPageNumber} · Términos`,
       kind: 'terms',
     },
     {
-      id: 'proforma-page-3',
+      id: `${idPrefix}proforma-page-3`,
       pageNumber: bankPageNumber,
       shortTitle: 'Banco, Pagos y Firmas',
       navLabel: `Pág. ${bankPageNumber} · Banco y Firmas`,
@@ -216,88 +225,92 @@ export function ProformaPreview({
 
   return (
     <div className="flex flex-col">
-      {/* Barra de controles de vista previa */}
-      <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E3E1DA] bg-white px-4 py-2.5 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-            Ir a página:
-          </span>
-          {navButtons.map((btn) => (
-            <button
-              key={btn.id}
-              type="button"
-              onClick={() => scrollToPage(btn.id)}
-              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                showPageThumbnails && activePageId === btn.id
-                  ? 'border-[#8C5A32] bg-[#FAF6F1] text-zinc-900 dark:border-[#C68B59] dark:bg-zinc-800 dark:text-zinc-100'
-                  : 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700'
-              }`}
-            >
-              {btn.label}
-            </button>
-          ))}
-        </div>
+      {!compactReadOnly && (
+        <>
+          {/* Barra de controles de vista previa */}
+          <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E3E1DA] bg-white px-4 py-2.5 shadow-[0_1px_3px_rgba(24,24,27,0.04)] dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                Ir a página:
+              </span>
+              {navButtons.map((btn) => (
+                <button
+                  key={btn.id}
+                  type="button"
+                  onClick={() => scrollToPage(btn.id)}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    showPageThumbnails && activePageId === btn.id
+                      ? 'border-[#8C5A32] bg-[#FAF6F1] text-zinc-900 dark:border-[#C68B59] dark:bg-zinc-800 dark:text-zinc-100'
+                      : 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700'
+                  }`}
+                >
+                  {btn.label}
+                </button>
+              ))}
+            </div>
 
-        <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-0.5 dark:border-zinc-700 dark:bg-zinc-800">
-            {[80, 90, 100].map((val) => (
+            <div className="flex items-center gap-2">
+              <PreviewZoomControls
+                zoom={zoom / 100}
+                defaultZoom={1}
+                minZoom={0.5}
+                maxZoom={1.5}
+                step={0.1}
+                contextLabel="Vista previa de proforma"
+                onChangeZoom={(next) => setZoom(Math.round(next * 100))}
+              />
+
               <button
-                key={val}
                 type="button"
-                onClick={() => setZoom(val)}
-                className={`rounded px-2 py-1 font-mono text-[11px] font-medium transition-colors cursor-pointer ${
-                  zoom === val
-                    ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-950 dark:text-zinc-100'
-                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                }`}
+                onClick={() => window.print()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E4DF] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
-                {val}%
+                <Printer className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Imprimir</span>
               </button>
-            ))}
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E4DF] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 hover:text-zinc-900 whitespace-nowrap shrink-0 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-          >
-            <Printer className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Imprimir</span>
-          </button>
-        </div>
-      </div>
-
-      {totals.total <= 0 && (
-        <div
-          role="alert"
-          className="no-print mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
-        >
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
-          <span>
-            Atención: el total general de esta cotización es {formatMoney(totals.total, data.clientProject.moneda)} (cero o negativo). Revisa los precios antes de exportar el PDF.
-          </span>
-        </div>
+          {totals.total <= 0 && (
+            <div
+              role="alert"
+              className="no-print mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
+            >
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+              <span>
+                Atención: el total general de esta cotización es {formatMoney(totals.total, data.clientProject.moneda)} (cero o negativo). Revisa los precios antes de exportar el PDF.
+              </span>
+            </div>
+          )}
+        </>
       )}
 
       {/* Contenedor principal de hojas Letter + panel lateral de miniaturas en Vista Previa */}
       <div
         className={
-          showPageThumbnails ? 'flex items-start justify-center gap-6' : ''
+          showPageThumbnails && !compactReadOnly
+            ? 'flex items-start justify-center gap-6'
+            : ''
         }
       >
-        <div
-          className={`print-only-container flex flex-col items-center gap-6 pb-8 ${
-            showPageThumbnails ? 'min-w-0 flex-1' : 'w-full'
-          }`}
+        <CtrlWheelZoomBox
+          enabled={!compactReadOnly}
+          onZoomStep={(dir) =>
+            setZoom((prev) =>
+              Math.round(
+                clampPreviewZoom(prev / 100 + dir * 0.1, 0.5, 1.5) * 100
+              )
+            )
+          }
+          className={`${compactReadOnly ? 'no-print' : 'print-only-container overflow-x-auto'} flex flex-col items-center gap-6 ${
+            compactReadOnly ? 'pb-2' : 'pb-8'
+          } ${showPageThumbnails && !compactReadOnly ? 'min-w-0 flex-1' : 'w-full'}`}
         >
           <div
-            className="flex w-full flex-col items-center gap-6 origin-top transition-transform duration-150"
+            className="proforma-preview-zoom-root flex w-full flex-col items-center gap-6"
             style={
-              zoom !== 100
-                ? {
-                    transform: `scale(${zoom / 100})`,
-                    marginBottom: `${(zoom - 100) * 18}px`,
-                  }
+              !compactReadOnly && zoom !== 100
+                ? { zoom: zoom / 100 }
                 : undefined
             }
           >
@@ -305,7 +318,7 @@ export function ProformaPreview({
                 PÁGINA 1: ENCABEZADO, CLIENTE/PROYECTO, TABLA Y TOTALES
                 ================================================================ */}
             <article
-              id="proforma-page-1"
+              id={`${idPrefix}proforma-page-1`}
               className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
             >
               <div>
@@ -724,7 +737,7 @@ export function ProformaPreview({
             return (
               <article
                 key={`refs-page-${pageIdx}`}
-                id={`proforma-page-refs-${pageIdx}`}
+                id={`${idPrefix}proforma-page-refs-${pageIdx}`}
                 className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
               >
                 <div>
@@ -999,7 +1012,7 @@ export function ProformaPreview({
               PÁGINA TÉRMINOS Y ESPECIFICACIONES TÉCNICAS
               ================================================================ */}
           <article
-            id="proforma-page-2"
+            id={`${idPrefix}proforma-page-2`}
             className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
           >
             <div>
@@ -1103,7 +1116,7 @@ export function ProformaPreview({
               PÁGINA 3: CUENTA BANCARIA, DESGLOSE DE PAGOS Y FIRMAS
               ================================================================ */}
           <article
-            id="proforma-page-3"
+            id={`${idPrefix}proforma-page-3`}
             className="proforma-sheet flex w-full max-w-[816px] min-h-[1056px] flex-col justify-between border border-[#E5E4DF] bg-white p-9 sm:p-11 shadow-xs"
           >
             <div className="w-full">
@@ -1322,7 +1335,7 @@ export function ProformaPreview({
             </div>
           </article>
         </div>
-      </div>
+      </CtrlWheelZoomBox>
 
         {showPageThumbnails && (
           <aside

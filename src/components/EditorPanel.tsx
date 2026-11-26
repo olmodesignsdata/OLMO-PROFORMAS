@@ -124,6 +124,7 @@ interface EditorPanelProps {
   isSyncingAran: boolean;
   onSyncAranTemplates: () => void;
   onGoToIntegration: () => void;
+  isSplitScrollContainer?: boolean;
 }
 
 type EditorTab = 'cliente' | 'productos' | 'referencias' | 'terminos' | 'banco';
@@ -169,6 +170,7 @@ export function EditorPanel({
   isSyncingAran,
   onSyncAranTemplates,
   onGoToIntegration,
+  isSplitScrollContainer = false,
 }: EditorPanelProps) {
   const [activeTab, setActiveTab] = useState<EditorTab>('cliente');
   const [clientFilterQuery, setClientFilterQuery] = useState('');
@@ -268,8 +270,28 @@ export function EditorPanel({
   const handleSelectEditorTab = (nextTab: EditorTab) => {
     setActiveTab(nextTab);
     const scrollParent = editorRootRef.current?.closest('.olmo-editor-scroll');
-    if (scrollParent instanceof HTMLElement && scrollParent.scrollTop > 24) {
-      scrollParent.scrollTo({ top: 0, behavior: 'smooth' });
+    if (
+      scrollParent instanceof HTMLElement &&
+      scrollParent.scrollHeight > scrollParent.clientHeight + 8
+    ) {
+      if (scrollParent.scrollTop > 24) {
+        scrollParent.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      return;
+    }
+
+    if (editorRootRef.current) {
+      const workspaceTopRaw = getComputedStyle(
+        editorRootRef.current
+      ).getPropertyValue('--olmo-workspace-top');
+      const workspaceTop = parseFloat(workspaceTopRaw) || 0;
+      const rect = editorRootRef.current.getBoundingClientRect();
+      if (rect.top < workspaceTop) {
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + rect.top - workspaceTop - 8),
+          behavior: 'smooth',
+        });
+      }
     }
   };
 
@@ -1300,7 +1322,13 @@ export function EditorPanel({
       className="flex flex-col rounded-xl border border-[#E3E1DA] bg-white shadow-[0_1px_3px_rgba(24,24,27,0.04)] transition-all duration-150 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none"
     >
       {/* Navegación por pestañas del formulario */}
-      <div className="sticky top-0 z-10 flex items-center gap-1.5 overflow-x-auto rounded-t-xl border-b border-[#E5E4DF] bg-[#FAF9F6]/95 px-2.5 py-2 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-900/95">
+      <div
+        className={`sticky z-10 flex items-center gap-1.5 overflow-x-auto rounded-t-xl border-b border-[#E5E4DF] bg-[#FAF9F6] px-2.5 py-2 shadow-[0_1px_2px_rgba(24,24,27,0.03)] dark:border-zinc-800 dark:bg-zinc-900 ${
+          isSplitScrollContainer
+            ? 'top-[var(--olmo-workspace-top,0px)] xl:top-0'
+            : 'top-[var(--olmo-workspace-top,0px)]'
+        }`}
+      >
         {tabs.map((tab) => {
           const active = activeTab === tab.id;
           return (

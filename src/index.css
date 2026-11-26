@@ -90,6 +90,11 @@
     background: #ffffff !important;
   }
 
+  .proforma-preview-zoom-root {
+    zoom: 1 !important;
+    transform: none !important;
+  }
+
   .proforma-sheet {
     box-shadow: none !important;
     border: none !important;

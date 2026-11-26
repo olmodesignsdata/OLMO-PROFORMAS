@@ -162,9 +162,11 @@ function doPost(e) {
 
     const p = payload.proforma;
     const t = payload.totales;
+    const targetConsecutivo = payload.consecutivo || p.consecutivo;
+    const datosJson = payload.Datos_JSON || JSON.stringify(p);
     const rowData = [
       new Date(),
-      p.consecutivo,
+      targetConsecutivo,
       p.clientProject.fecha,
       p.clientProject.cliente,
       p.clientProject.contacto,
@@ -183,25 +185,34 @@ function doPost(e) {
         .filter(function(r) { return r.porcentaje > 0; })
         .map(function(r) { return r.concepto + " (" + r.porcentaje + "%)"; })
         .join(" | "),
-      JSON.stringify(p)
+      datosJson
     ];
 
     const existing = sheet.getDataRange().getValues();
     let existingRow = -1;
     for (var i = 1; i < existing.length; i++) {
-      if (String(existing[i][1]) === String(p.consecutivo)) {
+      if (String(existing[i][1]).trim() === String(targetConsecutivo).trim()) {
         existingRow = i + 1;
         break;
       }
     }
 
+    const allowOverwrite = payload.overwrite === true || payload.mode === "overwrite" || payload.overwrite === undefined;
     if (existingRow > 0) {
+      if (!allowOverwrite) {
+        return jsonResponse({
+          ok: false,
+          duplicate: true,
+          consecutivo: targetConsecutivo,
+          error: "La proforma #" + targetConsecutivo + " ya existe en PROFORMAS. Confirma la sobrescritura para reemplazarla."
+        });
+      }
       sheet.getRange(existingRow, 1, 1, 18).setValues([rowData]);
+      return jsonResponse({ ok: true, consecutivo: targetConsecutivo, overwritten: true });
     } else {
       sheet.appendRow(rowData);
+      return jsonResponse({ ok: true, consecutivo: targetConsecutivo, overwritten: false });
     }
-
-    return jsonResponse({ ok: true, consecutivo: p.consecutivo });
   } catch (err) {
     return jsonResponse({ ok: false, error: err.toString() });
   }
@@ -211,7 +222,11 @@ export interface CloudSyncPayload {
   event: 'proforma_saved';
   sentAt: string;
   token?: string;
+  consecutivo: number;
+  overwrite: boolean;
+  mode: 'overwrite' | 'create';
   proyecto: string;
+  Datos_JSON: string;
   proforma: ProformaData;
   totales: ComputedTotals;
 }
@@ -219,13 +234,19 @@ export interface CloudSyncPayload {
 export function buildCloudPayload(
   proforma: ProformaData,
   totales: ComputedTotals,
-  secretToken?: string
+  secretToken?: string,
+  options?: { overwrite?: boolean }
 ): CloudSyncPayload {
+  const isOverwrite = Boolean(options?.overwrite);
   return {
     event: 'proforma_saved',
     sentAt: new Date().toISOString(),
     ...(secretToken ? { token: secretToken } : {}),
+    consecutivo: proforma.consecutivo,
+    overwrite: isOverwrite,
+    mode: isOverwrite ? 'overwrite' : 'create',
     proyecto: (proforma.clientProject.proyecto ?? '').trim(),
+    Datos_JSON: JSON.stringify(proforma),
     proforma,
     totales,
   };
@@ -251,7 +272,8 @@ function validateHttpUrl(rawUrl: string): URL | string {
 export async function sendProformaToWebhook(
   config: CloudSyncConfig,
   proforma: ProformaData,
-  totales: ComputedTotals
+  totales: ComputedTotals,
+  options?: { overwrite?: boolean }
 ): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
   if (!config.webhookUrl.trim()) {
     return {
@@ -270,10 +292,12 @@ export async function sendProformaToWebhook(
   }
   const url = validated.toString();
 
+  const isOverwrite = Boolean(options?.overwrite);
   const payload = buildCloudPayload(
     proforma,
     totales,
-    config.secretToken.trim()
+    config.secretToken.trim(),
+    { overwrite: isOverwrite }
   );
   const serializedPayload = JSON.stringify(payload);
 
@@ -293,7 +317,9 @@ export async function sendProformaToWebhook(
       return {
         ok: true,
         opaque: true,
-        message: `Proforma Nº ${proforma.consecutivo} enviada a la URL configurada (modo compatible con Google Apps Script). Verifica el registro en tu hoja de cálculo.`,
+        message: isOverwrite
+          ? `Proforma Nº ${proforma.consecutivo} sobrescrita y enviada al Sheet PROFORMAS.`
+          : `Proforma Nº ${proforma.consecutivo} enviada a la URL configurada (modo compatible con Google Apps Script). Verifica el registro en tu hoja de cálculo.`,
       };
     }
 
@@ -319,7 +345,9 @@ export async function sendProformaToWebhook(
 
     return {
       ok: true,
-      message: `Proforma Nº ${proforma.consecutivo} enviada y confirmada correctamente.`,
+      message: isOverwrite
+        ? `Proforma Nº ${proforma.consecutivo} sobrescrita y actualizada en el Sheet PROFORMAS.`
+        : `Proforma Nº ${proforma.consecutivo} enviada y confirmada correctamente.`,
     };
   } catch {
     // 2. Respaldo compatible con Google Apps Script Web Apps (/exec) cuando
@@ -338,7 +366,9 @@ export async function sendProformaToWebhook(
       return {
         ok: true,
         opaque: true,
-        message: `Proforma Nº ${proforma.consecutivo} enviada a Google Apps Script / Webhook (envío en modo no-cors). Revisa tu hoja de cálculo para confirmar la nueva fila.`,
+        message: isOverwrite
+          ? `Proforma Nº ${proforma.consecutivo} sobrescrita en Google Apps Script (modo no-cors).`
+          : `Proforma Nº ${proforma.consecutivo} enviada a Google Apps Script / Webhook (envío en modo no-cors). Revisa tu hoja de cálculo para confirmar la nueva fila.`,
       };
     } catch (fallbackErr) {
       return {
