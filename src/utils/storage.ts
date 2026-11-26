@@ -170,6 +170,15 @@ export function saveDraftProforma(data: ProformaData): string | null {
   }
 }
 
+export function clearDraftProforma(): void {
+  try {
+    localStorage.removeItem(KEYS.DRAFT);
+    localStorage.removeItem(KEYS.DRAFT_SAVED_AT);
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export function loadSavedProformas(): SavedProformaRecord[] {
   try {
     const raw = localStorage.getItem(KEYS.HISTORY);

@@ -155,10 +155,10 @@ export function TopBar({
     { id: 'clients', label: 'CLIENTES' },
     { id: 'editor', label: 'EDITOR' },
     { id: 'preview', label: 'VISTA PREVIA' },
+    { id: 'dashboard', label: 'ESTADÍSTICA' },
     ...(showIntegrationTab
       ? [{ id: 'integration' as const, label: 'INTEGRACIÓN' }]
       : []),
-    { id: 'dashboard', label: 'ESTADÍSTICA' },
   ];
 
   const unreadNotifications = notifications.filter((n) => !n.read);
