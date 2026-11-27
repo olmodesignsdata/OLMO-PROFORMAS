@@ -9,7 +9,11 @@ import {
   SavedProformaRecord,
   TerminoTemplate,
 } from '../types/proforma';
-import { computeProformaTotals } from './formatters';
+import {
+  computeProformaTotals,
+  formatProformaNumberLabel,
+  isProformaDraft,
+} from './formatters';
 import { ClientImportRow } from './googleSheets';
 
 /**
@@ -31,8 +35,8 @@ import { ClientImportRow } from './googleSheets';
 
 export const GOOGLE_APPS_SCRIPT_TEMPLATE = `/**
  * Google Apps Script (Code.gs) para Registro_Proformas_OLMO.
- * - doPost: guarda/actualiza cotizaciones en la pestaña "PROFORMAS" (incluyendo Datos_JSON)
- *           y clientes en la pestaña "CLIENTES".
+ * - doPost: guarda/actualiza/elimina cotizaciones en la pestaña "PROFORMAS" (incluyendo Datos_JSON)
+ *           y clientes en la pestaña "CLIENTES", evitando duplicados y filas vacías (huecos).
  * - doGet: devuelve registros de la pestaña solicitada ("PROFORMAS" por defecto).
  */
 const SECRET_TOKEN = ""; // Opcional: debe coincidir con el token configurado en la app
@@ -41,6 +45,39 @@ function jsonResponse(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+function removeBlankRows_(sheet, totalCols) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+  var cols = Math.max(totalCols || sheet.getLastColumn() || 1, 1);
+  var values = sheet.getRange(1, 1, lastRow, cols).getValues();
+  for (var r = values.length - 1; r >= 1; r--) {
+    var hasValue = false;
+    for (var c = 0; c < values[r].length; c++) {
+      if (String(values[r][c] || "").trim() !== "") {
+        hasValue = true;
+        break;
+      }
+    }
+    if (!hasValue) {
+      sheet.deleteRow(r + 1);
+    }
+  }
+}
+
+function rowJsonMatchesId_(jsonText, targetId) {
+  if (!targetId || !jsonText) return false;
+  var str = String(jsonText);
+  if (str.indexOf('"' + targetId + '"') === -1) return false;
+  try {
+    var parsed = JSON.parse(str);
+    if (parsed && typeof parsed === "object") {
+      if (String(parsed.id || "").trim() === targetId) return true;
+      if (parsed.proforma && String(parsed.proforma.id || "").trim() === targetId) return true;
+    }
+  } catch (ignore) {}
+  return str.indexOf('"' + targetId + '"') !== -1;
 }
 
 function doGet(e) {
@@ -95,10 +132,61 @@ function doPost(e) {
     }
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const rawAction = String(payload.action || "").trim().toLowerCase();
+    const rawLegacyAction = String(payload.legacyAction || "").trim().toLowerCase();
+    const rawEvent = String(payload.event || "").trim().toLowerCase();
 
-    if (payload.action === "upsert_client" || payload.event === "client_upsert") {
-      const c = payload.client || {};
+    const isClientReq =
+      payload.entity === "client" ||
+      rawAction === "upsert_client" ||
+      rawAction === "delete_client" ||
+      rawLegacyAction === "upsert_client" ||
+      rawLegacyAction === "delete_client" ||
+      rawEvent === "client_upsert" ||
+      rawEvent === "client_delete" ||
+      (Boolean(payload.client) && !payload.proforma);
+
+    if (isClientReq) {
       const sheetName = payload.sheetName || "CLIENTES";
+      const isClientDelete =
+        rawAction === "delete" ||
+        rawAction === "delete_client" ||
+        rawLegacyAction === "delete_client" ||
+        rawEvent === "client_delete";
+
+      if (isClientDelete) {
+        const sheet = ss.getSheetByName(sheetName);
+        if (!sheet) {
+          return jsonResponse({ ok: true, deleted: false, sheet: sheetName });
+        }
+        const targetName = String((payload.client && payload.client.cliente) || payload.cliente || "").trim().toLowerCase();
+        const originalName = String((payload.client && payload.client.originalCliente) || payload.originalCliente || "").trim().toLowerCase();
+        if (!targetName && !originalName) {
+          return jsonResponse({ ok: false, error: "Nombre de cliente requerido para eliminar." });
+        }
+        const values = sheet.getDataRange().getValues();
+        let deletedCount = 0;
+        for (var dr = values.length - 1; dr >= 1; dr--) {
+          var rowClientName = String(values[dr][0] || "").trim().toLowerCase();
+          if (
+            (targetName && rowClientName === targetName) ||
+            (originalName && rowClientName === originalName)
+          ) {
+            sheet.deleteRow(dr + 1);
+            deletedCount++;
+          }
+        }
+        removeBlankRows_(sheet, 6);
+        return jsonResponse({
+          ok: true,
+          deleted: deletedCount > 0,
+          deletedCount: deletedCount,
+          sheet: sheetName,
+          cliente: targetName || originalName
+        });
+      }
+
+      const c = payload.client || {};
       let sheet = ss.getSheetByName(sheetName);
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
@@ -106,13 +194,18 @@ function doPost(e) {
         sheet.getRange(1, 1, 1, 6).setFontWeight("bold");
       }
 
+      removeBlankRows_(sheet, 6);
       const values = sheet.getDataRange().getValues();
       const targetName = String(c.cliente || "").trim().toLowerCase();
-      let foundRow = -1;
+      const originalName = String(c.originalCliente || "").trim().toLowerCase();
+      const matchedRows = [];
       for (var r = 1; r < values.length; r++) {
-        if (String(values[r][0] || "").trim().toLowerCase() === targetName && targetName) {
-          foundRow = r + 1;
-          break;
+        var rowClient = String(values[r][0] || "").trim().toLowerCase();
+        if (
+          (originalName && rowClient === originalName) ||
+          (targetName && rowClient === targetName)
+        ) {
+          matchedRows.push(r + 1);
         }
       }
 
@@ -125,11 +218,15 @@ function doPost(e) {
         new Date()
       ];
 
-      if (foundRow > 0) {
-        sheet.getRange(foundRow, 1, 1, 6).setValues([rowValues]);
+      if (matchedRows.length > 0) {
+        sheet.getRange(matchedRows[0], 1, 1, 6).setValues([rowValues]);
+        for (var dupC = matchedRows.length - 1; dupC >= 1; dupC--) {
+          sheet.deleteRow(matchedRows[dupC]);
+        }
       } else {
         sheet.appendRow(rowValues);
       }
+      removeBlankRows_(sheet, 6);
 
       return jsonResponse({ ok: true, sheet: sheetName, cliente: c.cliente || "" });
     }
@@ -160,9 +257,37 @@ function doPost(e) {
       sheet.getRange(1, 1, 1, 18).setFontWeight("bold");
     }
 
+    const isProformaDelete =
+      rawAction === "delete" ||
+      rawAction === "delete_proforma" ||
+      rawLegacyAction === "delete_proforma" ||
+      rawEvent === "proforma_delete";
+
+    if (isProformaDelete) {
+      const targetId = String(payload.draftId || payload.id || "").trim();
+      const rawTargetNum = payload.consecutivo !== undefined ? String(payload.consecutivo).trim() : "";
+      const isNumberedTarget = Boolean(rawTargetNum && rawTargetNum.toLowerCase() !== "borrador" && Number(rawTargetNum) > 0);
+      const existingDel = sheet.getDataRange().getValues();
+      let deletedCount = 0;
+      for (var dIdx = existingDel.length - 1; dIdx >= 1; dIdx--) {
+        var jsonCell = String(existingDel[dIdx][17] || "");
+        var rowNumCell = String(existingDel[dIdx][1] || "").trim();
+        var matchesId = targetId && rowJsonMatchesId_(jsonCell, targetId);
+        var matchesNum = isNumberedTarget && rowNumCell === rawTargetNum;
+        if (matchesId || matchesNum) {
+          sheet.deleteRow(dIdx + 1);
+          deletedCount++;
+        }
+      }
+      removeBlankRows_(sheet, 18);
+      return jsonResponse({ ok: true, deleted: deletedCount > 0, deletedCount: deletedCount });
+    }
+
     const p = payload.proforma;
     const t = payload.totales;
-    const targetConsecutivo = payload.consecutivo || p.consecutivo;
+    const isDraftDoc = Boolean(p.isDraft || payload.isDraft || String(payload.consecutivo || "").toLowerCase() === "borrador" || Number(p.consecutivo || 0) <= 0);
+    const targetConsecutivo = isDraftDoc ? "Borrador" : (payload.consecutivo || p.consecutivo);
+    const targetDraftId = String(payload.draftId || payload.id || p.id || "").trim();
     const datosJson = payload.Datos_JSON || JSON.stringify(p);
     const rowData = [
       new Date(),
@@ -188,17 +313,25 @@ function doPost(e) {
       datosJson
     ];
 
+    removeBlankRows_(sheet, 18);
     const existing = sheet.getDataRange().getValues();
-    let existingRow = -1;
-    for (var i = 1; i < existing.length; i++) {
-      if (String(existing[i][1]).trim() === String(targetConsecutivo).trim()) {
-        existingRow = i + 1;
-        break;
+    const matchedRows = [];
+    for (var j = 1; j < existing.length; j++) {
+      var matchesDraftId = targetDraftId && rowJsonMatchesId_(existing[j][17], targetDraftId);
+      var matchesConsecutivo = !isDraftDoc && String(existing[j][1]).trim() === String(targetConsecutivo).trim();
+      if (matchesDraftId || matchesConsecutivo) {
+        matchedRows.push(j + 1);
       }
     }
 
-    const allowOverwrite = payload.overwrite === true || payload.mode === "overwrite" || payload.overwrite === undefined;
-    if (existingRow > 0) {
+    const allowOverwrite =
+      payload.overwrite === true ||
+      rawAction === "overwrite" ||
+      payload.mode === "overwrite" ||
+      payload.overwrite === undefined ||
+      isDraftDoc;
+
+    if (matchedRows.length > 0) {
       if (!allowOverwrite) {
         return jsonResponse({
           ok: false,
@@ -207,11 +340,16 @@ function doPost(e) {
           error: "La proforma #" + targetConsecutivo + " ya existe en PROFORMAS. Confirma la sobrescritura para reemplazarla."
         });
       }
-      sheet.getRange(existingRow, 1, 1, 18).setValues([rowData]);
-      return jsonResponse({ ok: true, consecutivo: targetConsecutivo, overwritten: true });
+      sheet.getRange(matchedRows[0], 1, 1, 18).setValues([rowData]);
+      for (var dupP = matchedRows.length - 1; dupP >= 1; dupP--) {
+        sheet.deleteRow(matchedRows[dupP]);
+      }
+      removeBlankRows_(sheet, 18);
+      return jsonResponse({ ok: true, id: targetDraftId, consecutivo: targetConsecutivo, overwritten: true });
     } else {
       sheet.appendRow(rowData);
-      return jsonResponse({ ok: true, consecutivo: targetConsecutivo, overwritten: false });
+      removeBlankRows_(sheet, 18);
+      return jsonResponse({ ok: true, id: targetDraftId, consecutivo: targetConsecutivo, overwritten: false });
     }
   } catch (err) {
     return jsonResponse({ ok: false, error: err.toString() });
@@ -219,10 +357,15 @@ function doPost(e) {
 }`;
 
 export interface CloudSyncPayload {
+  entity: 'proforma';
   event: 'proforma_saved';
+  action: 'overwrite' | 'update';
   sentAt: string;
   token?: string;
-  consecutivo: number;
+  id: string;
+  consecutivo: number | 'Borrador';
+  isDraft: boolean;
+  draftId: string;
   overwrite: boolean;
   mode: 'overwrite' | 'create';
   proyecto: string;
@@ -238,11 +381,17 @@ export function buildCloudPayload(
   options?: { overwrite?: boolean }
 ): CloudSyncPayload {
   const isOverwrite = Boolean(options?.overwrite);
+  const draft = isProformaDraft(proforma);
   return {
+    entity: 'proforma',
     event: 'proforma_saved',
+    action: isOverwrite ? 'overwrite' : 'update',
     sentAt: new Date().toISOString(),
     ...(secretToken ? { token: secretToken } : {}),
-    consecutivo: proforma.consecutivo,
+    id: proforma.id,
+    consecutivo: draft ? 'Borrador' : proforma.consecutivo,
+    isDraft: draft,
+    draftId: proforma.id,
     overwrite: isOverwrite,
     mode: isOverwrite ? 'overwrite' : 'create',
     proyecto: (proforma.clientProject.proyecto ?? '').trim(),
@@ -313,13 +462,14 @@ export async function sendProformaToWebhook(
       body: serializedPayload,
     });
 
+    const numLabel = formatProformaNumberLabel(proforma);
     if (response.type === 'opaque') {
       return {
         ok: true,
         opaque: true,
         message: isOverwrite
-          ? `Proforma Nº ${proforma.consecutivo} sobrescrita y enviada al Sheet PROFORMAS.`
-          : `Proforma Nº ${proforma.consecutivo} enviada a la URL configurada (modo compatible con Google Apps Script). Verifica el registro en tu hoja de cálculo.`,
+          ? `Proforma ${numLabel} sobrescrita y enviada al Sheet PROFORMAS.`
+          : `Proforma ${numLabel} enviada a la URL configurada (modo compatible con Google Apps Script). Verifica el registro en tu hoja de cálculo.`,
       };
     }
 
@@ -346,8 +496,8 @@ export async function sendProformaToWebhook(
     return {
       ok: true,
       message: isOverwrite
-        ? `Proforma Nº ${proforma.consecutivo} sobrescrita y actualizada en el Sheet PROFORMAS.`
-        : `Proforma Nº ${proforma.consecutivo} enviada y confirmada correctamente.`,
+        ? `Proforma ${numLabel} sobrescrita y actualizada en el Sheet PROFORMAS.`
+        : `Proforma ${numLabel} enviada y confirmada correctamente.`,
     };
   } catch {
     // 2. Respaldo compatible con Google Apps Script Web Apps (/exec) cuando
@@ -363,12 +513,13 @@ export async function sendProformaToWebhook(
         body: serializedPayload,
       });
 
+      const numLabel = formatProformaNumberLabel(proforma);
       return {
         ok: true,
         opaque: true,
         message: isOverwrite
-          ? `Proforma Nº ${proforma.consecutivo} sobrescrita en Google Apps Script (modo no-cors).`
-          : `Proforma Nº ${proforma.consecutivo} enviada a Google Apps Script / Webhook (envío en modo no-cors). Revisa tu hoja de cálculo para confirmar la nueva fila.`,
+          ? `Proforma ${numLabel} sobrescrita en Google Apps Script (modo no-cors).`
+          : `Proforma ${numLabel} enviada a Google Apps Script / Webhook (envío en modo no-cors). Revisa tu hoja de cálculo para confirmar la nueva fila.`,
       };
     } catch (fallbackErr) {
       return {
@@ -382,10 +533,108 @@ export async function sendProformaToWebhook(
   }
 }
 
+export async function deleteProformaFromSheet(
+  config: CloudSyncConfig,
+  record: { id?: string; consecutivo?: number; isDraft?: boolean }
+): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
+  if (!config.webhookUrl.trim()) {
+    return {
+      ok: false,
+      message:
+        'Falta configurar la URL de Google Apps Script (/exec) en la pestaña Integración.',
+    };
+  }
+  const validated = validateHttpUrl(config.webhookUrl);
+  if (typeof validated === 'string') {
+    return { ok: false, message: validated };
+  }
+  const url = validated.toString();
+  const payload = {
+    entity: 'proforma',
+    event: 'proforma_delete',
+    action: 'delete',
+    legacyAction: 'delete_proforma',
+    sentAt: new Date().toISOString(),
+    ...(config.secretToken.trim() ? { token: config.secretToken.trim() } : {}),
+    draftId: record.id ?? '',
+    id: record.id ?? '',
+    consecutivo:
+      record.isDraft || !record.consecutivo || record.consecutivo <= 0
+        ? 'Borrador'
+        : record.consecutivo,
+  };
+  const serialized = JSON.stringify(payload);
+  const label = formatProformaNumberLabel(record);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: serialized,
+    });
+    if (response.type === 'opaque') {
+      return {
+        ok: true,
+        opaque: true,
+        message: `Proforma ${label} eliminada del Sheet PROFORMAS.`,
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: `El Apps Script respondió HTTP ${response.status} al eliminar la proforma.`,
+      };
+    }
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.ok === false) {
+        return {
+          ok: false,
+          message: parsed.error || 'El Apps Script rechazó la eliminación.',
+        };
+      }
+    } catch {
+      // ignore non-JSON response
+    }
+    return {
+      ok: true,
+      message: `Proforma ${label} eliminada del Sheet PROFORMAS.`,
+    };
+  } catch {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: serialized,
+      });
+      return {
+        ok: true,
+        opaque: true,
+        message: `Proforma ${label} eliminada del Sheet PROFORMAS.`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message:
+          err instanceof Error
+            ? `No se pudo eliminar la proforma del Sheet (${err.message}).`
+            : 'Error de conexión al eliminar la proforma del Sheet.',
+      };
+    }
+  }
+}
+
 export async function sendClientToGoogleSheet(
   appsScriptUrl: string,
   client: ClientImportRow,
-  sheetName = 'CLIENTES'
+  sheetName = 'CLIENTES',
+  originalCliente?: string,
+  clientId?: string
 ): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
   const validated = validateHttpUrl(appsScriptUrl);
   if (typeof validated === 'string') {
@@ -405,12 +654,17 @@ export async function sendClientToGoogleSheet(
 
   const url = validated.toString();
   const payload = {
+    entity: 'client',
     event: 'client_upsert',
-    action: 'upsert_client',
+    action: 'update',
+    legacyAction: 'upsert_client',
+    id: clientId?.trim() || '',
     sheetName: sheetName.trim() || 'CLIENTES',
     sentAt: new Date().toISOString(),
     client: {
+      id: clientId?.trim() || '',
       cliente: client.cliente.trim(),
+      originalCliente: originalCliente?.trim() || '',
       contacto: client.contacto.trim(),
       telefono: client.telefono.trim(),
       correo: client.correo.trim(),
@@ -488,6 +742,110 @@ export async function sendClientToGoogleSheet(
           fallbackErr instanceof Error
             ? `No se pudo enviar el cliente a Google Sheets (${fallbackErr.message}).`
             : 'Error de conexión al enviar el cliente a Google Sheets.',
+      };
+    }
+  }
+}
+
+export async function deleteClientFromGoogleSheet(
+  appsScriptUrl: string,
+  clienteName: string,
+  sheetName = 'CLIENTES',
+  clientId?: string
+): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
+  const validated = validateHttpUrl(appsScriptUrl);
+  if (typeof validated === 'string') {
+    return {
+      ok: false,
+      message:
+        'Configura una URL válida de Google Apps Script (/exec) para Clientes.',
+    };
+  }
+
+  const cleanName = clienteName.trim();
+  if (!cleanName) {
+    return {
+      ok: false,
+      message: 'Nombre de cliente requerido para eliminar del Sheet.',
+    };
+  }
+
+  const url = validated.toString();
+  const targetSheet = sheetName.trim() || 'CLIENTES';
+  const payload = {
+    entity: 'client',
+    event: 'client_delete',
+    action: 'delete',
+    legacyAction: 'delete_client',
+    id: clientId?.trim() || '',
+    sheetName: targetSheet,
+    sentAt: new Date().toISOString(),
+    cliente: cleanName,
+    client: {
+      id: clientId?.trim() || '',
+      cliente: cleanName,
+    },
+  };
+  const serialized = JSON.stringify(payload);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: serialized,
+    });
+    if (response.type === 'opaque') {
+      return {
+        ok: true,
+        opaque: true,
+        message: `Cliente "${cleanName}" eliminado de la pestaña "${targetSheet}".`,
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        message: `Google Apps Script respondió HTTP ${response.status} al eliminar "${cleanName}".`,
+      };
+    }
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.ok === false) {
+        return {
+          ok: false,
+          message: parsed.error || 'El Apps Script rechazó la eliminación del cliente.',
+        };
+      }
+    } catch {
+      // ignore non-JSON
+    }
+    return {
+      ok: true,
+      message: `Cliente "${cleanName}" eliminado correctamente de "${targetSheet}".`,
+    };
+  } catch {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: serialized,
+      });
+      return {
+        ok: true,
+        opaque: true,
+        message: `Cliente "${cleanName}" eliminado de la pestaña "${targetSheet}".`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message:
+          err instanceof Error
+            ? `No se pudo eliminar el cliente del Sheet (${err.message}).`
+            : 'Error de conexión al eliminar el cliente del Sheet.',
       };
     }
   }
@@ -653,13 +1011,21 @@ function parseProformaTypeValue(raw: unknown): ProformaType {
 
 function hydrateProformaFromPartial(
   partial: Partial<ProformaData>,
-  fallbackConsecutivo: number
+  fallbackConsecutivo: number,
+  forceDraft = false
 ): ProformaData {
-  const base = createInitialProforma(fallbackConsecutivo, true);
-  const consecutivo =
-    typeof partial.consecutivo === 'number' && partial.consecutivo > 0
+  const isDraftDoc = Boolean(
+    forceDraft ||
+      partial.isDraft ||
+      (!(typeof partial.consecutivo === 'number' && partial.consecutivo > 0) &&
+        fallbackConsecutivo <= 0)
+  );
+  const consecutivo = isDraftDoc
+    ? 0
+    : typeof partial.consecutivo === 'number' && partial.consecutivo > 0
       ? partial.consecutivo
       : fallbackConsecutivo;
+  const base = createInitialProforma(consecutivo, true);
 
   const mergedCp = {
     ...base.clientProject,
@@ -682,7 +1048,7 @@ function hydrateProformaFromPartial(
   const items: ProductLineItem[] =
     Array.isArray(partial.items) && partial.items.length > 0
       ? partial.items.map((it, idx) => ({
-          id: it.id || `item-sheet-${consecutivo}-${idx}`,
+          id: it.id || `item-sheet-${isDraftDoc ? 'draft' : consecutivo}-${idx}`,
           producto: String(it.producto ?? ''),
           descripcion: String(it.descripcion ?? ''),
           cantidad:
@@ -709,9 +1075,18 @@ function hydrateProformaFromPartial(
     id:
       typeof partial.id === 'string' && partial.id.trim()
         ? partial.id
-        : `sheet-prof-${consecutivo}`,
+        : isDraftDoc
+          ? `sheet-draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          : `sheet-prof-${consecutivo}`,
     consecutivo,
+    isDraft: isDraftDoc,
     proformaType: partial.proformaType ?? base.proformaType,
+    tableColumnWidthsByType:
+      partial.tableColumnWidthsByType &&
+      typeof partial.tableColumnWidthsByType === 'object' &&
+      !Array.isArray(partial.tableColumnWidthsByType)
+        ? partial.tableColumnWidthsByType
+        : base.tableColumnWidthsByType,
     company: normalizeCompanyDefaults({
       ...base.company,
       ...(partial.company ?? {}),
@@ -727,6 +1102,43 @@ function hydrateProformaFromPartial(
             imageDataUrl: String(r.imageDataUrl ?? ''),
             name: typeof r.name === 'string' ? r.name : undefined,
             caption: String(r.caption ?? ''),
+            size:
+              r.size === 'small' || r.size === 'medium' || r.size === 'large'
+                ? r.size
+                : undefined,
+            rotation:
+              r.rotation === 0 ||
+              r.rotation === 90 ||
+              r.rotation === 180 ||
+              r.rotation === 270
+                ? r.rotation
+                : undefined,
+            customWidthPct:
+              typeof r.customWidthPct === 'number' &&
+              Number.isFinite(r.customWidthPct)
+                ? r.customWidthPct
+                : undefined,
+            customHeightPx:
+              typeof r.customHeightPx === 'number' &&
+              Number.isFinite(r.customHeightPx)
+                ? r.customHeightPx
+                : undefined,
+            fitMode:
+              r.fitMode === 'contain' || r.fitMode === 'cover'
+                ? r.fitMode
+                : undefined,
+            cropZoom:
+              typeof r.cropZoom === 'number' && Number.isFinite(r.cropZoom)
+                ? r.cropZoom
+                : undefined,
+            cropX:
+              typeof r.cropX === 'number' && Number.isFinite(r.cropX)
+                ? r.cropX
+                : undefined,
+            cropY:
+              typeof r.cropY === 'number' && Number.isFinite(r.cropY)
+                ? r.cropY
+                : undefined,
           }))
       : [],
     taxRate:
@@ -802,12 +1214,18 @@ export function parseProformaFromJsonInput(
       return null;
     }
 
-    const consecutivo =
-      typeof partial.consecutivo === 'number' && partial.consecutivo > 0
+    const partialIsDraft = Boolean(
+      partial.isDraft ||
+        (typeof partial.consecutivo === 'number' && partial.consecutivo <= 0) ||
+        fallbackConsecutivo <= 0
+    );
+    const consecutivo = partialIsDraft
+      ? 0
+      : typeof partial.consecutivo === 'number' && partial.consecutivo > 0
         ? partial.consecutivo
         : fallbackConsecutivo;
 
-    return hydrateProformaFromPartial(partial, consecutivo);
+    return hydrateProformaFromPartial(partial, consecutivo, partialIsDraft);
   } catch {
     return null;
   }
@@ -826,7 +1244,9 @@ function rowToSavedProformaRecord(
     'Proforma',
     'Num',
   ]);
-  const consecutivoNum = Math.floor(parseLooseNumber(rawConsecutivo, 0));
+  const rawConsecutivoStr = String(rawConsecutivo ?? '').trim().toLowerCase();
+  const isDraftCell = rawConsecutivoStr === 'borrador' || rawConsecutivoStr.includes('borrador');
+  const consecutivoNum = isDraftCell ? 0 : Math.floor(parseLooseNumber(rawConsecutivo, 0));
 
   const rawDatosJson = pickRowValue(lookup, [
     'Datos_JSON',
@@ -866,24 +1286,41 @@ function rowToSavedProformaRecord(
     }
   }
 
-  const effectiveConsecutivo =
-    (parsedJsonObj?.consecutivo && parsedJsonObj.consecutivo > 0
-      ? parsedJsonObj.consecutivo
-      : consecutivoNum) || 0;
+  const effectiveIsDraft = Boolean(
+    isDraftCell ||
+      parsedJsonObj?.isDraft ||
+      (consecutivoNum <= 0 && (!parsedJsonObj?.consecutivo || parsedJsonObj.consecutivo <= 0))
+  );
+
+  const effectiveConsecutivo = effectiveIsDraft
+    ? 0
+    : (parsedJsonObj?.consecutivo && parsedJsonObj.consecutivo > 0
+        ? parsedJsonObj.consecutivo
+        : consecutivoNum) || 0;
 
   const clienteCol = String(
     pickRowValue(lookup, ['Cliente', 'Nombre Cliente', 'Empresa']) ?? ''
   ).trim();
 
-  if (!parsedJsonObj && effectiveConsecutivo <= 0 && !clienteCol) {
+  if (!parsedJsonObj && !effectiveIsDraft && effectiveConsecutivo <= 0 && !clienteCol) {
     return null;
   }
 
-  const safeConsecutivo =
-    effectiveConsecutivo > 0 ? effectiveConsecutivo : 2800 + rowIndex;
+  const safeConsecutivo = effectiveIsDraft ? 0 : effectiveConsecutivo;
 
   if (parsedJsonObj) {
-    const hydrated = hydrateProformaFromPartial(parsedJsonObj, safeConsecutivo);
+    const hydrated = hydrateProformaFromPartial(
+      {
+        ...parsedJsonObj,
+        id:
+          parsedJsonObj.id ||
+          (effectiveIsDraft
+            ? `sheet-draft-${rowIndex}-${normalizeRowKey(clienteCol || 'sin') || rowIndex}`
+            : undefined),
+      },
+      safeConsecutivo,
+      effectiveIsDraft
+    );
     if (!hydrated.clientProject.cliente && clienteCol) {
       hydrated.clientProject.cliente = clienteCol;
     }
@@ -912,6 +1349,7 @@ function rowToSavedProformaRecord(
     return {
       id: hydrated.id,
       consecutivo: hydrated.consecutivo,
+      isDraft: Boolean(hydrated.isDraft || hydrated.consecutivo <= 0),
       savedAt,
       data: hydrated,
       total: totals.total > 0 ? totals.total : colTotal,
@@ -1009,8 +1447,12 @@ function rowToSavedProformaRecord(
         : Number((totalCol / (1 + Math.max(0, taxRate) / 100)).toFixed(2));
     items = [
       {
-        id: `item-sheet-summary-${safeConsecutivo}`,
-        producto: proyecto || `Cotización Nº ${safeConsecutivo}`,
+        id: `item-sheet-summary-${effectiveIsDraft ? `draft-${rowIndex}` : safeConsecutivo}`,
+        producto:
+          proyecto ||
+          (effectiveIsDraft
+            ? 'Cotización Borrador'
+            : `Cotización Nº ${safeConsecutivo}`),
         descripcion: 'Resumen cargado desde la pestaña PROFORMAS en Google Sheets.',
         cantidad: 1,
         unidad: String(pickRowValue(lookup, ['Unidades']) ?? 'und(s)').trim() || 'und(s)',
@@ -1022,8 +1464,11 @@ function rowToSavedProformaRecord(
 
   const reconstructed = hydrateProformaFromPartial(
     {
-      id: `sheet-prof-${safeConsecutivo}`,
+      id: effectiveIsDraft
+        ? `sheet-draft-${rowIndex}-${normalizeRowKey(clienteCol || proyecto || 'sin') || rowIndex}`
+        : `sheet-prof-${safeConsecutivo}`,
       consecutivo: safeConsecutivo,
+      isDraft: effectiveIsDraft,
       proformaType: tipoRaw ? parseProformaTypeValue(tipoRaw) : 'mobiliario',
       clientProject: {
         cliente: clienteCol,
@@ -1040,7 +1485,8 @@ function rowToSavedProformaRecord(
       taxRate,
       updatedAt: new Date().toISOString(),
     },
-    safeConsecutivo
+    safeConsecutivo,
+    effectiveIsDraft
   );
 
   const computedTotals = computeProformaTotals(reconstructed);
@@ -1053,6 +1499,7 @@ function rowToSavedProformaRecord(
   return {
     id: reconstructed.id,
     consecutivo: reconstructed.consecutivo,
+    isDraft: effectiveIsDraft,
     savedAt,
     data: reconstructed,
     total: computedTotals.total > 0 ? computedTotals.total : totalCol,
@@ -1127,23 +1574,51 @@ export async function fetchRemoteProformasFromAppsScript(
 
   const rows = extractRowsArrayFromGetResponse(parsed);
   const mapped: SavedProformaRecord[] = [];
-  const seenConsecutivos = new Set<number>();
 
   rows.forEach((row, idx) => {
     const rec = rowToSavedProformaRecord(row, idx);
     if (!rec) return;
-    if (seenConsecutivos.has(rec.consecutivo)) {
-      const existingIdx = mapped.findIndex(
-        (m) => m.consecutivo === rec.consecutivo
-      );
-      if (existingIdx >= 0) mapped[existingIdx] = rec;
+    const isRecDraft = rec.isDraft || rec.consecutivo <= 0;
+    const matchingIndexes: number[] = [];
+    mapped.forEach((m, mIdx) => {
+      const sameId = Boolean(rec.id && m.id === rec.id);
+      const sameConsecutivo =
+        !isRecDraft && !m.isDraft && m.consecutivo === rec.consecutivo;
+      if (sameId || sameConsecutivo) {
+        matchingIndexes.push(mIdx);
+      }
+    });
+
+    if (matchingIndexes.length > 0) {
+      let winner = rec;
+      matchingIndexes.forEach((mIdx) => {
+        const existing = mapped[mIdx];
+        const existingIsDraft = existing.isDraft || existing.consecutivo <= 0;
+        const winnerIsDraft = winner.isDraft || winner.consecutivo <= 0;
+        if (!existingIsDraft && winnerIsDraft) {
+          winner = existing;
+        } else if (existingIsDraft === winnerIsDraft) {
+          const existingTime = String(existing.savedAt ?? '');
+          const winnerTime = String(winner.savedAt ?? '');
+          if (existingTime > winnerTime) {
+            winner = existing;
+          }
+        }
+      });
+      mapped[matchingIndexes[0]] = winner;
+      for (let d = matchingIndexes.length - 1; d >= 1; d--) {
+        mapped.splice(matchingIndexes[d], 1);
+      }
       return;
     }
-    seenConsecutivos.add(rec.consecutivo);
+
     mapped.push(rec);
   });
 
-  mapped.sort((a, b) => b.consecutivo - a.consecutivo);
+  mapped.sort((a, b) => {
+    if (b.consecutivo !== a.consecutivo) return b.consecutivo - a.consecutivo;
+    return String(b.savedAt ?? '').localeCompare(String(a.savedAt ?? ''));
+  });
   return mapped;
 }
 
@@ -1175,7 +1650,7 @@ export async function fetchClientsFromAppsScript(
   const text = await response.text();
   const parsed = JSON.parse(text);
   const rows = extractRowsArrayFromGetResponse(parsed);
-  const clients: ClientImportRow[] = [];
+  const dedupedClients = new Map<string, ClientImportRow>();
 
   rows.forEach((row) => {
     const lookup = buildNormalizedRowLookup(row);
@@ -1189,24 +1664,38 @@ export async function fetchClientsFromAppsScript(
     ).trim();
     if (!cliente) return;
 
-    clients.push({
+    const key = cliente.toLowerCase();
+    const prev = dedupedClients.get(key);
+    dedupedClients.set(key, {
       cliente,
-      contacto: String(
-        pickRowValue(lookup, ['Contacto', 'Atencion']) ?? ''
-      ).trim(),
-      telefono: String(
-        pickRowValue(lookup, ['Telefono', 'Teléfono', 'Tel', 'Celular']) ?? ''
-      ).trim(),
-      correo: String(
-        pickRowValue(lookup, ['Correo', 'Correo electronico', 'Email']) ?? ''
-      ).trim(),
-      ubicacion: String(
-        pickRowValue(lookup, ['Ubicacion', 'Ubicación', 'Direccion']) ?? ''
-      ).trim(),
+      contacto:
+        String(
+          pickRowValue(lookup, ['Contacto', 'Atencion']) ?? ''
+        ).trim() ||
+        prev?.contacto ||
+        '',
+      telefono:
+        String(
+          pickRowValue(lookup, ['Telefono', 'Teléfono', 'Tel', 'Celular']) ?? ''
+        ).trim() ||
+        prev?.telefono ||
+        '',
+      correo:
+        String(
+          pickRowValue(lookup, ['Correo', 'Correo electronico', 'Email']) ?? ''
+        ).trim() ||
+        prev?.correo ||
+        '',
+      ubicacion:
+        String(
+          pickRowValue(lookup, ['Ubicacion', 'Ubicación', 'Direccion']) ?? ''
+        ).trim() ||
+        prev?.ubicacion ||
+        '',
     });
   });
 
-  return clients;
+  return Array.from(dedupedClients.values());
 }
 
 function extractCandidateArrayToObjects(

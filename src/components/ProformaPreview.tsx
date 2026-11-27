@@ -1,5 +1,16 @@
-import { AlertTriangle, GripVertical } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  Columns3,
+  GripVertical,
+  Maximize2,
+  RotateCcw,
+} from 'lucide-react';
+import {
+  PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   DEFAULT_OLMO_MAIN_LOGO,
   getProformaTypeMeta,
@@ -8,18 +19,30 @@ import {
   ComputedTotals,
   LogoAsset,
   ProformaData,
+  ProformaType,
+  TableColumnWidths,
   VisualReferenceItem,
   VisualReferenceSize,
 } from '../types/proforma';
 import {
+  adjustTableColumnWidth,
+  clampVisualReferenceHeightPx,
+  clampVisualReferenceWidthPct,
+  EditableTableColumnKey,
   formatDateSpanish,
   formatMoney,
-  getCompanyFooterText,
+  getColumnMinWidthPct,
   getCompanyHeaderLines,
   getCurrencyCode,
+  getEditableTableColumnKeys,
+  getVisualReferenceBoxHeightPx,
+  getVisualReferenceWidthPct,
+  isProformaDraft,
   normalizeSpreadsheetParagraphs,
   normalizeVisualReferenceSize,
   packVisualReferenceRows,
+  resolveTableColumnWidths,
+  TABLE_EDITABLE_TOTAL_PCT,
 } from '../utils/formatters';
 import {
   clampPreviewZoom,
@@ -27,6 +50,7 @@ import {
   PreviewZoomControls,
 } from './PreviewZoomControls';
 import { ResilientImage } from './ResilientImage';
+import { VisualRefImageFrame } from './VisualRefImageFrame';
 
 interface ProformaPreviewProps {
   data: ProformaData;
@@ -41,8 +65,48 @@ interface ProformaPreviewProps {
     refId: string,
     nextSize: VisualReferenceSize
   ) => void;
+  onUpdateVisualReference?: (
+    refId: string,
+    patch: Partial<VisualReferenceItem>
+  ) => void;
   onReorderVisualReferences?: (fromId: string, toId: string) => void;
+  onChangeTableColumnWidths?: (
+    proformaType: ProformaType,
+    widths: TableColumnWidths
+  ) => void;
 }
+
+const COLUMN_LABELS_BY_TYPE: Record<
+  ProformaType,
+  Partial<Record<EditableTableColumnKey, string>>
+> = {
+  mobiliario: {
+    productoPct: 'Producto',
+    descripcionPct: 'Descripción',
+    cantidadPct: 'Cantidad',
+    valorPct: 'Valor',
+  },
+  puertas: {
+    productoPct: 'Producto',
+    descripcionPct: 'Descripción del producto',
+    cantidadPct: 'Cantidad',
+    valorPct: 'Valor',
+  },
+  griferia: {
+    productoPct: 'Código producto',
+    imagenPct: 'Imagen',
+    descripcionPct: 'Descripción',
+    cantidadPct: 'Cantidad',
+    valorPct: 'Valor',
+  },
+  cielos_pisos: {
+    productoPct: 'Espacio',
+    descripcionPct: 'Acabado',
+    cantidadPct: 'Cantidad (m²)',
+    valorUnitarioPct: 'Valor unitario',
+    valorPct: 'Valor',
+  },
+};
 
 export function ProformaPreview({
   data,
@@ -54,23 +118,104 @@ export function ProformaPreview({
   compactReadOnly = false,
   idPrefix = '',
   onChangeVisualReferenceSize,
+  onUpdateVisualReference,
   onReorderVisualReferences,
+  onChangeTableColumnWidths,
 }: ProformaPreviewProps) {
   const [zoom, setZoom] = useState<number>(100);
   const [activePageId, setActivePageId] = useState<string>(`${idPrefix}proforma-page-1`);
   const [draggedRefId, setDraggedRefId] = useState<string | null>(null);
   const [dragOverRefId, setDragOverRefId] = useState<string | null>(null);
+  const [showColumnAdjuster, setShowColumnAdjuster] = useState(false);
+  const [resizingRefId, setResizingRefId] = useState<string | null>(null);
+
+  const resizeSessionRef = useRef<{
+    refId: string;
+    startX: number;
+    startY: number;
+    startWidthPct: number;
+    startHeightPx: number;
+    rowWidthPx: number;
+    zoomFactor: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const session = resizeSessionRef.current;
+      if (!session || !onUpdateVisualReference) return;
+
+      const scale = Math.max(0.25, session.zoomFactor);
+      const dxPx = (e.clientX - session.startX) / scale;
+      const dyPx = (e.clientY - session.startY) / scale;
+
+      const rowWidth = Math.max(240, session.rowWidthPx);
+      const deltaPct = (dxPx / rowWidth) * 100;
+      const nextWidthPct = clampVisualReferenceWidthPct(
+        session.startWidthPct + deltaPct
+      );
+      const nextHeightPx = clampVisualReferenceHeightPx(
+        session.startHeightPx + dyPx
+      );
+
+      onUpdateVisualReference(session.refId, {
+        customWidthPct: nextWidthPct,
+        customHeightPx: nextHeightPx,
+      });
+    };
+
+    const handlePointerUp = () => {
+      if (resizeSessionRef.current) {
+        resizeSessionRef.current = null;
+        setResizingRefId(null);
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [onUpdateVisualReference]);
+
+  const startResizeVisualRef = (
+    ref: VisualReferenceItem,
+    e: ReactPointerEvent<HTMLButtonElement>
+  ) => {
+    if (!onUpdateVisualReference) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const cardEl = e.currentTarget.closest('figure');
+    const rowEl = cardEl?.parentElement;
+    const rowWidthPx = rowEl ? rowEl.getBoundingClientRect().width : 728;
+    const zoomFactor = !compactReadOnly ? zoom / 100 : 1;
+
+    setResizingRefId(ref.id);
+    resizeSessionRef.current = {
+      refId: ref.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      startWidthPct: getVisualReferenceWidthPct(ref),
+      startHeightPx: getVisualReferenceBoxHeightPx(ref),
+      rowWidthPx: rowWidthPx / Math.max(0.25, zoomFactor),
+      zoomFactor,
+    };
+  };
 
   const proformaType = data.proformaType ?? 'mobiliario';
   const typeMeta = getProformaTypeMeta(proformaType);
   const currencyCode = getCurrencyCode(data.clientProject.moneda);
+  const colWidths = resolveTableColumnWidths(
+    proformaType,
+    data.tableColumnWidthsByType
+  );
+  const editableColumnKeys = getEditableTableColumnKeys(proformaType);
 
   const effectiveMainLogo = mainLogo?.dataUrl ? mainLogo : DEFAULT_OLMO_MAIN_LOGO;
   const activeFooterLogos = footerLogos.filter(
     (logo): logo is LogoAsset => logo !== null && Boolean(logo.dataUrl)
   );
   const companyHeaderLines = getCompanyHeaderLines(data.company);
-  const companyFooterText = getCompanyFooterText(data.company);
 
   const loadedVisualRefs = [...(data.visualReferences ?? [])]
     .filter((ref) => Boolean(ref.imageDataUrl?.trim()))
@@ -83,19 +228,14 @@ export function ProformaPreview({
   let currentPageHeightPx = 0;
 
   for (const row of packedVisualRows) {
-    const hasLarge = row.some(
-      (r) => normalizeVisualReferenceSize(r.size) === 'large'
+    const imgBoxHeightPx = Math.max(
+      ...row.map((r) => getVisualReferenceBoxHeightPx(r))
     );
-    const hasMedium = row.some(
-      (r) => normalizeVisualReferenceSize(r.size) === 'medium'
-    );
-    const imgBoxHeightPx = hasLarge ? 210 : hasMedium ? 204 : 152;
     const maxCaptionLines = row.reduce((maxLines, item) => {
       const cap = item.caption.trim();
       if (!cap) return maxLines;
-      const itemSize = normalizeVisualReferenceSize(item.size);
-      const charsPerLine =
-        itemSize === 'large' ? 92 : itemSize === 'small' ? 28 : 44;
+      const widthPct = getVisualReferenceWidthPct(item);
+      const charsPerLine = Math.max(20, Math.round((widthPct / 100) * 92));
       return Math.max(maxLines, Math.ceil(cap.length / charsPerLine));
     }, 0);
     const captionPx = maxCaptionLines > 0 ? 18 + maxCaptionLines * 16 : 0;
@@ -283,7 +423,7 @@ export function ProformaPreview({
                 PROFORMA DE COTIZACIÓN
               </div>
               <div className="mt-1 font-mono text-2xl font-bold text-zinc-900 tabular-nums">
-                Nº {data.consecutivo}
+                {isProformaDraft(data) ? 'BORRADOR' : `Nº ${data.consecutivo}`}
               </div>
               <div className="mt-2.5 space-y-1 border-t border-[#E5E4DF] pt-2 text-left text-[11px] text-zinc-600">
                 <div className="flex justify-between gap-3">
@@ -393,15 +533,23 @@ export function ProformaPreview({
             </h2>
             <div className="overflow-hidden border border-[#E5E4DF]">
               {proformaType === 'griferia' ? (
-                <table className="w-full border-collapse text-left text-[12px]">
+                <table className="w-full table-fixed border-collapse text-left text-[12px]">
+                  <colgroup>
+                    <col style={{ width: `${colWidths.indexPct}%` }} />
+                    <col style={{ width: `${colWidths.productoPct}%` }} />
+                    <col style={{ width: `${colWidths.imagenPct}%` }} />
+                    <col style={{ width: `${colWidths.descripcionPct}%` }} />
+                    <col style={{ width: `${colWidths.cantidadPct}%` }} />
+                    <col style={{ width: `${colWidths.valorPct}%` }} />
+                  </colgroup>
                   <thead>
                     <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
-                      <th className="w-10 px-2 py-2.5 text-center">#</th>
-                      <th className="w-32 px-2.5 py-2.5">CÓDIGO PRODUCTO</th>
-                      <th className="w-20 px-2 py-2.5 text-center">IMAGEN</th>
+                      <th className="px-2 py-2.5 text-center">#</th>
+                      <th className="px-2.5 py-2.5">CÓDIGO PRODUCTO</th>
+                      <th className="px-2 py-2.5 text-center">IMAGEN</th>
                       <th className="px-2.5 py-2.5">DESCRIPCIÓN</th>
-                      <th className="w-20 px-2.5 py-2.5 text-right">CANTIDAD</th>
-                      <th className="w-28 px-2.5 py-2.5 text-right">VALOR</th>
+                      <th className="px-2 py-2.5 text-right">CANTIDAD</th>
+                      <th className="px-2.5 py-2.5 text-right">VALOR</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E5E4DF]">
@@ -423,7 +571,7 @@ export function ProformaPreview({
                           <td className="px-2 py-3 text-center font-mono text-[11px] text-zinc-500 tabular-nums">
                             {String(idx + 1).padStart(2, '0')}
                           </td>
-                          <td className="px-2.5 py-3 font-semibold text-zinc-900">
+                          <td className="px-2.5 py-3 font-semibold text-zinc-900 break-words">
                             {item.producto || '—'}
                           </td>
                           <td className="px-2 py-2 text-center align-middle">
@@ -431,17 +579,17 @@ export function ProformaPreview({
                               <ResilientImage
                                 src={item.imagen.trim()}
                                 alt={item.producto || 'Producto'}
-                                className="mx-auto max-h-14 max-w-[68px] w-auto h-auto object-contain"
+                                className="mx-auto max-h-14 max-w-full w-auto h-auto object-contain"
                               />
                             ) : null}
                           </td>
-                          <td className="px-2.5 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line">
+                          <td className="px-2.5 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line break-words">
                             {item.descripcion || '—'}
                           </td>
-                          <td className="px-2.5 py-3 text-right font-mono text-[11.5px] text-zinc-800 whitespace-nowrap tabular-nums">
+                          <td className="px-2 py-3 text-right font-mono text-[11.5px] text-zinc-800 tabular-nums break-words">
                             {item.cantidad} {item.unidad || 'und(s)'}
                           </td>
-                          <td className="px-2.5 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 whitespace-nowrap tabular-nums">
+                          <td className="px-2.5 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 tabular-nums break-words">
                             {formatMoney(item.valor, data.clientProject.moneda)}
                           </td>
                         </tr>
@@ -450,19 +598,27 @@ export function ProformaPreview({
                   </tbody>
                 </table>
               ) : proformaType === 'cielos_pisos' ? (
-                <table className="w-full border-collapse text-left text-[12px]">
+                <table className="w-full table-fixed border-collapse text-left text-[12px]">
+                  <colgroup>
+                    <col style={{ width: `${colWidths.indexPct}%` }} />
+                    <col style={{ width: `${colWidths.productoPct}%` }} />
+                    <col style={{ width: `${colWidths.descripcionPct}%` }} />
+                    <col style={{ width: `${colWidths.cantidadPct}%` }} />
+                    <col style={{ width: `${colWidths.valorUnitarioPct}%` }} />
+                    <col style={{ width: `${colWidths.valorPct}%` }} />
+                  </colgroup>
                   <thead>
                     <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
-                      <th className="w-10 px-2 py-2.5 text-center">#</th>
-                      <th className="w-36 px-2.5 py-2.5">ESPACIO</th>
+                      <th className="px-2 py-2.5 text-center">#</th>
+                      <th className="px-2.5 py-2.5">ESPACIO</th>
                       <th className="px-2.5 py-2.5">ACABADO</th>
-                      <th className="w-24 px-2.5 py-2.5 text-right">
+                      <th className="px-2 py-2.5 text-right">
                         CANTIDAD (m²)
                       </th>
-                      <th className="w-26 px-2.5 py-2.5 text-right">
+                      <th className="px-2 py-2.5 text-right">
                         VALOR UNITARIO
                       </th>
-                      <th className="w-28 px-2.5 py-2.5 text-right">
+                      <th className="px-2.5 py-2.5 text-right">
                         VALOR ({currencyCode})
                       </th>
                     </tr>
@@ -486,22 +642,22 @@ export function ProformaPreview({
                           <td className="px-2 py-3 text-center font-mono text-[11px] text-zinc-500 tabular-nums">
                             {String(idx + 1).padStart(2, '0')}
                           </td>
-                          <td className="px-2.5 py-3 font-semibold text-zinc-900">
+                          <td className="px-2.5 py-3 font-semibold text-zinc-900 break-words">
                             {item.producto || '—'}
                           </td>
-                          <td className="px-2.5 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line">
+                          <td className="px-2.5 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line break-words">
                             {item.descripcion || '—'}
                           </td>
-                          <td className="px-2.5 py-3 text-right font-mono text-[11.5px] text-zinc-800 whitespace-nowrap tabular-nums">
+                          <td className="px-2 py-3 text-right font-mono text-[11.5px] text-zinc-800 tabular-nums break-words">
                             {item.cantidad} m²
                           </td>
-                          <td className="px-2.5 py-3 text-right font-mono text-[11.5px] text-zinc-800 whitespace-nowrap tabular-nums">
+                          <td className="px-2 py-3 text-right font-mono text-[11.5px] text-zinc-800 tabular-nums break-words">
                             {formatMoney(
                               item.valorUnitario ?? 0,
                               data.clientProject.moneda
                             )}
                           </td>
-                          <td className="px-2.5 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 whitespace-nowrap tabular-nums">
+                          <td className="px-2.5 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 tabular-nums break-words">
                             {formatMoney(item.valor, data.clientProject.moneda)}
                           </td>
                         </tr>
@@ -510,18 +666,25 @@ export function ProformaPreview({
                   </tbody>
                 </table>
               ) : (
-                <table className="w-full border-collapse text-left text-[12px]">
+                <table className="w-full table-fixed border-collapse text-left text-[12px]">
+                  <colgroup>
+                    <col style={{ width: `${colWidths.indexPct}%` }} />
+                    <col style={{ width: `${colWidths.productoPct}%` }} />
+                    <col style={{ width: `${colWidths.descripcionPct}%` }} />
+                    <col style={{ width: `${colWidths.cantidadPct}%` }} />
+                    <col style={{ width: `${colWidths.valorPct}%` }} />
+                  </colgroup>
                   <thead>
                     <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
-                      <th className="w-10 px-2.5 py-2.5 text-center">#</th>
-                      <th className="w-36 px-3 py-2.5">PRODUCTO</th>
+                      <th className="px-2 py-2.5 text-center">#</th>
+                      <th className="px-2.5 py-2.5">PRODUCTO</th>
                       <th className="px-3 py-2.5">
                         {proformaType === 'puertas'
                           ? 'DESCRIPCIÓN DEL PRODUCTO'
                           : 'DESCRIPCIÓN'}
                       </th>
-                      <th className="w-24 px-3 py-2.5 text-right">CANTIDAD</th>
-                      <th className="w-28 px-3 py-2.5 text-right">VALOR</th>
+                      <th className="px-2.5 py-2.5 text-right">CANTIDAD</th>
+                      <th className="px-2.5 py-2.5 text-right">VALOR</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E5E4DF]">
@@ -540,19 +703,19 @@ export function ProformaPreview({
                           key={item.id}
                           className="proforma-row align-top bg-white"
                         >
-                          <td className="px-2.5 py-3 text-center font-mono text-[11px] text-zinc-500 tabular-nums">
+                          <td className="px-2 py-3 text-center font-mono text-[11px] text-zinc-500 tabular-nums">
                             {String(idx + 1).padStart(2, '0')}
                           </td>
-                          <td className="px-3 py-3 font-semibold text-zinc-900">
+                          <td className="px-2.5 py-3 font-semibold text-zinc-900 break-words">
                             {item.producto || '—'}
                           </td>
-                          <td className="px-3 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line">
+                          <td className="px-3 py-3 text-[11.5px] leading-relaxed text-zinc-700 whitespace-pre-line break-words">
                             {item.descripcion || '—'}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-[11.5px] text-zinc-800 whitespace-nowrap tabular-nums">
+                          <td className="px-2.5 py-3 text-right font-mono text-[11.5px] text-zinc-800 tabular-nums break-words">
                             {item.cantidad} {item.unidad || 'und(s)'}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 whitespace-nowrap tabular-nums">
+                          <td className="px-2.5 py-3 text-right font-mono text-[12px] font-semibold text-zinc-900 tabular-nums break-words">
                             {formatMoney(item.valor, data.clientProject.moneda)}
                           </td>
                         </tr>
@@ -636,10 +799,12 @@ export function ProformaPreview({
               ))}
             </div>
           )}
-          <div className="flex items-center justify-between gap-4">
-            <span>{companyFooterText}</span>
+          <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              Proforma Nº {data.consecutivo} · Página 1 de {totalPages}
+              {isProformaDraft(data)
+                ? 'Proforma Borrador'
+                : `Proforma Nº ${data.consecutivo}`}{' '}
+              · Página 1 de {totalPages}
             </span>
           </div>
         </footer>
@@ -688,7 +853,9 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              PROFORMA Nº {data.consecutivo}
+              {isProformaDraft(data)
+                ? 'PROFORMA BORRADOR'
+                : `PROFORMA Nº ${data.consecutivo}`}
             </span>
           </div>
 
@@ -701,39 +868,41 @@ export function ProformaPreview({
               </h2>
               {allowInteractive && (
                 <span className="no-print text-[10.5px] text-zinc-500">
-                  Arrastra entre espacios para reordenar o cambia tamaño (P / M / G)
+                  Usa la esquina superior izquierda para ordenar o la inferior derecha para ajustar tamaño
                 </span>
               )}
             </div>
 
             <div className="mt-5 space-y-4 overflow-hidden">
               {pageRefs.map((row, rowIdx) => {
-                const rowHasLarge = row.some(
-                  (r) => normalizeVisualReferenceSize(r.size) === 'large'
+                const totalRowPct = row.reduce(
+                  (acc, r) => acc + getVisualReferenceWidthPct(r),
+                  0
                 );
-                const rowHasMedium = row.some(
-                  (r) => normalizeVisualReferenceSize(r.size) === 'medium'
-                );
-                const boxHeightClass = rowHasLarge
-                  ? 'h-[210px]'
-                  : rowHasMedium
-                    ? 'h-[204px]'
-                    : 'h-[152px]';
 
                 return (
                   <div
                     key={`refs-row-${pageIdx}-${rowIdx}`}
-                    className="grid grid-cols-6 gap-4 overflow-hidden"
+                    className="flex flex-wrap items-start gap-4 overflow-hidden"
                   >
                     {row.map((ref) => {
                       const cleanCaption = ref.caption.trim();
                       const itemSize = normalizeVisualReferenceSize(ref.size);
-                      const colSpanClass =
-                        itemSize === 'small'
-                          ? 'col-span-6 sm:col-span-2'
-                          : itemSize === 'large'
-                            ? 'col-span-6'
-                            : 'col-span-6 sm:col-span-3';
+                      const rawPct = getVisualReferenceWidthPct(ref);
+                      const effectivePct =
+                        totalRowPct > 100
+                          ? (rawPct / totalRowPct) * 100
+                          : rawPct;
+                      const gapDeductionPx =
+                        row.length > 1
+                          ? (16 * (row.length - 1) * effectivePct) / 100
+                          : 0;
+                      const widthStyle =
+                        row.length === 1 && effectivePct >= 99.5
+                          ? '100%'
+                          : `calc(${effectivePct.toFixed(3)}% - ${gapDeductionPx.toFixed(2)}px)`;
+                      const boxHeightPx = getVisualReferenceBoxHeightPx(ref);
+
                       const isInteractive =
                         allowInteractive &&
                         Boolean(onReorderVisualReferences) &&
@@ -743,20 +912,15 @@ export function ProformaPreview({
                         !isThumbnail &&
                         dragOverRefId === ref.id &&
                         draggedRefId !== ref.id;
+                      const isResizing = !isThumbnail && resizingRefId === ref.id;
 
                       return (
                         <figure
                           key={ref.id}
-                          draggable={isInteractive}
-                          onDragStart={
-                            isInteractive
-                              ? (e) => {
-                                  setDraggedRefId(ref.id);
-                                  e.dataTransfer.effectAllowed = 'move';
-                                  e.dataTransfer.setData('text/plain', ref.id);
-                                }
-                              : undefined
-                          }
+                          style={{
+                            flex: `0 0 ${widthStyle}`,
+                            maxWidth: widthStyle,
+                          }}
                           onDragOver={
                             isInteractive
                               ? (e) => {
@@ -792,16 +956,8 @@ export function ProformaPreview({
                                 }
                               : undefined
                           }
-                          onDragEnd={
-                            isInteractive
-                              ? () => {
-                                  setDraggedRefId(null);
-                                  setDragOverRefId(null);
-                                }
-                              : undefined
-                          }
-                          className={`proforma-row group relative flex min-w-0 flex-col overflow-hidden border bg-white transition-all ${colSpanClass} ${
-                            isDropTarget
+                          className={`proforma-row group relative flex min-w-0 flex-col overflow-hidden border bg-white transition-all ${
+                            isDropTarget || isResizing
                               ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/35'
                               : 'border-[#E5E4DF]'
                           } ${isDragging ? 'opacity-45' : ''}`}
@@ -809,14 +965,33 @@ export function ProformaPreview({
                           {isInteractive && (
                             <div className="no-print flex items-center justify-between gap-1 border-b border-[#ECEAE3] bg-[#FAF9F6] px-2 py-1 text-[10px] text-zinc-600">
                               <span
-                                title="Arrastra para mover de espacio"
-                                className="inline-flex cursor-grab items-center gap-1 font-medium active:cursor-grabbing"
+                                draggable
+                                onDragStart={(e) => {
+                                  setDraggedRefId(ref.id);
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  e.dataTransfer.setData('text/plain', ref.id);
+                                  const figureEl =
+                                    e.currentTarget.closest('figure');
+                                  if (
+                                    figureEl &&
+                                    typeof e.dataTransfer.setDragImage ===
+                                      'function'
+                                  ) {
+                                    e.dataTransfer.setDragImage(figureEl, 24, 16);
+                                  }
+                                }}
+                                onDragEnd={() => {
+                                  setDraggedRefId(null);
+                                  setDragOverRefId(null);
+                                }}
+                                title="Arrastra desde aquí para ordenar"
+                                className="inline-flex cursor-grab items-center gap-1 rounded px-1 py-0.5 font-medium hover:bg-zinc-200/60 active:cursor-grabbing select-none"
                               >
                                 <GripVertical
                                   className="h-3 w-3 text-zinc-400"
                                   aria-hidden="true"
                                 />
-                                <span>Mover</span>
+                                <span>Arrastra</span>
                               </span>
                               <div className="inline-flex items-center gap-0.5 rounded border border-[#DCDAD3] bg-white p-0.5">
                                 {(
@@ -849,7 +1024,9 @@ export function ProformaPreview({
                                       )
                                     }
                                     className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] font-semibold cursor-pointer ${
-                                      itemSize === opt.val
+                                      itemSize === opt.val &&
+                                      ref.customWidthPct === undefined &&
+                                      ref.customHeightPx === undefined
                                         ? 'bg-zinc-900 text-white'
                                         : 'text-zinc-500 hover:text-zinc-900'
                                     }`}
@@ -862,18 +1039,29 @@ export function ProformaPreview({
                           )}
 
                           <div
-                            className={`flex ${boxHeightClass} items-center justify-center overflow-hidden bg-[#FAF9F6] p-3`}
+                            style={{ height: `${boxHeightPx}px` }}
+                            className="relative flex items-center justify-center overflow-hidden bg-[#FAF9F6] p-3"
                           >
-                            <ResilientImage
-                              src={ref.imageDataUrl}
+                            <VisualRefImageFrame
+                              item={ref}
                               alt={
                                 cleanCaption || ref.name || 'Referencia visual'
                               }
-                              className="max-h-full max-w-full w-auto h-auto object-contain"
                             />
+                            {isInteractive && onUpdateVisualReference && (
+                              <button
+                                type="button"
+                                onPointerDown={(e) => startResizeVisualRef(ref, e)}
+                                title={`Arrastra para ajustar ancho (${Math.round(rawPct)}%) y alto (${boxHeightPx}px) dentro del área de impresión`}
+                                aria-label="Ajustar tamaño de referencia visual"
+                                className="no-print absolute right-1 bottom-1 flex h-5 w-5 items-center justify-center rounded border border-[#DCDAD3] bg-white/90 text-zinc-500 opacity-0 shadow-2xs transition-opacity group-hover:opacity-100 hover:text-zinc-900 cursor-nwse-resize"
+                              >
+                                <Maximize2 className="h-3 w-3 rotate-90" />
+                              </button>
+                            )}
                           </div>
                           {cleanCaption ? (
-                            <figcaption className="border-t border-[#E5E4DF] bg-white px-3.5 py-2 text-[11.5px] leading-snug text-zinc-800 break-words">
+                            <figcaption className="select-text border-t border-[#E5E4DF] bg-white px-3.5 py-2 text-[11.5px] leading-snug text-zinc-800 break-words">
                               {cleanCaption}
                             </figcaption>
                           ) : null}
@@ -905,10 +1093,12 @@ export function ProformaPreview({
               ))}
             </div>
           )}
-          <div className="flex items-center justify-between gap-4">
-            <span>{companyFooterText}</span>
+          <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              Proforma Nº {data.consecutivo} · Página {pageNum} de {totalPages}
+              {isProformaDraft(data)
+                ? 'Proforma Borrador'
+                : `Proforma Nº ${data.consecutivo}`}{' '}
+              · Página {pageNum} de {totalPages}
             </span>
           </div>
         </footer>
@@ -947,7 +1137,9 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              PROFORMA Nº {data.consecutivo}
+              {isProformaDraft(data)
+                ? 'PROFORMA BORRADOR'
+                : `PROFORMA Nº ${data.consecutivo}`}
             </span>
           </div>
 
@@ -1010,11 +1202,12 @@ export function ProformaPreview({
               ))}
             </div>
           )}
-          <div className="flex items-center justify-between gap-4">
-            <span>{companyFooterText}</span>
+          <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              Proforma Nº {data.consecutivo} · Página {termsPageNumber} de{' '}
-              {totalPages}
+              {isProformaDraft(data)
+                ? 'Proforma Borrador'
+                : `Proforma Nº ${data.consecutivo}`}{' '}
+              · Página {termsPageNumber} de {totalPages}
             </span>
           </div>
         </footer>
@@ -1053,7 +1246,9 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              PROFORMA Nº {data.consecutivo}
+              {isProformaDraft(data)
+                ? 'PROFORMA BORRADOR'
+                : `PROFORMA Nº ${data.consecutivo}`}
             </span>
           </div>
 
@@ -1232,11 +1427,12 @@ export function ProformaPreview({
                 ))}
               </div>
             )}
-            <div className="flex items-center justify-between gap-4">
-              <span className="min-w-0 flex-1">{companyFooterText}</span>
+            <div className="flex items-center justify-end gap-4">
               <span className="font-mono tabular-nums whitespace-nowrap">
-                Proforma Nº {data.consecutivo} · Página {bankPageNumber} de{' '}
-                {totalPages}
+                {isProformaDraft(data)
+                  ? 'Proforma Borrador'
+                  : `Proforma Nº ${data.consecutivo}`}{' '}
+                · Página {bankPageNumber} de {totalPages}
               </span>
             </div>
           </footer>
@@ -1271,7 +1467,23 @@ export function ProformaPreview({
               ))}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {onChangeTableColumnWidths && (
+                <button
+                  type="button"
+                  onClick={() => setShowColumnAdjuster((v) => !v)}
+                  title="Ajustar manualmente los anchos de las columnas de la tabla de productos"
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    showColumnAdjuster
+                      ? 'border-[#8C5A32] bg-[#FAF6F1] text-zinc-900 dark:border-[#C68B59] dark:bg-zinc-800 dark:text-zinc-100'
+                      : 'border-[#E5E4DF] bg-[#FAF9F6] text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700'
+                  }`}
+                >
+                  <Columns3 className="h-3.5 w-3.5 text-[#8C5A32] dark:text-[#D59B69]" aria-hidden="true" />
+                  <span>Columnas</span>
+                </button>
+              )}
+
               <PreviewZoomControls
                 zoom={zoom / 100}
                 defaultZoom={1}
@@ -1283,6 +1495,76 @@ export function ProformaPreview({
               />
             </div>
           </div>
+
+          {showColumnAdjuster && onChangeTableColumnWidths && (
+            <div className="no-print mb-4 rounded-xl border border-[#E3E1DA] bg-white px-4 py-3 shadow-xs dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#ECEAE3] pb-2 dark:border-zinc-800">
+                <div>
+                  <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    Anchos de columnas ({typeMeta.label})
+                  </span>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Ajusta la proporción de cada columna; se guarda en la proforma y se refleja en Vista Previa y PDF.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onChangeTableColumnWidths(proformaType, {})}
+                  className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  <span>Restablecer</span>
+                </button>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {editableColumnKeys.map((colKey) => {
+                  const minPct = getColumnMinWidthPct(colKey);
+                  const otherMinSum = editableColumnKeys
+                    .filter((k) => k !== colKey)
+                    .reduce((acc, k) => acc + getColumnMinWidthPct(k), 0);
+                  const maxPct = TABLE_EDITABLE_TOTAL_PCT - otherMinSum;
+                  const val = colWidths[colKey];
+                  const label =
+                    COLUMN_LABELS_BY_TYPE[proformaType]?.[colKey] ?? colKey;
+
+                  return (
+                    <div
+                      key={colKey}
+                      className="rounded-md border border-[#ECEAE3] bg-[#FAF9F6] px-2.5 py-2 dark:border-zinc-800 dark:bg-zinc-950/60"
+                    >
+                      <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
+                        <span className="truncate font-medium text-zinc-700 dark:text-zinc-300">
+                          {label}
+                        </span>
+                        <span className="font-mono font-semibold text-zinc-900 tabular-nums dark:text-zinc-100">
+                          {Math.round(val)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={minPct}
+                        max={maxPct}
+                        step={1}
+                        value={val}
+                        aria-label={`Ancho de columna ${label}`}
+                        onChange={(e) => {
+                          const updated = adjustTableColumnWidth(
+                            proformaType,
+                            data.tableColumnWidthsByType,
+                            colKey,
+                            Number(e.target.value)
+                          );
+                          onChangeTableColumnWidths(proformaType, updated);
+                        }}
+                        className="w-full accent-[#8C5A32]"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {totals.total <= 0 && (
             <div

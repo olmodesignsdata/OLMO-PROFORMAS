@@ -94,6 +94,7 @@ export function computeNextConsecutivoFromRecords(
   let highest = 0;
 
   for (const item of localHistory) {
+    if (item?.isDraft || item?.data?.isDraft) continue;
     const num = Number(item?.consecutivo);
     if (Number.isFinite(num) && num > highest) {
       highest = Math.floor(num);
@@ -101,6 +102,7 @@ export function computeNextConsecutivoFromRecords(
   }
 
   for (const item of remoteHistory) {
+    if (item?.isDraft || item?.data?.isDraft) continue;
     const num = Number(item?.consecutivo);
     if (Number.isFinite(num) && num > highest) {
       highest = Math.floor(num);
@@ -196,15 +198,35 @@ export function saveProformaToHistory(
 ): SavedProformaRecord[] {
   const history = loadSavedProformas();
   const now = new Date().toISOString();
-  const snapshot: ProformaData = JSON.parse(JSON.stringify({ ...data, updatedAt: now }));
+  const isDraftRecord = Boolean(
+    data.isDraft || !Number.isFinite(data.consecutivo) || data.consecutivo <= 0
+  );
+  const normalizedConsecutivo = isDraftRecord
+    ? 0
+    : Math.floor(Number(data.consecutivo));
+  const snapshot: ProformaData = JSON.parse(
+    JSON.stringify({
+      ...data,
+      consecutivo: normalizedConsecutivo,
+      isDraft: isDraftRecord,
+      updatedAt: now,
+    })
+  );
 
   const existingIdx = history.findIndex(
-    (r) => r.id === data.id || r.consecutivo === data.consecutivo
+    (r) =>
+      r.id === data.id ||
+      (!isDraftRecord &&
+        normalizedConsecutivo > 0 &&
+        !r.isDraft &&
+        !r.data?.isDraft &&
+        r.consecutivo === normalizedConsecutivo)
   );
 
   const newRecord: SavedProformaRecord = {
     id: data.id,
-    consecutivo: data.consecutivo,
+    consecutivo: normalizedConsecutivo,
+    isDraft: isDraftRecord,
     savedAt: now,
     data: snapshot,
     total,
@@ -218,8 +240,13 @@ export function saveProformaToHistory(
     updated = [newRecord, ...history];
   }
 
-  // Ordenar por consecutivo descendente
-  updated.sort((a, b) => b.consecutivo - a.consecutivo);
+  // Ordenar por consecutivo descendente (borradores más recientes primero entre sí)
+  updated.sort((a, b) => {
+    if (b.consecutivo !== a.consecutivo) {
+      return b.consecutivo - a.consecutivo;
+    }
+    return String(b.savedAt ?? '').localeCompare(String(a.savedAt ?? ''));
+  });
 
   try {
     localStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
@@ -227,10 +254,12 @@ export function saveProformaToHistory(
     // ignore storage errors
   }
 
-  // Asegurar que el próximo consecutivo sugerido supere el guardado
-  const currentNext = getNextConsecutivo();
-  if (data.consecutivo >= currentNext) {
-    setNextConsecutivo(data.consecutivo + 1);
+  // Asegurar que el próximo consecutivo sugerido supere el guardado (solo si no es borrador)
+  if (!isDraftRecord && normalizedConsecutivo > 0) {
+    const currentNext = getNextConsecutivo();
+    if (normalizedConsecutivo >= currentNext) {
+      setNextConsecutivo(normalizedConsecutivo + 1);
+    }
   }
 
   return updated;

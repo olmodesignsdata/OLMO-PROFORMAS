@@ -17,6 +17,7 @@ import {
   computeProformaTotals,
   formatDateSpanish,
   formatMoney,
+  formatProformaNumberLabel,
 } from '../utils/formatters';
 import {
   clampPreviewZoom,
@@ -129,7 +130,7 @@ export function CompareProformasModal({
     };
 
     return [
-      buildRow('Consecutivo', ({ data }) => `Nº ${data.consecutivo}`),
+      buildRow('Consecutivo', ({ data }) => formatProformaNumberLabel(data)),
       buildRow('Fecha', ({ data }) =>
         data.clientProject.fecha.trim()
           ? formatDateSpanish(data.clientProject.fecha)
@@ -203,7 +204,7 @@ export function CompareProformasModal({
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   Comparando{' '}
                   {preparedItems
-                    .map((item) => `Nº ${item.data.consecutivo}`)
+                    .map((item) => formatProformaNumberLabel(item.data))
                     .join(' · ')}
                 </p>
               </div>
@@ -274,7 +275,7 @@ export function CompareProformasModal({
                         <th key={item.key} className="px-3.5 py-2.5">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-mono text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                              Proforma Nº {item.data.consecutivo}
+                              Proforma {formatProformaNumberLabel(item.data)}
                             </span>
                             <span className="rounded border border-[#DCDAD3] bg-white px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                               {sourceLabel}
@@ -340,7 +341,7 @@ export function CompareProformasModal({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                            Proforma Nº {item.data.consecutivo}
+                            Proforma {formatProformaNumberLabel(item.data)}
                           </span>
                           <span className="text-xs font-semibold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
                             · {totalStr}
@@ -361,7 +362,7 @@ export function CompareProformasModal({
                       <PreviewZoomControls
                         zoom={zoom}
                         defaultZoom={DEFAULT_COMPARE_PREVIEW_ZOOM}
-                        contextLabel={`Proforma Nº ${item.data.consecutivo}`}
+                        contextLabel={`Proforma ${formatProformaNumberLabel(item.data)}`}
                         onChangeZoom={(nextZoom) =>
                           setZoomByKey((prev) => ({
                             ...prev,

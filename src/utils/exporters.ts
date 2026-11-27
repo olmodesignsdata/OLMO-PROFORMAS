@@ -8,22 +8,27 @@ import {
   ComputedTotals,
   LogoAsset,
   ProformaData,
-  VisualReferenceSize,
+  VisualReferenceItem,
 } from '../types/proforma';
 import {
   buildPdfFileName,
   formatDateSpanish,
   formatMoney,
-  getCompanyFooterText,
+  formatProformaNumberLabel,
   getCompanyHeaderLines,
   getCurrencyCode,
+  getVisualReferenceBoxHeightPx,
+  getVisualReferenceWidthPct,
+  isProformaDraft,
   normalizeSpreadsheetParagraphs,
-  normalizeVisualReferenceSize,
+  normalizeVisualReferenceFitMode,
   packVisualReferenceRows,
+  resolveTableColumnWidths,
 } from './formatters';
 import {
   rasterizeImageSrcForPdf,
   rasterizeLogoForPdf,
+  rasterizeVisualRefForPdf,
   RasterizedPdfLogo,
 } from './logoUtils';
 
@@ -59,7 +64,8 @@ export function exportProformaToJSON(data: ProformaData, totals: ComputedTotals)
       data.consecutivo,
       data.clientProject.proyecto,
       'json',
-      data.clientProject.cliente
+      data.clientProject.cliente,
+      isProformaDraft(data)
     )
   );
 }
@@ -109,7 +115,7 @@ export function exportProformaToCSV(data: ProformaData, totals: ComputedTotals):
           ];
 
   const rows: Array<Array<string | number>> = [
-    ['PROFORMA Nº', data.consecutivo],
+    ['PROFORMA Nº', formatProformaNumberLabel(data, '')],
     ['TIPO DE PROFORMA', typeMeta.label],
     ['EMPRESA', data.company.razonSocial],
     ['CLIENTE', data.clientProject.cliente],
@@ -192,7 +198,8 @@ export function exportProformaToCSV(data: ProformaData, totals: ComputedTotals):
       data.consecutivo,
       data.clientProject.proyecto,
       'csv',
-      data.clientProject.cliente
+      data.clientProject.cliente,
+      isProformaDraft(data)
     )
   );
 }
@@ -289,38 +296,89 @@ export async function generateProformaPDF(
         )
       : [];
 
+  const gridGapMm = 5;
+  const imgPadMm = 3;
   const loadedVisualRefs = [...(data.visualReferences ?? [])]
     .filter((ref) => Boolean(ref.imageDataUrl?.trim()))
     .sort((a, b) => a.slotIndex - b.slotIndex);
-  const rasterVisualRefs = (
-    await Promise.all(
-      loadedVisualRefs.map(async (ref) => {
-        const raster = await rasterizeImageSrcForPdf(ref.imageDataUrl);
-        if (!raster) {
-          if (!ref.imageDataUrl.trim().startsWith('data:')) {
-            skippedExternalImages++;
+  const packedVisualSourceRows = packVisualReferenceRows(loadedVisualRefs);
+
+  interface PreparedPdfVisualRef {
+    item: VisualReferenceItem;
+    raster: RasterizedPdfLogo;
+    caption: string;
+    cardW: number;
+    imgBoxH: number;
+  }
+
+  const preparedVisualRows: PreparedPdfVisualRef[][] = [];
+  for (const row of packedVisualSourceRows) {
+    const totalRowPct = row.reduce(
+      (acc, r) => acc + getVisualReferenceWidthPct(r),
+      0
+    );
+    const usableW = contentWidth - gridGapMm * Math.max(0, row.length - 1);
+    const preparedRow = (
+      await Promise.all(
+        row.map(async (ref) => {
+          const rawPct = getVisualReferenceWidthPct(ref);
+          const effectivePct =
+            totalRowPct > 100 ? (rawPct / totalRowPct) * 100 : rawPct;
+          const cardW = Math.max(30, (usableW * effectivePct) / 100);
+          const imgBoxH = Math.max(
+            24,
+            Math.min(
+              105,
+              Math.round(getVisualReferenceBoxHeightPx(ref) * (50 / 204) * 10) /
+                10
+            )
+          );
+          const targetAspectRatio = Math.max(
+            0.3,
+            (cardW - imgPadMm * 2) / imgBoxH
+          );
+          const raster = await rasterizeVisualRefForPdf({
+            src: ref.imageDataUrl,
+            rotation: ref.rotation,
+            fitMode: normalizeVisualReferenceFitMode(ref.fitMode),
+            cropZoom: ref.cropZoom,
+            cropX: ref.cropX,
+            cropY: ref.cropY,
+            targetAspectRatio,
+          });
+          if (!raster) {
+            if (!ref.imageDataUrl.trim().startsWith('data:')) {
+              skippedExternalImages++;
+            }
+            return null;
           }
-          return null;
-        }
-        return {
-          raster,
-          caption: ref.caption.trim(),
-          size: normalizeVisualReferenceSize(ref.size),
-        };
-      })
-    )
-  ).filter(
-    (
-      entry
-    ): entry is {
-      raster: RasterizedPdfLogo;
-      caption: string;
-      size: VisualReferenceSize;
-    } => entry !== null
-  );
+          return {
+            item: ref,
+            raster,
+            caption: ref.caption.trim(),
+            cardW,
+            imgBoxH,
+          };
+        })
+      )
+    ).filter((entry): entry is PreparedPdfVisualRef => entry !== null);
+
+    if (preparedRow.length > 0) {
+      preparedVisualRows.push(preparedRow);
+    }
+  }
 
   const hasFooterLogos = rasterFooterLogos.length > 0;
   const bottomReservedMm = hasFooterLogos ? 26 : 20;
+
+  const isDraftDoc = isProformaDraft(data);
+  const pdfNumberBadge = isDraftDoc ? 'BORRADOR' : `Nº ${data.consecutivo}`;
+  const pdfProformaLabel = isDraftDoc
+    ? 'PROFORMA BORRADOR'
+    : `PROFORMA Nº ${data.consecutivo}`;
+  const pdfFooterProformaLabel = isDraftDoc
+    ? 'Proforma Borrador'
+    : `Proforma Nº ${data.consecutivo}`;
 
   const drawContinuationHeader = (subtitle: string) => {
     let textStartX = margin;
@@ -351,7 +409,7 @@ export async function generateProformaPDF(
 
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...charcoal);
-    doc.text(`PROFORMA Nº ${data.consecutivo}`, pageWidth - margin, 14, {
+    doc.text(pdfProformaLabel, pageWidth - margin, 14, {
       align: 'right',
     });
 
@@ -428,9 +486,9 @@ export async function generateProformaPDF(
   });
 
   doc.setFont('courier', 'bold');
-  doc.setFontSize(17);
+  doc.setFontSize(isDraftDoc ? 15 : 17);
   doc.setTextColor(...charcoal);
-  doc.text(`Nº ${data.consecutivo}`, boxX + boxW / 2, boxTopY + 13, {
+  doc.text(pdfNumberBadge, boxX + boxW / 2, boxTopY + 13, {
     align: 'center',
   });
 
@@ -522,6 +580,12 @@ export async function generateProformaPDF(
   doc.text(typeMeta.detailHeading, margin, y);
   y += 2.5;
 
+  const colWidths = resolveTableColumnWidths(
+    proformaType,
+    data.tableColumnWidthsByType
+  );
+  const colW = (pct: number) => Math.max(6, (contentWidth * pct) / 100);
+
   if (proformaType === 'griferia') {
     autoTable(doc, {
       startY: y,
@@ -547,12 +611,12 @@ export async function generateProformaPDF(
         overflow: 'linebreak',
       },
       columnStyles: {
-        0: { cellWidth: 10, halign: 'center', textColor: mutedText },
-        1: { cellWidth: 29, fontStyle: 'bold' },
-        2: { cellWidth: 23, halign: 'center', valign: 'middle' },
-        3: { cellWidth: contentWidth - 110 },
-        4: { cellWidth: 20, halign: 'right' },
-        5: { cellWidth: 28, halign: 'right', fontStyle: 'bold' },
+        0: { cellWidth: colW(colWidths.indexPct), halign: 'center', textColor: mutedText },
+        1: { cellWidth: colW(colWidths.productoPct), fontStyle: 'bold' },
+        2: { cellWidth: colW(colWidths.imagenPct), halign: 'center', valign: 'middle' },
+        3: { cellWidth: colW(colWidths.descripcionPct) },
+        4: { cellWidth: colW(colWidths.cantidadPct), halign: 'right' },
+        5: { cellWidth: colW(colWidths.valorPct), halign: 'right', fontStyle: 'bold' },
       },
       head: [
         ['#', 'CÓDIGO PRODUCTO', 'IMAGEN', 'DESCRIPCIÓN', 'CANTIDAD', 'VALOR'],
@@ -621,12 +685,12 @@ export async function generateProformaPDF(
         overflow: 'linebreak',
       },
       columnStyles: {
-        0: { cellWidth: 10, halign: 'center', textColor: mutedText },
-        1: { cellWidth: 32, fontStyle: 'bold' },
-        2: { cellWidth: contentWidth - 116 },
-        3: { cellWidth: 22, halign: 'right' },
-        4: { cellWidth: 24, halign: 'right' },
-        5: { cellWidth: 28, halign: 'right', fontStyle: 'bold' },
+        0: { cellWidth: colW(colWidths.indexPct), halign: 'center', textColor: mutedText },
+        1: { cellWidth: colW(colWidths.productoPct), fontStyle: 'bold' },
+        2: { cellWidth: colW(colWidths.descripcionPct) },
+        3: { cellWidth: colW(colWidths.cantidadPct), halign: 'right' },
+        4: { cellWidth: colW(colWidths.valorUnitarioPct), halign: 'right' },
+        5: { cellWidth: colW(colWidths.valorPct), halign: 'right', fontStyle: 'bold' },
       },
       head: [
         [
@@ -672,11 +736,11 @@ export async function generateProformaPDF(
         overflow: 'linebreak',
       },
       columnStyles: {
-        0: { cellWidth: 10, halign: 'center', textColor: mutedText },
-        1: { cellWidth: 34, fontStyle: 'bold' },
-        2: { cellWidth: contentWidth - 96 },
-        3: { cellWidth: 22, halign: 'right' },
-        4: { cellWidth: 30, halign: 'right', fontStyle: 'bold' },
+        0: { cellWidth: colW(colWidths.indexPct), halign: 'center', textColor: mutedText },
+        1: { cellWidth: colW(colWidths.productoPct), fontStyle: 'bold' },
+        2: { cellWidth: colW(colWidths.descripcionPct) },
+        3: { cellWidth: colW(colWidths.cantidadPct), halign: 'right' },
+        4: { cellWidth: colW(colWidths.valorPct), halign: 'right', fontStyle: 'bold' },
       },
       head: [
         [
@@ -790,7 +854,7 @@ export async function generateProformaPDF(
   // ============================================================================
   // PÁGINAS OPCIONALES: REFERENCIAS VISUALES (SOLO IMÁGENES CARGADAS)
   // ============================================================================
-  if (rasterVisualRefs.length > 0) {
+  if (preparedVisualRows.length > 0) {
     doc.addPage();
     drawContinuationHeader('Referencias Visuales');
     y = 24;
@@ -805,29 +869,13 @@ export async function generateProformaPDF(
     doc.line(margin, y, margin + 46, y);
     y += 5.5;
 
-    const gridGap = 5;
-    const colUnitW = (contentWidth - gridGap * 5) / 6;
-    const imgPad = 3;
-    const packedRows = packVisualReferenceRows(rasterVisualRefs);
-
-    const getCardWidthMm = (size: VisualReferenceSize): number => {
-      if (size === 'small') return colUnitW * 2 + gridGap;
-      if (size === 'large') return contentWidth;
-      return colUnitW * 3 + gridGap * 2;
-    };
-
-    for (const row of packedRows) {
-      const rowHasLarge = row.some((r) => r.size === 'large');
-      const rowHasMedium = row.some((r) => r.size === 'medium');
-      const imgBoxH = rowHasLarge ? 58 : rowHasMedium ? 50 : 38;
-      const imgAreaH = imgBoxH + imgPad * 2;
-
+    for (const row of preparedVisualRows) {
       const rowCards = row.map((entry) => {
-        const cardW = getCardWidthMm(entry.size);
+        const imgAreaH = entry.imgBoxH + imgPadMm * 2;
         if (!entry.caption) {
           return {
             entry,
-            cardW,
+            imgAreaH,
             captionLines: [] as string[],
             cardH: imgAreaH,
           };
@@ -836,12 +884,12 @@ export async function generateProformaPDF(
         doc.setFontSize(8.2);
         const captionLines: string[] = doc.splitTextToSize(
           entry.caption,
-          cardW - 6
+          entry.cardW - 6
         );
         const captionH = captionLines.length * 3.8 + 4.5;
         return {
           entry,
-          cardW,
+          imgAreaH,
           captionLines,
           cardH: imgAreaH + captionH,
         };
@@ -857,28 +905,29 @@ export async function generateProformaPDF(
 
       let cursorX = margin;
       for (const card of rowCards) {
+        const { cardW, imgBoxH } = card.entry;
         doc.setFillColor(255, 255, 255);
         doc.setDrawColor(...lightBorder);
         doc.setLineWidth(0.3);
-        doc.rect(cursorX, y, card.cardW, card.cardH, 'FD');
+        doc.rect(cursorX, y, cardW, card.cardH, 'FD');
 
         doc.setFillColor(...subtleBg);
         doc.rect(
           cursorX + 0.15,
           y + 0.15,
-          card.cardW - 0.3,
-          imgAreaH - 0.15,
+          cardW - 0.3,
+          card.imgAreaH - 0.15,
           'F'
         );
 
         const fitted = fitLogoInBox(
           card.entry.raster.width,
           card.entry.raster.height,
-          card.cardW - imgPad * 2,
+          cardW - imgPadMm * 2,
           imgBoxH
         );
-        const drawX = cursorX + (card.cardW - fitted.w) / 2;
-        const drawY = y + (imgAreaH - fitted.h) / 2;
+        const drawX = cursorX + (cardW - fitted.w) / 2;
+        const drawY = y + (card.imgAreaH - fitted.h) / 2;
         doc.addImage(
           card.entry.raster.dataUrl,
           'PNG',
@@ -895,18 +944,18 @@ export async function generateProformaPDF(
           doc.setLineWidth(0.25);
           doc.line(
             cursorX,
-            y + imgAreaH,
-            cursorX + card.cardW,
-            y + imgAreaH
+            y + card.imgAreaH,
+            cursorX + cardW,
+            y + card.imgAreaH
           );
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(8.2);
           doc.setTextColor(...charcoal);
-          doc.text(card.captionLines, cursorX + 3, y + imgAreaH + 4.5);
+          doc.text(card.captionLines, cursorX + 3, y + card.imgAreaH + 4.5);
         }
 
-        cursorX += card.cardW + gridGap;
+        cursorX += cardW + gridGapMm;
       }
 
       y += rowH + 5;
@@ -1252,7 +1301,6 @@ export async function generateProformaPDF(
 
   // Pie de página global con logos cargados (solo si hay al menos 1) y numeración
   const totalPages = doc.getNumberOfPages();
-  const companyFooterText = getCompanyFooterText(data.company);
 
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
@@ -1296,11 +1344,8 @@ export async function generateProformaPDF(
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(...mutedText);
-      if (companyFooterText) {
-        doc.text(companyFooterText, margin, footerY);
-      }
       doc.text(
-        `Proforma Nº ${data.consecutivo}  ·  Página ${i} de ${totalPages}`,
+        `${pdfFooterProformaLabel}  ·  Página ${i} de ${totalPages}`,
         pageWidth - margin,
         footerY,
         { align: 'right' }
@@ -1314,11 +1359,8 @@ export async function generateProformaPDF(
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(...mutedText);
-      if (companyFooterText) {
-        doc.text(companyFooterText, margin, footerY);
-      }
       doc.text(
-        `Proforma Nº ${data.consecutivo}  ·  Página ${i} de ${totalPages}`,
+        `${pdfFooterProformaLabel}  ·  Página ${i} de ${totalPages}`,
         pageWidth - margin,
         footerY,
         { align: 'right' }
@@ -1330,7 +1372,8 @@ export async function generateProformaPDF(
     data.consecutivo,
     data.clientProject.proyecto,
     'pdf',
-    data.clientProject.cliente
+    data.clientProject.cliente,
+    isDraftDoc
   );
   const pdfBlob = doc.output('blob');
 

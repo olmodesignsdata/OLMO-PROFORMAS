@@ -64,6 +64,26 @@
   .dark .olmo-editor-scroll::-webkit-scrollbar-thumb:hover {
     background-color: #52525b;
   }
+
+  @keyframes olmoUndoFlash {
+    0% {
+      box-shadow: 0 0 0 3px rgba(140, 90, 50, 0.55);
+      background-color: rgba(245, 158, 11, 0.16);
+    }
+    55% {
+      box-shadow: 0 0 0 3px rgba(140, 90, 50, 0.35);
+      background-color: rgba(245, 158, 11, 0.08);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(140, 90, 50, 0);
+      background-color: transparent;
+    }
+  }
+
+  .olmo-undo-highlight {
+    animation: olmoUndoFlash 1.8s ease-out 1;
+    border-radius: 0.75rem;
+  }
 }
 
 /* Estilos de impresión nativa para respaldo con window.print() */

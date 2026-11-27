@@ -1,10 +1,11 @@
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { CSSProperties, ReactNode, useEffect, useMemo, useState } from 'react';
 import { getImageFallbackCandidates } from '../utils/logoUtils';
 
 interface ResilientImageProps {
   src: string;
   alt: string;
   className?: string;
+  style?: CSSProperties;
   fallback?: ReactNode;
   crossOrigin?: 'anonymous' | 'use-credentials';
 }
@@ -23,6 +24,7 @@ export function ResilientImage({
   src,
   alt,
   className,
+  style,
   fallback = null,
   crossOrigin,
 }: ResilientImageProps) {
@@ -58,6 +60,7 @@ export function ResilientImage({
       src={activeAttempt.src}
       alt={alt}
       className={className}
+      style={style}
       crossOrigin={
         activeAttempt.src.startsWith('data:')
           ? undefined

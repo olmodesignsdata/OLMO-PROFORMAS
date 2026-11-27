@@ -12,6 +12,8 @@ import {
   ChevronsUpDown,
   Columns2,
   Copy,
+  Crop,
+  Eraser,
   FileSpreadsheet,
   GripVertical,
   ImagePlus,
@@ -22,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Search,
   Trash2,
   Upload,
@@ -29,7 +32,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { ChangeEvent, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CURRENCY_OPTIONS,
   DEFAULT_BANK_ACCOUNT,
@@ -46,6 +49,7 @@ import {
   BankAccountInfo,
   CompanyInfo,
   ComputedTotals,
+  EditorTab,
   GoogleSheetsConfig,
   LogoAsset,
   PaymentScheduleItem,
@@ -63,8 +67,13 @@ import {
 import { findBestTerminoForProformaType } from '../utils/cloudSync';
 import { getConnectionButtonClasses } from '../utils/connectionStyles';
 import {
+  clampVisualReferenceHeightPx,
+  clampVisualReferenceWidthPct,
   formatMoney,
   getCurrencyCode,
+  getVisualReferenceBoxHeightPx,
+  getVisualReferenceWidthPct,
+  isProformaDraft,
   normalizeSpreadsheetParagraphs,
   normalizeVisualReferenceSize,
 } from '../utils/formatters';
@@ -83,10 +92,13 @@ import {
   ACCEPTED_LOGO_INPUT,
   processProductImageFile,
   resolveAndValidateImageUrl,
+  rotateImageSrc90,
 } from '../utils/logoUtils';
 import { ClientDraftPayload } from './ClientsView';
 import { GoogleSheetShortcutButton } from './GoogleSheetShortcutButton';
 import { ResilientImage } from './ResilientImage';
+import { VisualRefImageEditorModal } from './VisualRefImageEditorModal';
+import { VisualRefImageFrame } from './VisualRefImageFrame';
 
 interface EditorPanelProps {
   data: ProformaData;
@@ -110,6 +122,7 @@ interface EditorPanelProps {
     url: string
   ) => Promise<{ ok: boolean; error?: string }>;
   onRemoveFooterLogo: (slotIndex: number) => void;
+  onClearFooterLogos?: () => void;
   onSheetsConfigChange: (next: GoogleSheetsConfig) => void;
   onSaveProductTemplate: (item: ProductLineItem) => void;
   onDeleteProductTemplate: (templateId: string) => void;
@@ -130,9 +143,21 @@ interface EditorPanelProps {
   isSplitScrollContainer?: boolean;
   layoutMode?: WorkspaceLayoutMode;
   onChangeLayoutMode?: (mode: WorkspaceLayoutMode) => void;
+  activeTab?: EditorTab;
+  onChangeActiveTab?: (tab: EditorTab) => void;
+  tabScrollPositions?: Partial<Record<EditorTab, number>>;
+  onSaveTabScrollPosition?: (tab: EditorTab, scrollTop: number) => void;
+  undoHighlight?: { targetKey: string; token: number } | null;
+  isActiveInViewport?: boolean;
 }
 
-type EditorTab = 'cliente' | 'productos' | 'referencias' | 'terminos' | 'banco';
+type ClearableSectionKey =
+  | 'cliente'
+  | 'footerLogos'
+  | 'productos'
+  | 'referencias'
+  | 'terminos'
+  | 'specs';
 
 function normalizeProductSearchText(value: string): string {
   return String(value ?? '')
@@ -161,6 +186,7 @@ export function EditorPanel({
   onUploadFooterLogo,
   onApplyFooterLogoUrl,
   onRemoveFooterLogo,
+  onClearFooterLogos,
   onSheetsConfigChange,
   onSaveProductTemplate,
   onDeleteProductTemplate,
@@ -178,8 +204,15 @@ export function EditorPanel({
   isSplitScrollContainer = false,
   layoutMode = 'split',
   onChangeLayoutMode,
+  activeTab: propActiveTab,
+  onChangeActiveTab,
+  tabScrollPositions,
+  onSaveTabScrollPosition,
+  undoHighlight = null,
+  isActiveInViewport = true,
 }: EditorPanelProps) {
-  const [activeTab, setActiveTab] = useState<EditorTab>('cliente');
+  const [internalActiveTab, setInternalActiveTab] = useState<EditorTab>('cliente');
+  const activeTab = propActiveTab ?? internalActiveTab;
   const [clientFilterQuery, setClientFilterQuery] = useState('');
   const [selectedSavedClientId, setSelectedSavedClientId] = useState('');
   const [showCompanyDrawer, setShowCompanyDrawer] = useState(false);
@@ -254,8 +287,9 @@ export function EditorPanel({
   const [dragOverVisualRefId, setDragOverVisualRefId] = useState<string | null>(
     null
   );
-  const [expandedVisualRefModal, setExpandedVisualRefModal] =
+  const [editingVisualRefModal, setEditingVisualRefModal] =
     useState<VisualReferenceItem | null>(null);
+  const [rotatingRefIds, setRotatingRefIds] = useState<Record<string, boolean>>({});
 
   const mainLogoInputRef = useRef<HTMLInputElement | null>(null);
   const spreadsheetFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -267,40 +301,255 @@ export function EditorPanel({
   const visualRefFileInputRefs = useRef<
     Record<string, HTMLInputElement | null>
   >({});
+  const visualRefCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const itemImageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>(
     {}
   );
   const productCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const manualUnitItemIdsRef = useRef<Set<string>>(new Set());
   const editorRootRef = useRef<HTMLDivElement | null>(null);
+  const [pendingClearSection, setPendingClearSection] = useState<{
+    key: ClearableSectionKey;
+    title: string;
+    description: string;
+  } | null>(null);
+  const [activeUndoTarget, setActiveUndoTarget] = useState<string | null>(null);
+  const isRestoringScrollRef = useRef(false);
+  const suppressRestoreForUndoTokenRef = useRef<number | null>(null);
+  const activeTabRef = useRef<EditorTab>(activeTab);
+  activeTabRef.current = activeTab;
+  const tabScrollPositionsRef = useRef(tabScrollPositions);
+  tabScrollPositionsRef.current = tabScrollPositions;
+  const onSaveTabScrollPositionRef = useRef(onSaveTabScrollPosition);
+  onSaveTabScrollPositionRef.current = onSaveTabScrollPosition;
 
-  const handleSelectEditorTab = (nextTab: EditorTab) => {
-    setActiveTab(nextTab);
+  const getScrollContainerElement = useCallback((): HTMLElement | null => {
     const scrollParent = editorRootRef.current?.closest('.olmo-editor-scroll');
     if (
       scrollParent instanceof HTMLElement &&
       scrollParent.scrollHeight > scrollParent.clientHeight + 8
     ) {
-      if (scrollParent.scrollTop > 24) {
-        scrollParent.scrollTo({ top: 0, behavior: 'smooth' });
+      return scrollParent;
+    }
+    return null;
+  }, []);
+
+  const getCurrentEditorScrollTop = useCallback((): number => {
+    const container = getScrollContainerElement();
+    if (container) return Math.max(0, Math.round(container.scrollTop));
+    return Math.max(0, Math.round(window.scrollY));
+  }, [getScrollContainerElement]);
+
+  const applyEditorScrollTop = useCallback(
+    (top: number) => {
+      const target = Math.max(0, Math.round(top));
+      isRestoringScrollRef.current = true;
+      const container = getScrollContainerElement();
+      if (container) {
+        container.scrollTo({ top: target, behavior: 'auto' });
+      } else {
+        window.scrollTo({ top: target, behavior: 'auto' });
       }
+      requestAnimationFrame(() => {
+        isRestoringScrollRef.current = false;
+      });
+    },
+    [getScrollContainerElement]
+  );
+
+  // Guardar desplazamiento continuamente mientras el Editor está visible
+  useEffect(() => {
+    if (!isActiveInViewport) return;
+    const container = getScrollContainerElement();
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return;
+      onSaveTabScrollPositionRef.current?.(
+        activeTabRef.current,
+        getCurrentEditorScrollTop()
+      );
+    };
+    if (container) {
+      container.addEventListener('scroll', handleScroll, { passive: true });
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      if (container) {
+        container.removeEventListener('scroll', handleScroll);
+      }
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, [isActiveInViewport, layoutMode, getScrollContainerElement, getCurrentEditorScrollTop]);
+
+  // Restaurar posición guardada al volver al Editor o cambiar de sub-pestaña
+  useEffect(() => {
+    if (!isActiveInViewport) return;
+    if (
+      undoHighlight?.token &&
+      suppressRestoreForUndoTokenRef.current === undoHighlight.token
+    ) {
+      return;
+    }
+    const saved = tabScrollPositionsRef.current?.[activeTab];
+    if (typeof saved === 'number' && saved >= 0) {
+      const raf = requestAnimationFrame(() => {
+        applyEditorScrollTop(saved);
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [activeTab, isActiveInViewport, layoutMode, applyEditorScrollTop, undoHighlight?.token]);
+
+  // Resaltar y desplazar hacia el elemento afectado tras Deshacer / Rehacer
+  useEffect(() => {
+    if (!undoHighlight || !isActiveInViewport) return;
+    suppressRestoreForUndoTokenRef.current = undoHighlight.token;
+    const targetKey = undoHighlight.targetKey;
+    let timerId: number | null = null;
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
+        const root = editorRootRef.current;
+        if (!root) return;
+        const targetEl = root.querySelector<HTMLElement>(
+          `[data-undo-target="${targetKey}"]`
+        );
+        if (targetEl) {
+          isRestoringScrollRef.current = true;
+          targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          window.setTimeout(() => {
+            isRestoringScrollRef.current = false;
+            onSaveTabScrollPositionRef.current?.(
+              activeTabRef.current,
+              getCurrentEditorScrollTop()
+            );
+          }, 420);
+        }
+        setActiveUndoTarget(targetKey);
+        timerId = window.setTimeout(() => {
+          setActiveUndoTarget((curr) => (curr === targetKey ? null : curr));
+        }, 1850);
+      });
+      return () => cancelAnimationFrame(raf2);
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, [undoHighlight, isActiveInViewport, getCurrentEditorScrollTop]);
+
+  useEffect(() => {
+    if (!pendingClearSection) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPendingClearSection(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pendingClearSection]);
+
+  const undoFlashClass = (targetKey: string) =>
+    activeUndoTarget === targetKey
+      ? 'olmo-undo-highlight ring-2 ring-[#8C5A32]/60 dark:ring-amber-400/60'
+      : '';
+
+  const handleSelectEditorTab = (nextTab: EditorTab) => {
+    onSaveTabScrollPositionRef.current?.(activeTab, getCurrentEditorScrollTop());
+    setInternalActiveTab(nextTab);
+    onChangeActiveTab?.(nextTab);
+  };
+
+  const executeConfirmClearSection = () => {
+    if (!pendingClearSection) return;
+    const target = pendingClearSection.key;
+    setPendingClearSection(null);
+
+    if (target === 'cliente') {
+      setSelectedSavedClientId('');
+      setClientFilterQuery('');
+      onChange((prev) => ({
+        ...prev,
+        clientProject: {
+          ...prev.clientProject,
+          cliente: '',
+          contacto: '',
+          telefono: '',
+          correo: '',
+          ubicacion: '',
+          proyecto: '',
+        },
+      }));
+      flashBanner('Se limpiaron los datos del cliente y proyecto.');
       return;
     }
 
-    if (editorRootRef.current) {
-      const workspaceTopRaw = getComputedStyle(
-        editorRootRef.current
-      ).getPropertyValue('--olmo-workspace-top');
-      const workspaceTop = parseFloat(workspaceTopRaw) || 0;
-      const rect = editorRootRef.current.getBoundingClientRect();
-      if (rect.top < workspaceTop) {
-        window.scrollTo({
-          top: Math.max(0, window.scrollY + rect.top - workspaceTop - 8),
-          behavior: 'smooth',
-        });
+    if (target === 'footerLogos') {
+      setFooterUrlInputs(['', '', '']);
+      setFooterUrlErrors([null, null, null]);
+      if (onClearFooterLogos) {
+        onClearFooterLogos();
+      } else {
+        [0, 1, 2].forEach((idx) => onRemoveFooterLogo(idx));
       }
+      flashBanner('Se limpiaron los logos adicionales del pie de página.');
+      return;
+    }
+
+    if (target === 'productos') {
+      setProductSearchQuery('');
+      setCollapsedProductIds({});
+      onChange((prev) => ({
+        ...prev,
+        items: [],
+      }));
+      flashBanner('Se limpiaron las líneas de producto.');
+      return;
+    }
+
+    if (target === 'referencias') {
+      setShowStarterVisualRefs(false);
+      setVisualRefError(null);
+      setVisualRefUrlInputs({});
+      setVisualRefSlotErrors({});
+      onChange((prev) => ({
+        ...prev,
+        visualReferences: [],
+      }));
+      flashBanner('Se limpiaron las referencias visuales.');
+      return;
+    }
+
+    if (target === 'terminos') {
+      setSelectedTerminoId('');
+      onChange((prev) => ({
+        ...prev,
+        terminosCondiciones: '',
+      }));
+      flashBanner('Se limpiaron los términos y condiciones.');
+      return;
+    }
+
+    if (target === 'specs') {
+      setSelectedAranByBlockId({});
+      onChange((prev) => ({
+        ...prev,
+        specBlocks: [],
+      }));
+      flashBanner('Se limpiaron las especificaciones técnicas.');
     }
   };
+
+  const renderClearSectionButton = (
+    key: ClearableSectionKey,
+    title: string,
+    description: string
+  ) => (
+    <button
+      type="button"
+      onClick={() => setPendingClearSection({ key, title, description })}
+      title={`Limpiar ${title}`}
+      className="inline-flex items-center gap-1 rounded-md border border-[#DCDAD3] bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:border-red-800 dark:hover:bg-red-950/50 dark:hover:text-red-300 whitespace-nowrap shrink-0 cursor-pointer"
+    >
+      <Eraser className="h-3 w-3" aria-hidden="true" />
+      <span>Limpiar sección</span>
+    </button>
+  );
 
   const proformaType: ProformaType = data.proformaType ?? 'mobiliario';
   const effectiveMainLogo = mainLogo?.dataUrl ? mainLogo : DEFAULT_OLMO_MAIN_LOGO;
@@ -981,14 +1230,51 @@ export function EditorPanel({
     refId: string,
     size: VisualReferenceSize
   ) => {
-    upsertVisualRefPatch(refId, { size });
+    upsertVisualRefPatch(refId, {
+      size,
+      customWidthPct: undefined,
+      customHeightPx: undefined,
+    });
+  };
+
+  const handleQuickRotateVisualRef = async (
+    entry: VisualReferenceItem,
+    direction: 'left' | 'right'
+  ) => {
+    if (!entry.imageDataUrl?.trim()) return;
+    setRotatingRefIds((prev) => ({ ...prev, [entry.id]: true }));
+    try {
+      const baked = await rotateImageSrc90(entry.imageDataUrl, direction);
+      if (baked) {
+        upsertVisualRefPatch(entry.id, {
+          imageDataUrl: baked.dataUrl,
+          rotation: 0,
+        });
+      } else {
+        const currentRot = entry.rotation ?? 0;
+        const nextRot =
+          (((currentRot + (direction === 'right' ? 90 : -90)) % 360) + 360) %
+          360;
+        upsertVisualRefPatch(entry.id, { rotation: nextRot });
+      }
+    } finally {
+      setRotatingRefIds((prev) => ({ ...prev, [entry.id]: false }));
+    }
   };
 
   const handleClearVisualRefImage = (refId: string) => {
     setVisualRefError(null);
     setVisualRefSlotErrors((prev) => ({ ...prev, [refId]: null }));
     setVisualRefUrlInputs((prev) => ({ ...prev, [refId]: '' }));
-    upsertVisualRefPatch(refId, { imageDataUrl: '', name: '' });
+    upsertVisualRefPatch(refId, {
+      imageDataUrl: '',
+      name: '',
+      rotation: 0,
+      fitMode: 'contain',
+      cropZoom: 1,
+      cropX: 50,
+      cropY: 50,
+    });
   };
 
   const handleDeleteVisualRefSlot = (refId: string) => {
@@ -1408,11 +1694,21 @@ export function EditorPanel({
         {activeTab === 'cliente' && (
           <div className="space-y-6">
             {/* Consecutivo, tipo y parámetros generales */}
-            <div>
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  Control de Consecutivo, Tipo y Moneda
-                </h2>
+            <div
+              data-undo-target="doc.consecutivo"
+              className={`scroll-mt-36 transition-colors ${undoFlashClass('doc.consecutivo')}`}
+            >
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    Control de Consecutivo, Tipo y Moneda
+                  </h2>
+                  {isProformaDraft(data) && (
+                    <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
+                      Borrador (sin consecutivo)
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
                   Siguiente disponible en navegador: Nº {nextStoredConsecutivo}
                 </span>
@@ -1428,12 +1724,23 @@ export function EditorPanel({
                       id="consecutivo-input"
                       type="number"
                       min={1}
-                      value={data.consecutivo}
+                      placeholder="Borrador"
+                      value={isProformaDraft(data) ? '' : data.consecutivo}
                       onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
+                        const raw = e.target.value.trim();
+                        if (!raw) {
+                          onChange((prev) => ({
+                            ...prev,
+                            consecutivo: 0,
+                            isDraft: true,
+                          }));
+                          return;
+                        }
+                        const val = parseInt(raw, 10);
                         onChange((prev) => ({
                           ...prev,
-                          consecutivo: Number.isNaN(val) ? 2800 : Math.max(1, val),
+                          consecutivo: Number.isNaN(val) ? 0 : Math.max(1, val),
+                          isDraft: Number.isNaN(val) || val <= 0,
                         }));
                       }}
                       className={`${inputClass} font-mono font-semibold tabular-nums`}
@@ -1449,7 +1756,10 @@ export function EditorPanel({
                   </div>
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="doc.proformaType"
+                  className={`scroll-mt-36 ${undoFlashClass('doc.proformaType')}`}
+                >
                   <label htmlFor="proforma-type-select" className={labelClass}>
                     Tipo de Proforma
                   </label>
@@ -1469,7 +1779,10 @@ export function EditorPanel({
                   </select>
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.moneda"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.moneda')}`}
+                >
                   <label htmlFor="moneda-select" className={labelClass}>
                     Moneda
                   </label>
@@ -1500,7 +1813,10 @@ export function EditorPanel({
                   </select>
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="doc.taxRate"
+                  className={`scroll-mt-36 ${undoFlashClass('doc.taxRate')}`}
+                >
                   <label htmlFor="tax-rate-input" className={labelClass}>
                     Impuesto de Venta (%)
                   </label>
@@ -1525,21 +1841,31 @@ export function EditorPanel({
             </div>
 
             {/* Datos del Cliente y Proyecto */}
-            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
+            <div
+              data-undo-target="section-cliente-proyecto"
+              className={`border-t border-[#E5E4DF] pt-5 scroll-mt-36 dark:border-zinc-800 ${undoFlashClass('section-cliente-proyecto')}`}
+            >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Datos del Cliente y Proyecto
                 </h2>
-                <button
-                  type="button"
-                  onClick={onGoToClientsDirectory}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8C5A32] hover:underline dark:text-amber-400 cursor-pointer"
-                >
-                  <Users className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>
-                    Directorio ({savedClients.length})
-                  </span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onGoToClientsDirectory}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8C5A32] hover:underline dark:text-amber-400 cursor-pointer"
+                  >
+                    <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>
+                      Directorio ({savedClients.length})
+                    </span>
+                  </button>
+                  {renderClearSectionButton(
+                    'cliente',
+                    'Datos del Cliente y Proyecto',
+                    'Se borrarán los campos de Cliente, Contacto, Teléfono, Correo, Proyecto y Ubicación de la proforma actual. La fecha, validez, moneda y consecutivo se conservarán.'
+                  )}
+                </div>
               </div>
 
               {/* Selector rápido y buscador de Clientes Guardados */}
@@ -1652,7 +1978,10 @@ export function EditorPanel({
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
+                <div
+                  data-undo-target="cp.cliente"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.cliente')}`}
+                >
                   <label htmlFor="cliente-input" className={labelClass}>
                     Cliente
                   </label>
@@ -1668,7 +1997,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.contacto"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.contacto')}`}
+                >
                   <label htmlFor="contacto-input" className={labelClass}>
                     Contacto
                   </label>
@@ -1684,7 +2016,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.telefono"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.telefono')}`}
+                >
                   <label htmlFor="tel-input" className={labelClass}>
                     Teléfono
                   </label>
@@ -1700,7 +2035,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.correo"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.correo')}`}
+                >
                   <label htmlFor="correo-input" className={labelClass}>
                     Correo electrónico
                   </label>
@@ -1716,7 +2054,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.proyecto"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.proyecto')}`}
+                >
                   <label htmlFor="proyecto-input" className={labelClass}>
                     Proyecto
                   </label>
@@ -1732,7 +2073,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.ubicacion"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.ubicacion')}`}
+                >
                   <label htmlFor="ubicacion-input" className={labelClass}>
                     Ubicación
                   </label>
@@ -1748,7 +2092,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.fecha"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.fecha')}`}
+                >
                   <label htmlFor="fecha-input" className={labelClass}>
                     Fecha de Emisión
                   </label>
@@ -1763,7 +2110,10 @@ export function EditorPanel({
                   />
                 </div>
 
-                <div>
+                <div
+                  data-undo-target="cp.validez"
+                  className={`scroll-mt-36 ${undoFlashClass('cp.validez')}`}
+                >
                   <label htmlFor="validez-input" className={labelClass}>
                     Validez de la Proforma
                   </label>
@@ -1906,13 +2256,20 @@ export function EditorPanel({
 
               {/* Hasta 3 Logos Adicionales en Pie de Página */}
               <div className="rounded-lg border border-[#E5E4DF] bg-white p-3.5 dark:border-zinc-800 dark:bg-zinc-900/60">
-                <div className="mb-3">
-                  <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-                    Logos Adicionales en Pie de Página (hasta 3)
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                      Logos Adicionales en Pie de Página (hasta 3)
+                    </div>
+                    <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Marcas, líneas o aliados opcionales (desde PC o URL / Google Drive). Los espacios sin imagen no aparecen en la vista previa ni en el PDF.
+                    </div>
                   </div>
-                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                    Marcas, líneas o aliados opcionales (desde PC o URL / Google Drive). Los espacios sin imagen no aparecen en la vista previa ni en el PDF.
-                  </div>
+                  {renderClearSectionButton(
+                    'footerLogos',
+                    'Logos Adicionales en Pie de Página',
+                    'Se quitarán las imágenes y enlaces cargados en los 3 espacios de logos adicionales del pie de página.'
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
@@ -2048,7 +2405,10 @@ export function EditorPanel({
             </div>
 
             {/* Datos de la Empresa (Acordeón discreto) */}
-            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
+            <div
+              data-undo-target="doc.company"
+              className={`border-t border-[#E5E4DF] pt-5 scroll-mt-36 dark:border-zinc-800 ${undoFlashClass('doc.company')}`}
+            >
               <button
                 type="button"
                 onClick={() => setShowCompanyDrawer((v) => !v)}
@@ -2177,7 +2537,10 @@ export function EditorPanel({
             TAB 2: CONSTRUCTOR DINÁMICO DE LÍNEAS DE PRODUCTO
             ================================================================ */}
         {activeTab === 'productos' && (
-          <div className="space-y-5">
+          <div
+            data-undo-target="section-productos"
+            className={`space-y-5 scroll-mt-36 ${undoFlashClass('section-productos')}`}
+          >
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -2188,6 +2551,11 @@ export function EditorPanel({
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {renderClearSectionButton(
+                  'productos',
+                  'Líneas de Producto y Alcance',
+                  'Se eliminarán todas las líneas de producto de esta proforma (el subtotal quedará en 0 hasta agregar o importar nuevos ítems).'
+                )}
                 <select
                   aria-label="Tipo de Proforma"
                   value={proformaType}
@@ -2746,14 +3114,15 @@ export function EditorPanel({
                   return (
                   <div
                     key={item.id}
+                    data-undo-target={`item.${item.id}`}
                     ref={(el) => {
                       productCardRefs.current[item.id] = el;
                     }}
-                    className={`rounded-lg border bg-white p-4 transition-all duration-300 dark:bg-zinc-900 ${
+                    className={`rounded-lg border bg-white p-4 scroll-mt-36 transition-all duration-300 dark:bg-zinc-900 ${
                       isHighlighted
                         ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/25 shadow-sm dark:border-amber-500 dark:ring-amber-500/25'
                         : 'border-[#E5E4DF] dark:border-zinc-800'
-                    }`}
+                    } ${undoFlashClass(`item.${item.id}`)}`}
                   >
                     <div
                       className={`flex flex-wrap items-center justify-between gap-2 ${
@@ -3282,7 +3651,10 @@ export function EditorPanel({
             TAB 3: REFERENCIAS VISUALES (ESPACIOS ILIMITADOS, TAMAÑOS Y ORDEN)
             ================================================================ */}
         {activeTab === 'referencias' && (
-          <div className="space-y-4">
+          <div
+            data-undo-target="section-referencias"
+            className={`space-y-4 scroll-mt-36 ${undoFlashClass('section-referencias')}`}
+          >
             <div className="flex flex-wrap items-start justify-between gap-2.5">
               <div className="min-w-0 flex-1">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -3292,10 +3664,15 @@ export function EditorPanel({
                   Agrega tantos espacios de imagen como necesites desde tu PC o URL. Elige el tamaño por espacio (<strong className="font-medium text-zinc-700 dark:text-zinc-300">Pequeño</strong> hasta 3/fila, <strong className="font-medium text-zinc-700 dark:text-zinc-300">Mediano</strong> hasta 2/fila o <strong className="font-medium text-zinc-700 dark:text-zinc-300">Grande</strong> 1/fila) y arrastra para reordenar dentro del área de impresión.
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <span className="rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-1 font-mono text-[11px] font-medium text-zinc-600 tabular-nums dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                   {activeVisualRefsCount} cargada(s) · {editorVisualRefs.length} espacio(s)
                 </span>
+                {renderClearSectionButton(
+                  'referencias',
+                  'Referencias Visuales',
+                  'Se limpiarán todas las imágenes, enlaces y espacios agregados en Referencias Visuales.'
+                )}
                 <button
                   type="button"
                   onClick={handleAddVisualRefSlot}
@@ -3333,12 +3710,18 @@ export function EditorPanel({
                   const hasImage = Boolean(entry.imageDataUrl?.trim());
                   const slotErr = visualRefSlotErrors[entry.id];
                   const slotLoading = Boolean(visualRefLoading[entry.id]);
+                  const isRotating = Boolean(rotatingRefIds[entry.id]);
                   const currentUrlValue =
                     visualRefUrlInputs[entry.id] ??
                     (entry.imageDataUrl && !entry.imageDataUrl.startsWith('data:')
                       ? entry.imageDataUrl
                       : '');
                   const currentSize = normalizeVisualReferenceSize(entry.size);
+                  const effectiveWidthPct = getVisualReferenceWidthPct(entry);
+                  const effectiveHeightPx = getVisualReferenceBoxHeightPx(entry);
+                  const hasCustomDimensions =
+                    typeof entry.customWidthPct === 'number' ||
+                    typeof entry.customHeightPx === 'number';
                   const isDragged = draggedVisualRefId === entry.id;
                   const isDragTarget =
                     dragOverVisualRefId === entry.id &&
@@ -3347,12 +3730,10 @@ export function EditorPanel({
                   return (
                     <div
                       key={entry.id}
-                      draggable
-                      onDragStart={(e) => {
-                        setDraggedVisualRefId(entry.id);
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', entry.id);
+                      ref={(el) => {
+                        visualRefCardRefs.current[entry.id] = el;
                       }}
+                      data-undo-target={`ref.${entry.id}`}
                       onDragOver={(e) => {
                         e.preventDefault();
                         e.dataTransfer.dropEffect = 'move';
@@ -3380,13 +3761,15 @@ export function EditorPanel({
                         setDraggedVisualRefId(null);
                         setDragOverVisualRefId(null);
                       }}
-                      className={`flex flex-col justify-between overflow-hidden rounded-md border bg-[#FAF9F6] p-3 transition-all dark:bg-zinc-800/50 ${
-                        currentSize === 'large' ? 'sm:col-span-2' : ''
+                      className={`flex flex-col justify-between overflow-hidden rounded-md border bg-[#FAF9F6] p-3 scroll-mt-36 transition-all dark:bg-zinc-800/50 ${
+                        currentSize === 'large' || effectiveWidthPct > 60
+                          ? 'sm:col-span-2'
+                          : ''
                       } ${
                         isDragTarget
                           ? 'border-[#8C5A32] ring-2 ring-[#8C5A32]/30 dark:border-amber-400 dark:ring-amber-400/30'
                           : 'border-[#E5E4DF] dark:border-zinc-800'
-                      } ${isDragged ? 'opacity-50' : ''}`}
+                      } ${isDragged ? 'opacity-50' : ''} ${undoFlashClass(`ref.${entry.id}`)}`}
                     >
                       <input
                         ref={(el) => {
@@ -3408,10 +3791,26 @@ export function EditorPanel({
                       <div className="mb-2 flex items-center justify-between gap-2 text-[11px]">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span
-                            title="Arrastra para reordenar"
-                            className="inline-flex cursor-grab items-center rounded p-0.5 text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-700 active:cursor-grabbing dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggedVisualRefId(entry.id);
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', entry.id);
+                              const cardEl = visualRefCardRefs.current[entry.id];
+                              if (cardEl && e.dataTransfer.setDragImage) {
+                                e.dataTransfer.setDragImage(cardEl, 18, 18);
+                              }
+                            }}
+                            onDragEnd={() => {
+                              setDraggedVisualRefId(null);
+                              setDragOverVisualRefId(null);
+                            }}
+                            title="Arrastra para ordenar"
+                            aria-label={`Arrastra para ordenar espacio ${idx + 1}`}
+                            className="inline-flex cursor-grab items-center gap-0.5 rounded border border-transparent px-1 py-0.5 text-zinc-500 hover:border-[#DCDAD3] hover:bg-white hover:text-zinc-800 active:cursor-grabbing dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 select-none"
                           >
                             <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span className="text-[10px] font-medium">Arrastra</span>
                           </span>
                           <span className="font-semibold text-zinc-700 truncate dark:text-zinc-300">
                             Espacio {idx + 1}
@@ -3461,59 +3860,130 @@ export function EditorPanel({
                         </div>
                       </div>
 
-                      {/* Selector de tamaño / distribución dentro del área de impresión */}
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <span className="text-[10.5px] font-medium text-zinc-500 dark:text-zinc-400">
-                          Tamaño:
-                        </span>
-                        <div
-                          role="group"
-                          aria-label={`Tamaño de impresión para espacio ${idx + 1}`}
-                          className="inline-flex rounded border border-[#DCDAD3] bg-white p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
-                        >
-                          {(
-                            [
-                              {
-                                value: 'small' as VisualReferenceSize,
-                                label: 'Pequeño',
-                                hint: 'Hasta 3 por fila',
-                              },
-                              {
-                                value: 'medium' as VisualReferenceSize,
-                                label: 'Mediano',
-                                hint: 'Hasta 2 por fila',
-                              },
-                              {
-                                value: 'large' as VisualReferenceSize,
-                                label: 'Grande',
-                                hint: '1 por fila (expandido)',
-                              },
-                            ] as const
-                          ).map((opt) => {
-                            const selected = currentSize === opt.value;
-                            return (
-                              <button
-                                key={opt.value}
-                                type="button"
-                                title={opt.hint}
-                                onClick={() =>
-                                  handleVisualRefSizeChange(entry.id, opt.value)
-                                }
-                                className={`rounded px-2 py-0.5 text-[10.5px] font-medium transition-colors cursor-pointer ${
-                                  selected
-                                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                                    : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-                                }`}
-                              >
-                                {opt.label}
-                              </button>
-                            );
-                          })}
+                      {/* Selector de tamaño / distribución + redimensionado manual dentro del área de impresión */}
+                      <div className="mb-2 space-y-1.5 rounded border border-[#E5E4DF] bg-white/80 p-2 dark:border-zinc-700/80 dark:bg-zinc-900/60">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[10.5px] font-medium text-zinc-500 dark:text-zinc-400">
+                            Tamaño:
+                          </span>
+                          <div
+                            role="group"
+                            aria-label={`Tamaño de impresión para espacio ${idx + 1}`}
+                            className="inline-flex rounded border border-[#DCDAD3] bg-white p-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+                          >
+                            {(
+                              [
+                                {
+                                  value: 'small' as VisualReferenceSize,
+                                  label: 'Pequeño',
+                                  hint: 'Hasta 3 por fila (33%)',
+                                },
+                                {
+                                  value: 'medium' as VisualReferenceSize,
+                                  label: 'Mediano',
+                                  hint: 'Hasta 2 por fila (50%)',
+                                },
+                                {
+                                  value: 'large' as VisualReferenceSize,
+                                  label: 'Grande',
+                                  hint: '1 por fila (100%)',
+                                },
+                              ] as const
+                            ).map((opt) => {
+                              const selected =
+                                !hasCustomDimensions && currentSize === opt.value;
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  title={opt.hint}
+                                  onClick={() =>
+                                    handleVisualRefSizeChange(entry.id, opt.value)
+                                  }
+                                  className={`rounded px-2 py-0.5 text-[10.5px] font-medium transition-colors cursor-pointer ${
+                                    selected
+                                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                                      : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
+
+                        <div className="grid grid-cols-2 gap-2 pt-0.5 text-[10px] text-zinc-600 dark:text-zinc-400">
+                          <label className="flex flex-col gap-0.5">
+                            <span className="flex items-center justify-between">
+                              <span>Ancho impresión</span>
+                              <span className="font-mono font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
+                                {Math.round(effectiveWidthPct)}%
+                              </span>
+                            </span>
+                            <input
+                              type="range"
+                              min={25}
+                              max={100}
+                              step={1}
+                              value={Math.round(effectiveWidthPct)}
+                              onChange={(e) =>
+                                upsertVisualRefPatch(entry.id, {
+                                  customWidthPct: clampVisualReferenceWidthPct(
+                                    Number(e.target.value)
+                                  ),
+                                })
+                              }
+                              aria-label={`Ancho de impresión espacio ${idx + 1}`}
+                              className="w-full accent-[#8C5A32]"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-0.5">
+                            <span className="flex items-center justify-between">
+                              <span>Alto cuadro</span>
+                              <span className="font-mono font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
+                                {Math.round(effectiveHeightPx)}px
+                              </span>
+                            </span>
+                            <input
+                              type="range"
+                              min={100}
+                              max={420}
+                              step={4}
+                              value={Math.round(effectiveHeightPx)}
+                              onChange={(e) =>
+                                upsertVisualRefPatch(entry.id, {
+                                  customHeightPx: clampVisualReferenceHeightPx(
+                                    Number(e.target.value)
+                                  ),
+                                })
+                              }
+                              aria-label={`Alto del cuadro espacio ${idx + 1}`}
+                              className="w-full accent-[#8C5A32]"
+                            />
+                          </label>
+                        </div>
+
+                        {hasCustomDimensions && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                upsertVisualRefPatch(entry.id, {
+                                  customWidthPct: undefined,
+                                  customHeightPx: undefined,
+                                })
+                              }
+                              className="text-[10px] font-medium text-[#8C5A32] hover:underline dark:text-amber-400 cursor-pointer"
+                            >
+                              Restablecer tamaño predeterminado
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       <div
-                        className={`relative mb-2.5 flex items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5 dark:border-zinc-700 ${
+                        className={`relative mb-2 flex items-center justify-center overflow-hidden rounded border border-[#E5E4DF] bg-white p-1.5 dark:border-zinc-700 ${
                           currentSize === 'large'
                             ? 'h-40'
                             : currentSize === 'small'
@@ -3523,14 +3993,13 @@ export function EditorPanel({
                       >
                         {hasImage ? (
                           <>
-                            <ResilientImage
-                              src={entry.imageDataUrl}
+                            <VisualRefImageFrame
+                              item={entry}
                               alt={
                                 entry.caption.trim() ||
                                 entry.name ||
                                 `Referencia ${idx + 1}`
                               }
-                              className="max-h-full max-w-full w-auto h-auto object-contain"
                               fallback={
                                 <span className="text-[11px] text-amber-700">
                                   No se pudo previsualizar este enlace
@@ -3539,9 +4008,9 @@ export function EditorPanel({
                             />
                             <button
                               type="button"
-                              onClick={() => setExpandedVisualRefModal(entry)}
-                              title="Expandir imagen"
-                              aria-label={`Expandir imagen ${idx + 1}`}
+                              onClick={() => setEditingVisualRefModal(entry)}
+                              title="Editar, rotar o ampliar imagen"
+                              aria-label={`Editar o ampliar imagen ${idx + 1}`}
                               className="absolute right-1.5 top-1.5 rounded border border-[#DCDAD3] bg-white/90 p-1 text-zinc-700 shadow-xs hover:bg-white hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900/90 dark:text-zinc-200 cursor-pointer"
                             >
                               <Maximize2 className="h-3 w-3" />
@@ -3553,6 +4022,45 @@ export function EditorPanel({
                           </span>
                         )}
                       </div>
+
+                      {hasImage && (
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-1 rounded border border-[#E5E4DF] bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900">
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={isRotating}
+                              onClick={() =>
+                                void handleQuickRotateVisualRef(entry, 'left')
+                              }
+                              title="Rotar 90° a la izquierda"
+                              className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-1.5 py-0.5 text-[10.5px] font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              <span>90°</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isRotating}
+                              onClick={() =>
+                                void handleQuickRotateVisualRef(entry, 'right')
+                              }
+                              title="Rotar 90° a la derecha"
+                              className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-1.5 py-0.5 text-[10.5px] font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 cursor-pointer"
+                            >
+                              <RotateCw className="h-3 w-3" />
+                              <span>90°</span>
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setEditingVisualRefModal(entry)}
+                            className="inline-flex items-center gap-1 rounded border border-[#DCDAD3] bg-[#FAF9F6] px-2 py-0.5 text-[10.5px] font-semibold text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 cursor-pointer"
+                          >
+                            <Crop className="h-3 w-3 text-[#8C5A32] dark:text-amber-400" />
+                            <span>Recortar / Encuadre</span>
+                          </button>
+                        </div>
+                      )}
 
                       <div className="space-y-2">
                         <button
@@ -3659,47 +4167,14 @@ export function EditorPanel({
               </button>
             </div>
 
-            {expandedVisualRefModal && (
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-label="Vista ampliada de referencia visual"
-                onClick={() => setExpandedVisualRefModal(null)}
-                className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/75 p-4 backdrop-blur-[1px]"
-              >
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[#E5E4DF] bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
-                >
-                  <div className="flex items-center justify-between border-b border-[#E5E4DF] px-4 py-2.5 dark:border-zinc-800">
-                    <span className="text-xs font-semibold text-zinc-900 truncate dark:text-zinc-100">
-                      {expandedVisualRefModal.caption.trim() ||
-                        expandedVisualRefModal.name ||
-                        'Referencia visual ampliada'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedVisualRefModal(null)}
-                      aria-label="Cerrar vista ampliada"
-                      className="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 cursor-pointer"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                  <div className="flex flex-1 items-center justify-center overflow-auto bg-[#FAF9F6] p-4 dark:bg-zinc-950">
-                    <ResilientImage
-                      src={expandedVisualRefModal.imageDataUrl}
-                      alt={
-                        expandedVisualRefModal.caption.trim() ||
-                        expandedVisualRefModal.name ||
-                        'Referencia visual'
-                      }
-                      className="max-h-[75vh] max-w-full w-auto h-auto object-contain"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
+            <VisualRefImageEditorModal
+              item={editingVisualRefModal}
+              onClose={() => setEditingVisualRefModal(null)}
+              onApplyPatch={(refId, patch) => {
+                upsertVisualRefPatch(refId, patch);
+                flashBanner('Imagen y encuadre actualizados.');
+              }}
+            />
           </div>
         )}
 
@@ -3708,12 +4183,20 @@ export function EditorPanel({
             ================================================================ */}
         {activeTab === 'terminos' && (
           <div className="space-y-6">
-            <div>
+            <div
+              data-undo-target="section-terminos"
+              className={`scroll-mt-36 ${undoFlashClass('section-terminos')}`}
+            >
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Términos y Condiciones
                 </h2>
                 <div className="flex flex-wrap items-center gap-2">
+                  {renderClearSectionButton(
+                    'terminos',
+                    'Términos y Condiciones',
+                    'Se vaciará el texto actual de Términos y Condiciones y la selección de plantilla.'
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -3815,7 +4298,10 @@ export function EditorPanel({
               />
             </div>
 
-            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
+            <div
+              data-undo-target="section-specs"
+              className={`border-t border-[#E5E4DF] pt-5 scroll-mt-36 dark:border-zinc-800 ${undoFlashClass('section-specs')}`}
+            >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -3827,6 +4313,11 @@ export function EditorPanel({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {renderClearSectionButton(
+                    'specs',
+                    'Especificaciones Técnicas Generales y Acabados',
+                    'Se eliminarán todos los bloques de especificaciones técnicas de esta proforma.'
+                  )}
                   <button
                     type="button"
                     onClick={() =>
@@ -4043,7 +4534,10 @@ export function EditorPanel({
         {activeTab === 'banco' && (
           <div className="space-y-6">
             {/* Cuenta Bancaria */}
-            <div>
+            <div
+              data-undo-target="section-banco"
+              className={`scroll-mt-36 ${undoFlashClass('section-banco')}`}
+            >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                   Cuenta Bancaria
@@ -4140,7 +4634,10 @@ export function EditorPanel({
             </div>
 
             {/* Desglose de Pagos */}
-            <div className="border-t border-[#E5E4DF] pt-5 dark:border-zinc-800">
+            <div
+              data-undo-target="section-pagos"
+              className={`border-t border-[#E5E4DF] pt-5 scroll-mt-36 dark:border-zinc-800 ${undoFlashClass('section-pagos')}`}
+            >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
@@ -4266,7 +4763,10 @@ export function EditorPanel({
             </div>
 
             {/* Notas Finales y Firmas */}
-            <div className="border-t border-[#E5E4DF] pt-5 space-y-4 dark:border-zinc-800">
+            <div
+              data-undo-target="section-firmas"
+              className={`border-t border-[#E5E4DF] pt-5 space-y-4 scroll-mt-36 dark:border-zinc-800 ${undoFlashClass('section-firmas')}`}
+            >
               <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 Notas Finales y Bloque de Firmas
               </h2>
@@ -4390,6 +4890,56 @@ export function EditorPanel({
           </div>
         )}
       </div>
+
+      {/* Modal de confirmación para Limpiar sección */}
+      {pendingClearSection && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="clear-section-modal-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/45 p-4 backdrop-blur-[1px] dark:bg-black/70"
+          onClick={() => setPendingClearSection(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300">
+                <Eraser className="h-4 w-4" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3
+                  id="clear-section-modal-title"
+                  className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+                >
+                  ¿Limpiar {pendingClearSection.title}?
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  {pendingClearSection.description}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingClearSection(null)}
+                className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={executeConfirmClearSection}
+                className="rounded-md bg-red-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 cursor-pointer"
+              >
+                Sí, limpiar sección
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

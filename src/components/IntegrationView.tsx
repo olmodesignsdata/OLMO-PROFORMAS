@@ -25,6 +25,7 @@ import {
   buildCloudPayload,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
 } from '../utils/cloudSync';
+import { formatProformaNumberLabel } from '../utils/formatters';
 
 interface IntegrationViewProps {
   config: CloudSyncConfig;
@@ -699,7 +700,7 @@ export function IntegrationView({
 
           <div className={`p-5 ${cardSurface}`}>
             <h2 className="mb-2 font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              Vista previa del payload JSON (Proforma Nº {proforma.consecutivo})
+              Vista previa del payload JSON (Proforma {formatProformaNumberLabel(proforma)})
             </h2>
             <pre className="max-h-48 overflow-auto rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 font-mono text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
               {JSON.stringify(samplePayload, null, 2)}

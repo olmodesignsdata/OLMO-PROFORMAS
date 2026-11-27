@@ -31,6 +31,8 @@ import {
   computeProformaTotals,
   formatDateSpanish,
   formatMoney,
+  formatProformaNumberLabel,
+  isProformaDraft,
 } from '../utils/formatters';
 import { generateProformaPDF } from '../utils/exporters';
 import { CompareProformasModal } from './CompareProformasModal';
@@ -51,6 +53,7 @@ interface HistoryViewProps {
   onOpenRecord: (record: SavedProformaRecord) => void;
   onDuplicateRecord: (record: SavedProformaRecord) => void;
   onDeleteRecord: (id: string) => void;
+  onDownloadRecordPDF?: (record: SavedProformaRecord) => void;
   onGoToEditor: () => void;
   onNewProforma: () => void;
   proformasSheetUrl?: string;
@@ -102,31 +105,94 @@ export function mergeProformaHistoryRecords(
   records: SavedProformaRecord[],
   remoteRecords: SavedProformaRecord[]
 ): SavedProformaRecord[] {
-  const map = new Map<string, SavedProformaRecord>();
-  const keyOf = (rec: SavedProformaRecord) =>
-    rec.consecutivo > 0 ? `num:${rec.consecutivo}` : `id:${rec.id}`;
+  const merged: SavedProformaRecord[] = [];
+
+  const findMatchingIndexes = (target: SavedProformaRecord): number[] => {
+    const targetIsDraft = isProformaDraft(target) || target.consecutivo <= 0;
+    const matches: number[] = [];
+    merged.forEach((item, idx) => {
+      const itemIsDraft = isProformaDraft(item) || item.consecutivo <= 0;
+      const sameId = Boolean(target.id && item.id === target.id);
+      const sameNum =
+        !targetIsDraft &&
+        !itemIsDraft &&
+        Number(item.consecutivo) === Number(target.consecutivo);
+      if (sameId || sameNum) {
+        matches.push(idx);
+      }
+    });
+    return matches;
+  };
 
   records.forEach((rec) => {
-    map.set(keyOf(rec), { ...rec, source: 'local' });
+    const entry: SavedProformaRecord = { ...rec, source: 'local' };
+    const idxs = findMatchingIndexes(entry);
+    if (idxs.length === 0) {
+      merged.push(entry);
+      return;
+    }
+    const existing = merged[idxs[0]];
+    const existingIsDraft = isProformaDraft(existing) || existing.consecutivo <= 0;
+    const entryIsDraft = isProformaDraft(entry) || entry.consecutivo <= 0;
+    const winner =
+      !entryIsDraft && existingIsDraft
+        ? entry
+        : entryIsDraft && !existingIsDraft
+          ? existing
+          : String(entry.savedAt ?? '') >= String(existing.savedAt ?? '')
+            ? entry
+            : existing;
+    merged[idxs[0]] = { ...winner, source: 'local' };
   });
 
   remoteRecords.forEach((remote) => {
-    const k = keyOf(remote);
-    const existing = map.get(k);
-    if (existing) {
-      map.set(k, {
-        ...existing,
-        source: 'both',
-      });
-    } else {
-      map.set(k, {
-        ...remote,
-        source: 'sheet',
-      });
+    const entry: SavedProformaRecord = { ...remote, source: 'sheet' };
+    const idxs = findMatchingIndexes(entry);
+    if (idxs.length === 0) {
+      merged.push(entry);
+      return;
+    }
+
+    let winner: SavedProformaRecord = merged[idxs[0]];
+    let hasLocal = winner.source === 'local' || winner.source === 'both';
+
+    for (let i = 0; i < idxs.length; i++) {
+      const candidate = merged[idxs[i]];
+      if (candidate.source === 'local' || candidate.source === 'both') {
+        hasLocal = true;
+      }
+      const candIsDraft = isProformaDraft(candidate) || candidate.consecutivo <= 0;
+      const winIsDraft = isProformaDraft(winner) || winner.consecutivo <= 0;
+      if (!candIsDraft && winIsDraft) {
+        winner = candidate;
+      } else if (candIsDraft === winIsDraft) {
+        if (String(candidate.savedAt ?? '') > String(winner.savedAt ?? '')) {
+          winner = candidate;
+        }
+      }
+    }
+
+    const winIsDraft = isProformaDraft(winner) || winner.consecutivo <= 0;
+    const remoteIsDraft = isProformaDraft(entry) || entry.consecutivo <= 0;
+    if (!remoteIsDraft && winIsDraft) {
+      winner = entry;
+    } else if (
+      remoteIsDraft === winIsDraft &&
+      String(entry.savedAt ?? '') > String(winner.savedAt ?? '')
+    ) {
+      winner = entry;
+    }
+
+    merged[idxs[0]] = {
+      ...winner,
+      source: hasLocal ? 'both' : 'sheet',
+    };
+    for (let d = idxs.length - 1; d >= 1; d--) {
+      merged.splice(idxs[d], 1);
     }
   });
 
-  return Array.from(map.values()).sort((a, b) => {
+  return merged.sort((a, b) => {
     if (b.consecutivo !== a.consecutivo) return b.consecutivo - a.consecutivo;
     return b.savedAt.localeCompare(a.savedAt);
   });
@@ -146,6 +212,7 @@ export function HistoryView({
   onOpenRecord,
   onDuplicateRecord,
   onDeleteRecord,
+  onDownloadRecordPDF,
   onGoToEditor,
   onNewProforma,
   proformasSheetUrl = '',
@@ -170,7 +237,9 @@ export function HistoryView({
     `${rec.source ?? 'local'}-${rec.id}-${rec.consecutivo}`;
 
   const getCompareSelectionKey = (rec: SavedProformaRecord) =>
-    rec.consecutivo > 0 ? `num:${rec.consecutivo}` : `id:${rec.id}`;
+    !isProformaDraft(rec) && rec.consecutivo > 0
+      ? `num:${rec.consecutivo}`
+      : `id:${rec.id}`;
 
   const combinedRecords = useMemo<SavedProformaRecord[]>(
     () => mergeProformaHistoryRecords(records, remoteRecords),
@@ -221,7 +290,7 @@ export function HistoryView({
         .join(' ');
       const searchText = normalizeSearchText(
         [
-          String(rec.consecutivo),
+          formatProformaNumberLabel(rec),
           cp.cliente,
           cp.proyecto,
           cp.contacto,
@@ -743,7 +812,7 @@ export function HistoryView({
                   : selectedCompareRecords.length === 1
                     ? '1 cotización seleccionada. Marca al menos 1 más (máximo 4) para comparar.'
                     : `${selectedCompareRecords.length} de 4 cotizaciones seleccionadas para comparar (${selectedCompareRecords
-                        .map((r) => `Nº ${r.consecutivo}`)
+                        .map((r) => formatProformaNumberLabel(r))
                         .join(', ')}).`}
               </span>
             </div>
@@ -836,19 +905,25 @@ export function HistoryView({
                           checked={isChecked}
                           disabled={isSelectionDisabled}
                           onChange={() => handleToggleCompareRecord(rec)}
-                          aria-label={`Seleccionar Proforma Nº ${rec.consecutivo} para comparar`}
+                          aria-label={`Seleccionar Proforma ${formatProformaNumberLabel(rec)} para comparar`}
                           title={
                             isSelectionDisabled
                               ? 'Máximo 4 cotizaciones seleccionadas para comparar'
                               : isChecked
-                                ? `Quitar Proforma Nº ${rec.consecutivo} de la comparación`
-                                : `Seleccionar Proforma Nº ${rec.consecutivo} para comparar`
+                                ? `Quitar Proforma ${formatProformaNumberLabel(rec)} de la comparación`
+                                : `Seleccionar Proforma ${formatProformaNumberLabel(rec)} para comparar`
                           }
                           className="h-4 w-4 rounded border-[#CFCBC0] text-[#8C5A32] accent-[#8C5A32] focus:ring-[#8C5A32] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer dark:border-zinc-600 dark:bg-zinc-900"
                         />
                       </td>
                       <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
-                        Nº {rec.consecutivo}
+                        {isProformaDraft(rec) ? (
+                          <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-sans text-xs font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
+                            Borrador
+                          </span>
+                        ) : (
+                          <span>Nº {rec.consecutivo}</span>
+                        )}
                         {isCurrent && (
                           <span className="ml-2 text-[11px] font-sans font-normal text-[#8C5A32] dark:text-amber-400">
                             · En edición
@@ -924,7 +999,11 @@ export function HistoryView({
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            if (onDownloadRecordPDF) {
+                              onDownloadRecordPDF(rec);
+                              return;
+                            }
                             generateProformaPDF(
                               rec.data,
                               totals,
@@ -932,10 +1011,10 @@ export function HistoryView({
                               rec.data.proformaType === 'griferia'
                                 ? [...GRIFERIA_AUTO_FOOTER_LOGOS, null]
                                 : []
-                            )
-                          }
+                            );
+                          }}
                           title="Descargar PDF"
-                          aria-label={`Descargar PDF Proforma ${rec.consecutivo}`}
+                          aria-label={`Descargar PDF Proforma ${formatProformaNumberLabel(rec)}`}
                           className="rounded border border-black bg-black p-1.5 text-white hover:bg-zinc-800 dark:border-zinc-700 dark:bg-black dark:hover:bg-zinc-900 cursor-pointer"
                         >
                           <PdfIcon className="h-4 w-4" />
@@ -945,7 +1024,7 @@ export function HistoryView({
                           disabled
                           aria-disabled="true"
                           title="Exportar .json (no disponible por ahora)"
-                          aria-label={`Exportar .json Proforma ${rec.consecutivo} (no disponible por ahora)`}
+                          aria-label={`Exportar .json Proforma ${formatProformaNumberLabel(rec)} (no disponible por ahora)`}
                           className="rounded border border-[#E5E4DF] bg-zinc-100 p-1.5 text-zinc-400 opacity-50 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
                         >
                           <FileJson className="h-3.5 w-3.5" />
@@ -955,22 +1034,20 @@ export function HistoryView({
                           disabled
                           aria-disabled="true"
                           title="Exportar CSV (no disponible por ahora)"
-                          aria-label={`Exportar CSV Proforma ${rec.consecutivo} (no disponible por ahora)`}
+                          aria-label={`Exportar CSV Proforma ${formatProformaNumberLabel(rec)} (no disponible por ahora)`}
                           className="rounded border border-[#E5E4DF] bg-zinc-100 p-1.5 text-zinc-400 opacity-50 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-500"
                         >
                           <FileSpreadsheet className="h-3.5 w-3.5" />
                         </button>
-                        {rec.source !== 'sheet' && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteRecord(rec.id)}
-                            title="Eliminar del historial local"
-                            aria-label={`Eliminar Proforma ${rec.consecutivo}`}
-                            className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRecord(rec.id)}
+                          title="Eliminar del historial y del Google Sheet PROFORMAS"
+                          aria-label={`Eliminar Proforma ${formatProformaNumberLabel(rec)}`}
+                          className="rounded border border-[#E5E4DF] bg-white p-1.5 text-zinc-500 hover:border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:bg-red-950/60 dark:hover:text-red-300 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>

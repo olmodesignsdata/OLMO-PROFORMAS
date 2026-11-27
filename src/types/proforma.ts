@@ -29,6 +29,7 @@ export interface ProductLineItem {
 }
 
 export type VisualReferenceSize = 'small' | 'medium' | 'large';
+export type VisualReferenceFitMode = 'contain' | 'cover';
 
 export interface VisualReferenceItem {
   id: string;
@@ -37,6 +38,22 @@ export interface VisualReferenceItem {
   name?: string;
   caption: string;
   size?: VisualReferenceSize;
+  rotation?: number;
+  customWidthPct?: number;
+  customHeightPx?: number;
+  fitMode?: VisualReferenceFitMode;
+  cropZoom?: number;
+  cropX?: number;
+  cropY?: number;
+}
+
+export interface TableColumnWidths {
+  productoPct?: number;
+  imagenPct?: number;
+  descripcionPct?: number;
+  cantidadPct?: number;
+  valorUnitarioPct?: number;
+  valorPct?: number;
 }
 
 export interface SpecBlock {
@@ -89,7 +106,9 @@ export interface LogoAsset {
 export interface ProformaData {
   id: string;
   consecutivo: number;
+  isDraft?: boolean;
   proformaType?: ProformaType;
+  tableColumnWidthsByType?: Partial<Record<ProformaType, TableColumnWidths>>;
   company: CompanyInfo;
   additionalLogos?: LogoAsset[];
   clientProject: ClientProjectInfo;
@@ -122,6 +141,7 @@ export interface ComputedTotals {
 export interface SavedProformaRecord {
   id: string;
   consecutivo: number;
+  isDraft?: boolean;
   savedAt: string;
   data: ProformaData;
   total: number;
@@ -235,6 +255,12 @@ export type AppSection =
   | 'history'
   | 'dashboard'
   | 'integration';
+export type EditorTab =
+  | 'cliente'
+  | 'productos'
+  | 'referencias'
+  | 'terminos'
+  | 'banco';
 export type WorkspaceLayoutMode = 'split' | 'editor' | 'preview';
 export type ThemeMode = 'light' | 'dark';
 export type AutoRefreshMinutes = 5 | 10 | 30;

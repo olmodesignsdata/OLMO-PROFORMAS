@@ -691,3 +691,248 @@ export async function rasterizeImageSrcForPdf(
 
   return null;
 }
+
+async function loadRasterizableImageElement(
+  src: string
+): Promise<HTMLImageElement | null> {
+  const clean = src.trim();
+  if (!clean) return null;
+  if (clean.startsWith('data:')) {
+    try {
+      return await loadImageElement(clean);
+    } catch {
+      return null;
+    }
+  }
+
+  const baseCandidates = getImageFallbackCandidates(clean);
+  const driveId = extractGoogleDriveFileId(clean);
+  const candidates = driveId
+    ? Array.from(
+        new Set([
+          clean,
+          `https://lh3.googleusercontent.com/d/${driveId}=w1200`,
+          ...baseCandidates,
+        ])
+      )
+    : baseCandidates;
+
+  for (const candidate of candidates) {
+    let objectUrl: string | null = null;
+    try {
+      const blob =
+        (await fetchImageBlobWithTimeout(candidate, {
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store',
+        })) ??
+        (await fetchImageBlobWithTimeout(candidate, {
+          mode: 'cors',
+        }));
+      const loadTarget = blob
+        ? ((objectUrl = URL.createObjectURL(blob)), objectUrl)
+        : candidate;
+      const img = await loadImageWithCors(loadTarget);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      return img;
+    } catch {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+  }
+  return null;
+}
+
+function encodeCanvasForStorage(
+  canvas: HTMLCanvasElement,
+  preferPng = false
+): string {
+  if (preferPng) {
+    const png = canvas.toDataURL('image/png');
+    if (png.length <= 240_000) return png;
+  }
+  return canvas.toDataURL('image/jpeg', 0.86);
+}
+
+/**
+ * Rota una imagen 90 grados a la izquierda o derecha devolviendo una nueva Data URL.
+ * Si es una URL externa bloqueada por CORS, devuelve null para aplicar rotación por metadatos.
+ */
+export async function rotateImageSrc90(
+  src: string,
+  direction: 'left' | 'right'
+): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  const img = await loadRasterizableImageElement(src);
+  if (!img) return null;
+
+  const naturalW = Math.max(1, img.naturalWidth || 400);
+  const naturalH = Math.max(1, img.naturalHeight || 300);
+  const maxDim = 900;
+  const scale = Math.min(1, maxDim / Math.max(naturalW, naturalH));
+  const drawW = Math.max(1, Math.round(naturalW * scale));
+  const drawH = Math.max(1, Math.round(naturalH * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = drawH;
+  canvas.height = drawW;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((direction === 'right' ? 90 : -90) * (Math.PI / 180));
+  ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+
+  return {
+    dataUrl: encodeCanvasForStorage(canvas, src.startsWith('data:image/png')),
+    width: canvas.width,
+    height: canvas.height,
+  };
+}
+
+/**
+ * Recorta una imagen según porcentajes [0..100] y opcionalmente aplica una rotación previa.
+ * Devuelve null si la imagen es externa y está bloqueada por CORS.
+ */
+export async function cropImageSrc(
+  src: string,
+  cropPct: { x: number; y: number; w: number; h: number },
+  rotationDeg = 0
+): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  const img = await loadRasterizableImageElement(src);
+  if (!img) return null;
+
+  const rawW = Math.max(1, img.naturalWidth || 400);
+  const rawH = Math.max(1, img.naturalHeight || 300);
+  const rotNorm = (((Math.round(rotationDeg / 90) * 90) % 360) + 360) % 360;
+
+  // Primero materializar con la rotación aplicada si corresponde
+  const rotatedW = rotNorm === 90 || rotNorm === 270 ? rawH : rawW;
+  const rotatedH = rotNorm === 90 || rotNorm === 270 ? rawW : rawH;
+  const rotCanvas = document.createElement('canvas');
+  rotCanvas.width = rotatedW;
+  rotCanvas.height = rotatedH;
+  const rotCtx = rotCanvas.getContext('2d');
+  if (!rotCtx) return null;
+
+  rotCtx.fillStyle = '#FFFFFF';
+  rotCtx.fillRect(0, 0, rotatedW, rotatedH);
+  rotCtx.translate(rotatedW / 2, rotatedH / 2);
+  rotCtx.rotate((rotNorm * Math.PI) / 180);
+  rotCtx.drawImage(img, -rawW / 2, -rawH / 2, rawW, rawH);
+
+  const sx = Math.max(0, Math.min(rotatedW - 2, Math.round((cropPct.x / 100) * rotatedW)));
+  const sy = Math.max(0, Math.min(rotatedH - 2, Math.round((cropPct.y / 100) * rotatedH)));
+  const sw = Math.max(2, Math.min(rotatedW - sx, Math.round((cropPct.w / 100) * rotatedW)));
+  const sh = Math.max(2, Math.min(rotatedH - sy, Math.round((cropPct.h / 100) * rotatedH)));
+
+  const maxDim = 900;
+  const scale = Math.min(1, maxDim / Math.max(sw, sh));
+  const outW = Math.max(1, Math.round(sw * scale));
+  const outH = Math.max(1, Math.round(sh * scale));
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = outW;
+  outCanvas.height = outH;
+  const outCtx = outCanvas.getContext('2d');
+  if (!outCtx) return null;
+
+  outCtx.fillStyle = '#FFFFFF';
+  outCtx.fillRect(0, 0, outW, outH);
+  outCtx.drawImage(rotCanvas, sx, sy, sw, sh, 0, 0, outW, outH);
+
+  return {
+    dataUrl: encodeCanvasForStorage(outCanvas, src.startsWith('data:image/png')),
+    width: outW,
+    height: outH,
+  };
+}
+
+/**
+ * Rasteriza una referencia visual aplicando rotación, modo de encuadre (contain/cover),
+ * zoom y posición X/Y para renderizarla fielmente dentro de un recuadro del PDF.
+ */
+export async function rasterizeVisualRefForPdf(options: {
+  src: string;
+  rotation?: number;
+  fitMode?: 'contain' | 'cover';
+  cropZoom?: number;
+  cropX?: number;
+  cropY?: number;
+  targetAspectRatio?: number;
+}): Promise<RasterizedPdfLogo | null> {
+  const base = await rasterizeImageSrcForPdf(options.src);
+  if (!base) return null;
+
+  const rotNorm =
+    (((Math.round((options.rotation ?? 0) / 90) * 90) % 360) + 360) % 360;
+  const fitMode = options.fitMode === 'cover' ? 'cover' : 'contain';
+  const cropZoom = Math.max(1, Math.min(3, options.cropZoom ?? 1));
+  const cropX = Math.max(0, Math.min(100, options.cropX ?? 50));
+  const cropY = Math.max(0, Math.min(100, options.cropY ?? 50));
+
+  if (rotNorm === 0 && fitMode === 'contain' && cropZoom <= 1.01) {
+    return base;
+  }
+
+  try {
+    const img = await loadImageElement(base.dataUrl);
+    const rawW = Math.max(1, img.naturalWidth || base.width);
+    const rawH = Math.max(1, img.naturalHeight || base.height);
+
+    const rotatedW = rotNorm === 90 || rotNorm === 270 ? rawH : rawW;
+    const rotatedH = rotNorm === 90 || rotNorm === 270 ? rawW : rawH;
+    const rotCanvas = document.createElement('canvas');
+    rotCanvas.width = rotatedW;
+    rotCanvas.height = rotatedH;
+    const rotCtx = rotCanvas.getContext('2d');
+    if (!rotCtx) return base;
+
+    rotCtx.translate(rotatedW / 2, rotatedH / 2);
+    rotCtx.rotate((rotNorm * Math.PI) / 180);
+    rotCtx.drawImage(img, -rawW / 2, -rawH / 2, rawW, rawH);
+
+    if (fitMode !== 'cover' && cropZoom <= 1.01) {
+      return {
+        dataUrl: rotCanvas.toDataURL('image/png'),
+        width: rotatedW,
+        height: rotatedH,
+      };
+    }
+
+    const ratio = Math.max(
+      0.3,
+      Math.min(3.5, options.targetAspectRatio ?? rotatedW / rotatedH)
+    );
+    const frameW = 700;
+    const frameH = Math.max(120, Math.round(frameW / ratio));
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = frameW;
+    outCanvas.height = frameH;
+    const outCtx = outCanvas.getContext('2d');
+    if (!outCtx) return base;
+
+    outCtx.fillStyle = '#F7F6F3';
+    outCtx.fillRect(0, 0, frameW, frameH);
+
+    const coverScale = Math.max(frameW / rotatedW, frameH / rotatedH) * cropZoom;
+    const containScale = Math.min(frameW / rotatedW, frameH / rotatedH) * cropZoom;
+    const scale = fitMode === 'cover' ? coverScale : containScale;
+
+    const drawW = rotatedW * scale;
+    const drawH = rotatedH * scale;
+    const drawX = (frameW - drawW) * (cropX / 100);
+    const drawY = (frameH - drawH) * (cropY / 100);
+
+    outCtx.drawImage(rotCanvas, drawX, drawY, drawW, drawH);
+
+    return {
+      dataUrl: outCanvas.toDataURL('image/png'),
+      width: frameW,
+      height: frameH,
+    };
+  } catch {
+    return base;
+  }
+}

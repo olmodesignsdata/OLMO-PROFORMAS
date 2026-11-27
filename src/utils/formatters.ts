@@ -2,6 +2,9 @@ import {
   CompanyInfo,
   ComputedTotals,
   ProformaData,
+  ProformaType,
+  TableColumnWidths,
+  VisualReferenceFitMode,
   VisualReferenceSize,
 } from '../types/proforma';
 
@@ -104,11 +107,37 @@ export function computeProformaTotals(data: ProformaData): ComputedTotals {
   };
 }
 
+export function isProformaDraft(
+  subject:
+    | { consecutivo?: number; isDraft?: boolean; data?: { consecutivo?: number; isDraft?: boolean } }
+    | null
+    | undefined
+): boolean {
+  if (!subject) return false;
+  if (subject.isDraft || subject.data?.isDraft) return true;
+  const num = Number(subject.consecutivo ?? subject.data?.consecutivo ?? 0);
+  return !Number.isFinite(num) || num <= 0;
+}
+
+export function formatProformaNumberLabel(
+  subject:
+    | { consecutivo?: number; isDraft?: boolean; data?: { consecutivo?: number; isDraft?: boolean } }
+    | null
+    | undefined,
+  prefix = 'Nº '
+): string {
+  if (!subject) return 'Borrador';
+  if (isProformaDraft(subject)) return 'Borrador';
+  const num = Number(subject.consecutivo ?? subject.data?.consecutivo ?? 0);
+  return `${prefix}${num}`;
+}
+
 export function buildPdfFileName(
   consecutivo: number,
   proyecto: string,
   ext = 'pdf',
-  clienteFallback = ''
+  clienteFallback = '',
+  isDraft = false
 ): string {
   const sanitize = (val: string) =>
     String(val ?? '')
@@ -119,6 +148,9 @@ export function buildPdfFileName(
   const projectPart = sanitize(proyecto);
   const clientPart = sanitize(clienteFallback);
   const namePart = projectPart || clientPart || 'Cliente';
+  if (isDraft || !Number.isFinite(consecutivo) || consecutivo <= 0) {
+    return `Proforma Borrador - ${namePart}.${ext}`;
+  }
   return `Proforma #${consecutivo} - ${namePart}.${ext}`;
 }
 
@@ -203,6 +235,54 @@ export function normalizeVisualReferenceSize(
   return 'medium';
 }
 
+export function normalizeVisualReferenceFitMode(
+  fitMode?: string
+): VisualReferenceFitMode {
+  return fitMode === 'cover' ? 'cover' : 'contain';
+}
+
+export function clampVisualReferenceWidthPct(value?: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 50;
+  return Math.max(25, Math.min(100, Math.round(value * 10) / 10));
+}
+
+export function clampVisualReferenceHeightPx(value?: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 204;
+  return Math.max(100, Math.min(420, Math.round(value)));
+}
+
+export function getVisualReferenceWidthPct(item: {
+  size?: VisualReferenceSize;
+  customWidthPct?: number;
+}): number {
+  if (
+    typeof item.customWidthPct === 'number' &&
+    Number.isFinite(item.customWidthPct)
+  ) {
+    return clampVisualReferenceWidthPct(item.customWidthPct);
+  }
+  const normalized = normalizeVisualReferenceSize(item.size);
+  if (normalized === 'small') return 33.333;
+  if (normalized === 'large') return 100;
+  return 50;
+}
+
+export function getVisualReferenceBoxHeightPx(item: {
+  size?: VisualReferenceSize;
+  customHeightPx?: number;
+}): number {
+  if (
+    typeof item.customHeightPx === 'number' &&
+    Number.isFinite(item.customHeightPx)
+  ) {
+    return clampVisualReferenceHeightPx(item.customHeightPx);
+  }
+  const normalized = normalizeVisualReferenceSize(item.size);
+  if (normalized === 'small') return 152;
+  if (normalized === 'large') return 210;
+  return 204;
+}
+
 export function getVisualReferenceColumnWeight(
   size?: VisualReferenceSize
 ): number {
@@ -213,21 +293,21 @@ export function getVisualReferenceColumnWeight(
 }
 
 export function packVisualReferenceRows<
-  T extends { size?: VisualReferenceSize },
+  T extends { size?: VisualReferenceSize; customWidthPct?: number },
 >(items: T[]): T[][] {
   const rows: T[][] = [];
   let currentRow: T[] = [];
-  let currentWeight = 0;
+  let currentPct = 0;
 
   for (const item of items) {
-    const weight = getVisualReferenceColumnWeight(item.size);
-    if (currentRow.length > 0 && currentWeight + weight > 6) {
+    const pct = getVisualReferenceWidthPct(item);
+    if (currentRow.length > 0 && currentPct + pct > 100.3) {
       rows.push(currentRow);
       currentRow = [item];
-      currentWeight = weight;
+      currentPct = pct;
     } else {
       currentRow.push(item);
-      currentWeight += weight;
+      currentPct += pct;
     }
   }
 
@@ -236,5 +316,212 @@ export function packVisualReferenceRows<
   }
 
   return rows;
+}
+
+export const TABLE_INDEX_COL_PCT = 5;
+export const TABLE_EDITABLE_TOTAL_PCT = 100 - TABLE_INDEX_COL_PCT; // 95%
+
+export interface ResolvedTableColumnWidths {
+  indexPct: number;
+  productoPct: number;
+  imagenPct: number;
+  descripcionPct: number;
+  cantidadPct: number;
+  valorUnitarioPct: number;
+  valorPct: number;
+}
+
+export type EditableTableColumnKey =
+  | 'productoPct'
+  | 'imagenPct'
+  | 'descripcionPct'
+  | 'cantidadPct'
+  | 'valorUnitarioPct'
+  | 'valorPct';
+
+const DEFAULT_WIDTHS_BY_TYPE: Record<ProformaType, ResolvedTableColumnWidths> = {
+  mobiliario: {
+    indexPct: TABLE_INDEX_COL_PCT,
+    productoPct: 13,
+    imagenPct: 0,
+    descripcionPct: 57,
+    cantidadPct: 11,
+    valorUnitarioPct: 0,
+    valorPct: 14,
+  },
+  puertas: {
+    indexPct: TABLE_INDEX_COL_PCT,
+    productoPct: 17,
+    imagenPct: 0,
+    descripcionPct: 53,
+    cantidadPct: 11,
+    valorUnitarioPct: 0,
+    valorPct: 14,
+  },
+  griferia: {
+    indexPct: TABLE_INDEX_COL_PCT,
+    productoPct: 15,
+    imagenPct: 11,
+    descripcionPct: 44,
+    cantidadPct: 11,
+    valorUnitarioPct: 0,
+    valorPct: 14,
+  },
+  cielos_pisos: {
+    indexPct: TABLE_INDEX_COL_PCT,
+    productoPct: 16,
+    imagenPct: 0,
+    descripcionPct: 39,
+    cantidadPct: 12,
+    valorUnitarioPct: 13,
+    valorPct: 15,
+  },
+};
+
+export function getEditableTableColumnKeys(
+  proformaType: ProformaType
+): EditableTableColumnKey[] {
+  if (proformaType === 'griferia') {
+    return [
+      'productoPct',
+      'imagenPct',
+      'descripcionPct',
+      'cantidadPct',
+      'valorPct',
+    ];
+  }
+  if (proformaType === 'cielos_pisos') {
+    return [
+      'productoPct',
+      'descripcionPct',
+      'cantidadPct',
+      'valorUnitarioPct',
+      'valorPct',
+    ];
+  }
+  return ['productoPct', 'descripcionPct', 'cantidadPct', 'valorPct'];
+}
+
+export function getColumnMinWidthPct(key: EditableTableColumnKey): number {
+  return key === 'descripcionPct' ? 20 : 8;
+}
+
+export function resolveTableColumnWidths(
+  proformaType: ProformaType,
+  storedByType?: Partial<Record<ProformaType, TableColumnWidths>>
+): ResolvedTableColumnWidths {
+  const defaults = DEFAULT_WIDTHS_BY_TYPE[proformaType] ?? DEFAULT_WIDTHS_BY_TYPE.mobiliario;
+  const override = storedByType?.[proformaType];
+  if (!override) {
+    return { ...defaults };
+  }
+
+  const keys = getEditableTableColumnKeys(proformaType);
+  const rawValues: Record<EditableTableColumnKey, number> = {
+    productoPct: defaults.productoPct,
+    imagenPct: defaults.imagenPct,
+    descripcionPct: defaults.descripcionPct,
+    cantidadPct: defaults.cantidadPct,
+    valorUnitarioPct: defaults.valorUnitarioPct,
+    valorPct: defaults.valorPct,
+  };
+
+  keys.forEach((k) => {
+    const val = override[k];
+    if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+      rawValues[k] = Math.max(getColumnMinWidthPct(k), val);
+    }
+  });
+
+  const sum = keys.reduce((acc, k) => acc + rawValues[k], 0);
+  if (sum <= 0) {
+    return { ...defaults };
+  }
+
+  const normalized: ResolvedTableColumnWidths = {
+    indexPct: TABLE_INDEX_COL_PCT,
+    productoPct: 0,
+    imagenPct: 0,
+    descripcionPct: 0,
+    cantidadPct: 0,
+    valorUnitarioPct: 0,
+    valorPct: 0,
+  };
+
+  let running = 0;
+  keys.forEach((k, idx) => {
+    if (idx === keys.length - 1) {
+      normalized[k] = Math.max(
+        getColumnMinWidthPct(k),
+        Math.round((TABLE_EDITABLE_TOTAL_PCT - running) * 10) / 10
+      );
+    } else {
+      const scaled =
+        Math.round(((rawValues[k] / sum) * TABLE_EDITABLE_TOTAL_PCT) * 10) / 10;
+      normalized[k] = scaled;
+      running += scaled;
+    }
+  });
+
+  return normalized;
+}
+
+export function adjustTableColumnWidth(
+  proformaType: ProformaType,
+  storedByType: Partial<Record<ProformaType, TableColumnWidths>> | undefined,
+  targetKey: EditableTableColumnKey,
+  requestedValue: number
+): TableColumnWidths {
+  const current = resolveTableColumnWidths(proformaType, storedByType);
+  const keys = getEditableTableColumnKeys(proformaType);
+  const otherKeys = keys.filter((k) => k !== targetKey);
+  const minOthersSum = otherKeys.reduce(
+    (acc, k) => acc + getColumnMinWidthPct(k),
+    0
+  );
+  const minTarget = getColumnMinWidthPct(targetKey);
+  const maxTarget = TABLE_EDITABLE_TOTAL_PCT - minOthersSum;
+  const clampedTarget = Math.max(
+    minTarget,
+    Math.min(maxTarget, Math.round(requestedValue * 10) / 10)
+  );
+
+  let deltaToDistribute = clampedTarget - current[targetKey];
+  const nextVals: Record<EditableTableColumnKey, number> = {
+    productoPct: current.productoPct,
+    imagenPct: current.imagenPct,
+    descripcionPct: current.descripcionPct,
+    cantidadPct: current.cantidadPct,
+    valorUnitarioPct: current.valorUnitarioPct,
+    valorPct: current.valorPct,
+  };
+  nextVals[targetKey] = clampedTarget;
+
+  // Priorizar compensar primero contra Descripción (o Producto si se ajusta Descripción)
+  const priorityOthers: EditableTableColumnKey[] =
+    targetKey === 'descripcionPct'
+      ? ['productoPct', ...otherKeys.filter((k) => k !== 'productoPct')]
+      : ['descripcionPct', ...otherKeys.filter((k) => k !== 'descripcionPct')];
+
+  for (const k of priorityOthers) {
+    if (Math.abs(deltaToDistribute) < 0.05) break;
+    const minK = getColumnMinWidthPct(k);
+    if (deltaToDistribute > 0) {
+      const reducible = Math.max(0, nextVals[k] - minK);
+      const take = Math.min(reducible, deltaToDistribute);
+      nextVals[k] = Math.round((nextVals[k] - take) * 10) / 10;
+      deltaToDistribute = Math.round((deltaToDistribute - take) * 10) / 10;
+    } else {
+      const add = -deltaToDistribute;
+      nextVals[k] = Math.round((nextVals[k] + add) * 10) / 10;
+      deltaToDistribute = 0;
+    }
+  }
+
+  const out: TableColumnWidths = {};
+  keys.forEach((k) => {
+    out[k] = nextVals[k];
+  });
+  return out;
 }
 

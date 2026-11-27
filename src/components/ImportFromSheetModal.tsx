@@ -22,6 +22,7 @@ import {
   computeProformaTotals,
   formatDateSpanish,
   formatMoney,
+  formatProformaNumberLabel,
 } from '../utils/formatters';
 import {
   clampPreviewZoom,
@@ -90,7 +91,7 @@ export function ImportFromSheetModal({
     const q = searchQuery.trim().toLowerCase();
     if (!q) return records;
     return records.filter((rec) => {
-      const numStr = String(rec.consecutivo);
+      const numStr = formatProformaNumberLabel(rec).toLowerCase();
       const cli = (rec.data.clientProject.cliente ?? '').toLowerCase();
       const proj = (rec.data.clientProject.proyecto ?? '').toLowerCase();
       const contacto = (rec.data.clientProject.contacto ?? '').toLowerCase();
@@ -328,7 +329,7 @@ export function ImportFromSheetModal({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-mono text-xs font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
-                          Proforma Nº {rec.consecutivo}
+                          Proforma {formatProformaNumberLabel(rec)}
                         </span>
                         <span className="font-mono text-xs font-semibold text-[#8C5A32] tabular-nums dark:text-[#D59B69]">
                           {formatMoney(rec.total, rec.data.clientProject.moneda)}
@@ -397,7 +398,7 @@ export function ImportFromSheetModal({
                     </button>
                   </div>
                   <span className="font-mono text-[11px] font-semibold text-zinc-500 tabular-nums dark:text-zinc-400">
-                    Nº {previewData.consecutivo} ·{' '}
+                    {formatProformaNumberLabel(previewData)} ·{' '}
                     {formatMoney(previewTotals.total, previewData.clientProject.moneda)}
                   </span>
                 </div>
@@ -407,12 +408,12 @@ export function ImportFromSheetModal({
                     <div className="flex flex-col overflow-hidden rounded-lg border border-[#E5E4DF] bg-[#F5F4EF] dark:border-zinc-700 dark:bg-zinc-950">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E4DF] bg-[#FAF9F6] px-3.5 py-2 dark:border-zinc-800 dark:bg-zinc-900">
                         <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
-                          Vista previa del documento · Nº {previewData.consecutivo}
+                          Vista previa del documento · {formatProformaNumberLabel(previewData)}
                         </span>
                         <PreviewZoomControls
                           zoom={previewZoom}
                           defaultZoom={IMPORT_MODAL_DEFAULT_ZOOM}
-                          contextLabel={`Proforma Nº ${previewData.consecutivo}`}
+                          contextLabel={`Proforma ${formatProformaNumberLabel(previewData)}`}
                           onChangeZoom={setPreviewZoom}
                         />
                       </div>
@@ -458,7 +459,7 @@ export function ImportFromSheetModal({
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-base font-bold text-zinc-900 tabular-nums dark:text-zinc-100">
-                          PROFORMA Nº {previewData.consecutivo}
+                          PROFORMA {formatProformaNumberLabel(previewData).toUpperCase()}
                         </span>
                         <span className="rounded border border-[#DCDAD3] bg-[#FAF6F1] px-2 py-0.5 text-[10px] font-semibold text-[#8C5A32] dark:border-zinc-700 dark:bg-zinc-800 dark:text-[#D59B69]">
                           {getProformaTypeMeta(previewData.proformaType).label}
@@ -637,14 +638,13 @@ export function ImportFromSheetModal({
         {/* Pie del modal */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E4DF] bg-white px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-            {hasUnsavedActiveChanges && activeConsecutivo
-              ? `Nota: tienes cambios sin guardar en la Proforma Nº ${activeConsecutivo}; al editar podrás guardarlos antes de reemplazar el editor.`
+            {hasUnsavedActiveChanges && activeConsecutivo !== undefined
+              ? `Nota: tienes cambios sin guardar en la Proforma ${activeConsecutivo > 0 ? `Nº ${activeConsecutivo}` : 'Borrador'}; al editar podrás guardarlos antes de reemplazar el editor.`
               : 'La proforma seleccionada se cargará lista para editar en el Editor.'}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {isHistoryMode &&
               selectedRecord &&
-              selectedRecord.source !== 'sheet' &&
               onDeleteRecord && (
                 <button
                   type="button"
@@ -698,8 +698,8 @@ export function ImportFromSheetModal({
               <span>
                 {selectedRecord
                   ? isHistoryMode
-                    ? `Seleccionar y Editar Nº ${selectedRecord.consecutivo}`
-                    : `Confirmar e importar Nº ${selectedRecord.consecutivo}`
+                    ? `Seleccionar y Editar ${formatProformaNumberLabel(selectedRecord)}`
+                    : `Confirmar e importar ${formatProformaNumberLabel(selectedRecord)}`
                   : 'Seleccionar y Editar'}
               </span>
             </button>
