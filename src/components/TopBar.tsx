@@ -534,7 +534,7 @@ export function TopBar({
                 }
               }}
               className="hidden"
-              aria-label="Importar borrador JSON desde archivo"
+              aria-label="Importar archivo JSON de proforma"
             />
             <button
               type="button"
@@ -796,7 +796,7 @@ export function TopBar({
                               setShowImportSubmenu(false);
                               jsonImportInputRef.current?.click();
                             }}
-                            title="Importar un archivo de borrador (.json) para continuar una proforma"
+                            title="Importar un archivo (.json) y asignarle el siguiente consecutivo disponible"
                             className="flex w-full items-center gap-2 rounded-md border border-[#DCDAD3] bg-[#FAF9F6] px-3 py-2 text-left text-xs font-semibold text-zinc-800 transition-colors hover:bg-zinc-100 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
                           >
                             <FileJson

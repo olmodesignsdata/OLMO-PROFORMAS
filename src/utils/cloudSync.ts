@@ -12,7 +12,6 @@ import {
 import {
   computeProformaTotals,
   formatProformaNumberLabel,
-  isProformaDraft,
 } from './formatters';
 import { ClientImportRow } from './googleSheets';
 
@@ -399,15 +398,12 @@ function doPost(e) {
     }
 
     const allowOverwrite =
-      payload.overwrite === false
-        ? false
-        : (
-            payload.overwrite === true ||
-            rawAction === "overwrite" ||
-            payload.mode === "overwrite" ||
-            payload.overwrite === undefined ||
-            isDraftDoc
-          );
+      rawAction === "overwrite" ||
+      rawAction === "update" ||
+      payload.overwrite === true ||
+      payload.mode === "overwrite" ||
+      payload.overwrite === undefined ||
+      isDraftDoc;
 
     if (matchedNumberedRows.length > 0 && !allowOverwrite) {
       return jsonResponse({
@@ -491,34 +487,16 @@ export function buildCloudPayload(
   secretToken?: string,
   options?: { overwrite?: boolean }
 ): CloudSyncPayload {
-  const isOverwrite = Boolean(options?.overwrite);
-  const draft = isProformaDraft(proforma);
-  const draftCode = (proforma.draftCode ?? '').trim() || 'Borrador';
-  const prevConsec = (
-    proforma.previousConsecutivo ??
-    (!draft ? proforma.draftCode : '') ??
-    ''
-  ).trim();
-  const previousConsecutivo =
-    !draft &&
-    prevConsec &&
-    prevConsec.toLowerCase() !== String(proforma.consecutivo).toLowerCase()
-      ? prevConsec
-      : undefined;
+  void options;
+  const consecutivoNum = Math.max(1, Math.floor(Number(proforma.consecutivo) || 0));
 
-  const cleanProforma: ProformaData = draft
-    ? {
-        ...proforma,
-        consecutivo: 0,
-        isDraft: true,
-        draftCode,
-      }
-    : {
-        ...proforma,
-        isDraft: false,
-        draftCode: undefined,
-        previousConsecutivo: undefined,
-      };
+  const cleanProforma: ProformaData = {
+    ...proforma,
+    consecutivo: consecutivoNum,
+    isDraft: false,
+    draftCode: undefined,
+    previousConsecutivo: undefined,
+  };
 
   return {
     entity: 'proforma',
@@ -527,13 +505,11 @@ export function buildCloudPayload(
     sentAt: new Date().toISOString(),
     ...(secretToken ? { token: secretToken } : {}),
     id: proforma.id,
-    consecutivo: draft ? draftCode : proforma.consecutivo,
-    isDraft: draft,
+    consecutivo: consecutivoNum,
+    isDraft: false,
     draftId: proforma.id,
-    ...(draft ? { draftCode } : {}),
-    ...(previousConsecutivo ? { previousConsecutivo } : {}),
-    overwrite: isOverwrite,
-    mode: isOverwrite ? 'overwrite' : 'create',
+    overwrite: true,
+    mode: 'overwrite',
     cliente: (proforma.clientProject.cliente ?? '').trim(),
     proyecto: (proforma.clientProject.proyecto ?? '').trim(),
     Datos_JSON: JSON.stringify(cleanProforma),

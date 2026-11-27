@@ -4,7 +4,6 @@ import {
   CloudUpload,
   FileJson,
   FilePlus2,
-  Hash,
   Loader2,
   Save,
   Trash2,
@@ -88,7 +87,6 @@ import {
 } from './utils/cloudSync';
 import { generateProformaPDF } from './utils/exporters';
 import {
-  computeNextDraftCode,
   computeProformaTotals,
   formatMoney,
   formatProformaNumberLabel,
@@ -380,22 +378,39 @@ export default function App() {
               items: [createEmptyProductLine()],
             }
           : normalized;
-        const isSavedLocally = savedLocal.some((rec) => rec.id === base.id);
-        if (
-          !isProformaDraft(base) &&
-          !isSavedLocally &&
-          !hasProformaUserContent(base)
-        ) {
+        if (isProformaDraft(base)) {
           return {
             ...base,
             consecutivo: computedNext,
+            isDraft: false,
+            draftCode: undefined,
+            previousConsecutivo: undefined,
           };
         }
-        return base;
+        const isSavedLocally = savedLocal.some(
+          (rec) =>
+            rec.id === base.id ||
+            (base.consecutivo > 0 && rec.consecutivo === base.consecutivo)
+        );
+        if (!isSavedLocally && !hasProformaUserContent(base)) {
+          return {
+            ...base,
+            consecutivo: computedNext,
+            isDraft: false,
+            draftCode: undefined,
+            previousConsecutivo: undefined,
+          };
+        }
+        return {
+          ...base,
+          isDraft: false,
+          draftCode: undefined,
+          previousConsecutivo: undefined,
+        };
       }
     }
-    const initial = createInitialProforma(0, true);
-    initial.isDraft = true;
+    const initial = createInitialProforma(computedNext, true);
+    initial.isDraft = false;
     initial.company = loadSavedCompanyDefaults();
     initial.bankAccount = loadSavedBankDefaults();
     return initial;
@@ -480,7 +495,6 @@ export default function App() {
     token: number;
   } | null>(null);
   const undoHighlightTokenRef = useRef(0);
-  const pendingDraftSyncIdsRef = useRef<Set<string>>(new Set());
   const [showIntegrationTab, setShowIntegrationTab] = useState<boolean>(() =>
     loadIntegrationTabEnabled()
   );
@@ -490,16 +504,9 @@ export default function App() {
     useState<AutoRefreshMinutes>(() => loadAutoRefreshMinutes());
   const [isSendingToSheet, setIsSendingToSheet] = useState(false);
   const [showSendToSheetConfirm, setShowSendToSheetConfirm] = useState(false);
-  const [pendingDraftPdfModal, setPendingDraftPdfModal] = useState<{
-    data: ProformaData;
-    isActiveProforma: boolean;
-    promptPostPdfAction?: boolean;
-  } | null>(null);
   const [postPdfActionModal, setPostPdfActionModal] = useState<{
     fileName: string;
   } | null>(null);
-  const [isAssigningConsecutivoForPdf, setIsAssigningConsecutivoForPdf] =
-    useState(false);
   const [pendingDeleteProforma, setPendingDeleteProforma] =
     useState<SavedProformaRecord | null>(null);
   const [isDeletingProforma, setIsDeletingProforma] = useState(false);
@@ -538,7 +545,7 @@ export default function App() {
   const [pendingLoadDraft, setPendingLoadDraft] = useState<{
     data: ProformaData;
     sourceLabel: string;
-    syncAsDraftOnConfirm?: boolean;
+    markEditedOnConfirm?: boolean;
   } | null>(null);
   const [toast, setToast] = useState<{ text: string; isError?: boolean } | null>(
     null
@@ -867,7 +874,6 @@ export default function App() {
         overwriteSheetConfirm ||
         pendingLoadDraft ||
         showSendToSheetConfirm ||
-        pendingDraftPdfModal ||
         pendingDeleteProforma ||
         sheetPreviewModal.isOpen
       ) {
@@ -904,7 +910,6 @@ export default function App() {
     overwriteSheetConfirm,
     pendingLoadDraft,
     showSendToSheetConfirm,
-    pendingDraftPdfModal,
     pendingDeleteProforma,
     sheetPreviewModal.isOpen,
     canUndo,
@@ -913,92 +918,71 @@ export default function App() {
     handleRedo,
   ]);
 
-  const cleanupPreviousDraftInSheetIfNeeded = useCallback(
-    async (
-      config: CloudSyncConfig,
-      previousDraftCode?: string,
-      draftId?: string
-    ) => {
-      const prevNorm = (previousDraftCode ?? '').trim().toLowerCase();
-      if (!prevNorm || !config.webhookUrl.trim()) return;
-      try {
-        const freshRemote = await fetchRemoteProformasFromAppsScript(config);
-        const orphan = freshRemote.find((r) => {
-          const rIsDraft = isProformaDraft(r) || r.consecutivo <= 0;
-          if (!rIsDraft) return false;
-          const rDraftCode = (r.draftCode ?? r.data?.draftCode ?? '')
-            .trim()
-            .toLowerCase();
-          return (
-            (prevNorm && rDraftCode === prevNorm) ||
-            (Boolean(draftId) && (r.id === draftId || r.data?.id === draftId))
-          );
-        });
-        if (orphan) {
-          await deleteProformaFromSheet(config, {
-            id: orphan.id,
-            consecutivo: 0,
-            isDraft: true,
-            draftCode: orphan.draftCode ?? orphan.data?.draftCode ?? previousDraftCode,
-            cliente: orphan.data?.clientProject?.cliente,
-            proyecto: orphan.data?.clientProject?.proyecto,
-            data: orphan.data,
-          });
-        }
-      } catch {
-        // Silencioso si el doGet de verificación falla temporalmente
-      }
-    },
-    []
-  );
+  const refreshRemoteAndComputeNextConsecutivo = useCallback(
+    async (extraUsed?: number): Promise<number> => {
+      let latestRemote = latestRemoteHistoryRef.current;
+      let effectiveLocal = latestHistoryRef.current;
+      const currentCloudCfg = latestCloudConfigRef.current;
 
-  const syncDraftToSheetInBackground = useCallback(
-    async (draftData: ProformaData) => {
-      const currentCfg = latestCloudConfigRef.current;
-      if (!currentCfg.webhookUrl.trim()) return;
-      const draftTotals = computeProformaTotals(draftData);
-      pendingDraftSyncIdsRef.current.add(draftData.id);
-      try {
-        const res = await sendProformaToWebhook(
-          currentCfg,
-          draftData,
-          draftTotals,
-          { overwrite: true }
-        );
-        const nextCfg: CloudSyncConfig = {
-          ...latestCloudConfigRef.current,
-          lastSyncedAt: res.ok
-            ? new Date().toISOString()
-            : latestCloudConfigRef.current.lastSyncedAt,
-          lastStatus: res.ok ? 'ok' : 'error',
-          lastMessage: res.message,
-        };
-        setCloudConfig(nextCfg);
-        saveCloudConfig(nextCfg);
-        if (res.ok) {
-          const marked = saveProformaToHistory(draftData, draftTotals.total, {
+      if (currentCloudCfg.webhookUrl.trim()) {
+        try {
+          const fetched =
+            await fetchRemoteProformasFromAppsScript(currentCloudCfg);
+          latestRemote = fetched.map((rec) => ({
+            ...rec,
+            source: 'sheet' as const,
             syncedToSheet: true,
             unsyncedLocal: false,
+            data: normalizeProformaClientContact(rec.data),
+          }));
+          const syncedAt = new Date().toISOString();
+          latestRemoteHistoryRef.current = latestRemote;
+          setRemoteHistory(latestRemote);
+          setLastRemoteHistorySyncAt(syncedAt);
+          saveRemoteHistoryCache({ records: latestRemote, syncedAt });
+
+          const remoteIdSet = new Set(
+            latestRemote.flatMap((r) =>
+              [r.id, r.data?.id].filter((x): x is string => Boolean(x))
+            )
+          );
+          const remoteNumSet = new Set(
+            latestRemote
+              .filter((r) => !isProformaDraft(r) && r.consecutivo > 0)
+              .map((r) => Math.floor(Number(r.consecutivo)))
+          );
+          const prunedLocal = effectiveLocal.filter((localRec) => {
+            if (localRec.unsyncedLocal === true) return true;
+            if (remoteIdSet.has(localRec.id)) return true;
+            const localIsDraft =
+              isProformaDraft(localRec) || localRec.consecutivo <= 0;
+            if (
+              !localIsDraft &&
+              remoteNumSet.has(Math.floor(Number(localRec.consecutivo)))
+            ) {
+              return true;
+            }
+            return false;
           });
-          setHistory(marked);
-          latestHistoryRef.current = marked;
-          await syncHistoryFromSheetRef.current?.(true);
-        } else {
-          const marked = saveProformaToHistory(draftData, draftTotals.total, {
-            unsyncedLocal: true,
-          });
-          setHistory(marked);
-          latestHistoryRef.current = marked;
+          if (prunedLocal.length !== effectiveLocal.length) {
+            effectiveLocal = saveLocalHistoryList(prunedLocal);
+            setHistory(effectiveLocal);
+            latestHistoryRef.current = effectiveLocal;
+          }
+        } catch {
+          // Usa historial cacheado si la red falla momentáneamente
         }
-      } catch {
-        const marked = saveProformaToHistory(draftData, draftTotals.total, {
-          unsyncedLocal: true,
-        });
-        setHistory(marked);
-        latestHistoryRef.current = marked;
-      } finally {
-        pendingDraftSyncIdsRef.current.delete(draftData.id);
       }
+
+      const nextNum = setNextConsecutivo(
+        computeNextConsecutivoFromRecords(
+          effectiveLocal,
+          latestRemote,
+          extraUsed
+        )
+      );
+      setNextConsecutivoState(nextNum);
+      return nextNum;
     },
     []
   );
@@ -1090,45 +1074,19 @@ export default function App() {
   };
 
   const executeNewProforma = async () => {
-    let latestRemote = latestRemoteHistoryRef.current;
-    const currentCloudCfg = latestCloudConfigRef.current;
-    if (currentCloudCfg.webhookUrl.trim()) {
-      try {
-        const fetched = await fetchRemoteProformasFromAppsScript(currentCloudCfg);
-        latestRemote = fetched.map((rec) => ({
-          ...rec,
-          source: 'sheet' as const,
-          data: normalizeProformaClientContact(rec.data),
-        }));
-        const syncedAt = new Date().toISOString();
-        latestRemoteHistoryRef.current = latestRemote;
-        setRemoteHistory(latestRemote);
-        setLastRemoteHistorySyncAt(syncedAt);
-        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
-      } catch {
-        // Usa historial remoto cacheado si la red falla momentáneamente
-      }
-    }
-
-    const updatedNext = setNextConsecutivo(
-      computeNextConsecutivoFromRecords(latestHistoryRef.current, latestRemote)
-    );
-    setNextConsecutivoState(updatedNext);
-
-    const nextDraftCode = computeNextDraftCode(
-      latestHistoryRef.current,
-      latestRemote,
+    const extraUsed =
       latestIsProformaConfirmedRef.current &&
-        isProformaDraft(latestProformaRef.current)
-        ? [latestProformaRef.current.draftCode]
-        : []
-    );
+      latestProformaRef.current.consecutivo > 0 &&
+      hasProformaUserContent(latestProformaRef.current)
+        ? latestProformaRef.current.consecutivo
+        : undefined;
+    const nextNum = await refreshRemoteAndComputeNextConsecutivo(extraUsed);
 
-    const fresh = createInitialProforma(0, true);
-    fresh.isDraft = true;
-    fresh.consecutivo = 0;
-    fresh.draftCode = nextDraftCode;
-    fresh.previousConsecutivo = nextDraftCode;
+    const fresh = createInitialProforma(nextNum, true);
+    fresh.isDraft = false;
+    fresh.consecutivo = nextNum;
+    fresh.draftCode = undefined;
+    fresh.previousConsecutivo = undefined;
     fresh.company = loadSavedCompanyDefaults();
     fresh.bankAccount = loadSavedBankDefaults();
     fresh.signatures.representanteNombre =
@@ -1138,20 +1096,11 @@ export default function App() {
     hasEditedSinceLoadRef.current = false;
     resetProforma(fresh);
     saveDraftProforma(fresh);
-    const updatedHistory = saveProformaToHistory(fresh, 0, {
-      unsyncedLocal: !currentCloudCfg.webhookUrl.trim(),
-    });
-    setHistory(updatedHistory);
-    latestHistoryRef.current = updatedHistory;
+    setNextConsecutivoState(setNextConsecutivo(nextNum + 1));
 
     setShowNewQuoteConfirm(false);
     setActiveSection('editor');
-    void syncDraftToSheetInBackground(fresh);
-    showToast(
-      currentCloudCfg.webhookUrl.trim()
-        ? `Nueva cotización iniciada como ${nextDraftCode} y registrada en PROFORMAS.`
-        : `Nueva cotización iniciada como ${nextDraftCode}.`
-    );
+    showToast(`Nueva cotización iniciada con consecutivo Nº ${nextNum}.`);
   };
 
   const handleRequestNewProforma = () => {
@@ -1169,36 +1118,14 @@ export default function App() {
 
   const handleSyncNextConsecutivo = async () => {
     if (!isProformaConfirmed) return;
-    let latestRemote = latestRemoteHistoryRef.current;
-    if (latestCloudConfigRef.current.webhookUrl.trim()) {
-      try {
-        const fetched = await fetchRemoteProformasFromAppsScript(
-          latestCloudConfigRef.current
-        );
-        latestRemote = fetched.map((rec) => ({
-          ...rec,
-          source: 'sheet' as const,
-          data: normalizeProformaClientContact(rec.data),
-        }));
-        const syncedAt = new Date().toISOString();
-        latestRemoteHistoryRef.current = latestRemote;
-        setRemoteHistory(latestRemote);
-        setLastRemoteHistorySyncAt(syncedAt);
-        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
-      } catch {
-        // Fallback a caché si falla consulta momentánea
-      }
-    }
-    const nextNum = setNextConsecutivo(
-      computeNextConsecutivoFromRecords(latestHistoryRef.current, latestRemote)
-    );
-    setNextConsecutivoState(nextNum);
+    const nextNum = await refreshRemoteAndComputeNextConsecutivo();
+    setNextConsecutivoState(setNextConsecutivo(nextNum + 1));
     hasEditedSinceLoadRef.current = true;
     updateProforma((prev) => ({
       ...prev,
       consecutivo: nextNum,
       isDraft: false,
-      previousConsecutivo: prev.previousConsecutivo || prev.draftCode,
+      previousConsecutivo: undefined,
       draftCode: undefined,
     }));
     showToast(`Consecutivo sincronizado a Nº ${nextNum} desde PROFORMAS.`);
@@ -1266,17 +1193,9 @@ export default function App() {
   const handleDownloadPDF = async (promptPostPdfAction = false) => {
     if (!isProformaConfirmed) {
       showToast(
-        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de generar el PDF.',
+        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un archivo (.json) antes de generar el PDF.',
         true
       );
-      return;
-    }
-    if (isProformaDraft(proforma)) {
-      setPendingDraftPdfModal({
-        data: proforma,
-        isActiveProforma: true,
-        promptPostPdfAction,
-      });
       return;
     }
     await runPdfExportForData(proforma, true, promptPostPdfAction);
@@ -1292,158 +1211,7 @@ export default function App() {
     const matchesActive =
       isProformaConfirmed && proforma.id === recordData.id;
 
-    if (isProformaDraft(recordData)) {
-      setPendingDraftPdfModal({
-        data: recordData,
-        isActiveProforma: matchesActive,
-        promptPostPdfAction: false,
-      });
-      return;
-    }
     void runPdfExportForData(recordData, matchesActive, false);
-  };
-
-  const handleExportPdfAsDraft = async () => {
-    if (!pendingDraftPdfModal) return;
-    const target = pendingDraftPdfModal;
-    setPendingDraftPdfModal(null);
-    const draftPayload: ProformaData = {
-      ...target.data,
-      consecutivo: 0,
-      isDraft: true,
-    };
-    await runPdfExportForData(
-      draftPayload,
-      target.isActiveProforma,
-      Boolean(target.promptPostPdfAction)
-    );
-  };
-
-  const handleAssignConsecutivoAndExportPdf = async () => {
-    if (!pendingDraftPdfModal || isAssigningConsecutivoForPdf) return;
-    const target = pendingDraftPdfModal;
-    setIsAssigningConsecutivoForPdf(true);
-
-    try {
-      let latestRemote = latestRemoteHistoryRef.current;
-      if (latestCloudConfigRef.current.webhookUrl.trim()) {
-        try {
-          const fetched = await fetchRemoteProformasFromAppsScript(
-            latestCloudConfigRef.current
-          );
-          latestRemote = fetched.map((rec) => ({
-            ...rec,
-            source: 'sheet' as const,
-            data: normalizeProformaClientContact(rec.data),
-          }));
-          const syncedAt = new Date().toISOString();
-          latestRemoteHistoryRef.current = latestRemote;
-          setRemoteHistory(latestRemote);
-          setLastRemoteHistorySyncAt(syncedAt);
-          saveRemoteHistoryCache({ records: latestRemote, syncedAt });
-        } catch {
-          // Si no se puede consultar el Sheet en ese instante, usa caché + local
-        }
-      }
-
-      const assignedNum = computeNextConsecutivoFromRecords(
-        latestHistoryRef.current,
-        latestRemote
-      );
-      const previousConsec = (
-        target.data.previousConsecutivo ||
-        target.data.draftCode ||
-        (isProformaDraft(target.data) ? 'Borrador' : '')
-      ).trim();
-
-      const assignedWithPrev: ProformaData = {
-        ...target.data,
-        consecutivo: assignedNum,
-        isDraft: false,
-        draftCode: undefined,
-        previousConsecutivo: previousConsec || undefined,
-        updatedAt: new Date().toISOString(),
-      };
-      const assignedClean: ProformaData = {
-        ...assignedWithPrev,
-        previousConsecutivo: undefined,
-        draftCode: undefined,
-      };
-      const assignedTotals = computeProformaTotals(assignedClean);
-
-      const isActive =
-        target.isActiveProforma ||
-        (latestIsProformaConfirmedRef.current &&
-          latestProformaRef.current.id === assignedClean.id);
-
-      let finalLocalData = assignedWithPrev;
-
-      if (latestCloudConfigRef.current.webhookUrl.trim()) {
-        try {
-          const sheetRes = await sendProformaToWebhook(
-            latestCloudConfigRef.current,
-            assignedWithPrev,
-            assignedTotals,
-            { overwrite: true }
-          );
-          const nextCfg: CloudSyncConfig = {
-            ...latestCloudConfigRef.current,
-            lastSyncedAt: sheetRes.ok
-              ? new Date().toISOString()
-              : latestCloudConfigRef.current.lastSyncedAt,
-            lastStatus: sheetRes.ok ? 'ok' : 'error',
-            lastMessage: sheetRes.message,
-          };
-          setCloudConfig(nextCfg);
-          saveCloudConfig(nextCfg);
-          if (sheetRes.ok) {
-            finalLocalData = assignedClean;
-            if (previousConsec) {
-              await cleanupPreviousDraftInSheetIfNeeded(
-                latestCloudConfigRef.current,
-                previousConsec,
-                assignedClean.id
-              );
-            }
-            const syncedLocal = saveProformaToHistory(
-              assignedClean,
-              assignedTotals.total,
-              { syncedToSheet: true, unsyncedLocal: false }
-            );
-            setHistory(syncedLocal);
-            latestHistoryRef.current = syncedLocal;
-            void syncHistoryFromSheetRef.current?.(true);
-          }
-        } catch {
-          // Mantiene asignación local incluso si falla la red hacia Sheet
-        }
-      }
-
-      if (finalLocalData === assignedWithPrev) {
-        const updatedHistory = saveProformaToHistory(
-          assignedWithPrev,
-          assignedTotals.total
-        );
-        setHistory(updatedHistory);
-        latestHistoryRef.current = updatedHistory;
-      }
-
-      if (isActive) {
-        hasEditedSinceLoadRef.current = true;
-        resetProforma(finalLocalData);
-        saveDraftProforma(finalLocalData);
-      }
-      setNextConsecutivoState(setNextConsecutivo(assignedNum + 1));
-
-      setPendingDraftPdfModal(null);
-      await runPdfExportForData(
-        finalLocalData,
-        isActive,
-        Boolean(target.promptPostPdfAction)
-      );
-    } finally {
-      setIsAssigningConsecutivoForPdf(false);
-    }
   };
 
   const clearActiveProformaSession = useCallback(
@@ -1468,8 +1236,8 @@ export default function App() {
         )
       );
       setNextConsecutivoState(nextNum);
-      const fresh = createInitialProforma(0, true);
-      fresh.isDraft = true;
+      const fresh = createInitialProforma(nextNum, true);
+      fresh.isDraft = false;
       fresh.company = loadSavedCompanyDefaults();
       fresh.bankAccount = loadSavedBankDefaults();
       fresh.signatures.representanteNombre =
@@ -1488,10 +1256,6 @@ export default function App() {
   }) => {
     if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
     const activeData = proforma;
-    const activeIsDraft = isProformaDraft(activeData);
-    const prevConsecToClean = !activeIsDraft
-      ? (activeData.previousConsecutivo ?? activeData.draftCode ?? '').trim()
-      : '';
     const currentLabel = formatProformaNumberLabel(activeData);
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
@@ -1505,22 +1269,17 @@ export default function App() {
 
     try {
       const res = await sendProformaToWebhook(cloudConfig, activeData, totals, {
-        overwrite,
+        overwrite: true,
       });
 
-      const persistedData: ProformaData =
-        res.ok && !activeIsDraft
-          ? {
-              ...activeData,
-              draftCode: undefined,
-              previousConsecutivo: undefined,
-            }
-          : activeData;
+      const persistedData: ProformaData = {
+        ...activeData,
+        isDraft: false,
+        draftCode: undefined,
+        previousConsecutivo: undefined,
+      };
 
       if (!closeAfterSave) {
-        if (res.ok && !activeIsDraft && (activeData.previousConsecutivo || activeData.draftCode)) {
-          resetProforma(persistedData);
-        }
         const savedAt = saveDraftProforma(persistedData);
         if (savedAt) {
           setLastLocalSavedAt(savedAt);
@@ -1563,14 +1322,6 @@ export default function App() {
         return;
       }
 
-      if (prevConsecToClean) {
-        await cleanupPreviousDraftInSheetIfNeeded(
-          cloudConfig,
-          prevConsecToClean,
-          persistedData.id
-        );
-      }
-
       setShowSendToSheetConfirm(false);
       setOverwriteSheetConfirm(null);
       setShowCloseQuoteConfirm(false);
@@ -1607,7 +1358,7 @@ export default function App() {
   const handleSendProformaToSheet = () => {
     if (!isProformaConfirmed) {
       showToast(
-        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de enviarla al Sheet.',
+        'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un archivo (.json) antes de enviarla al Sheet.',
         true
       );
       return;
@@ -1964,28 +1715,19 @@ export default function App() {
       normalizeProformaClientContact(
         JSON.parse(JSON.stringify(record.data)) as ProformaData
       );
-    const candidateIsDraft = isProformaDraft(rawCandidate) || isProformaDraft(record);
-    const preservedDraftCode = candidateIsDraft
-      ? (rawCandidate.draftCode ?? record.draftCode ?? record.data?.draftCode ?? 'Borrador').trim() || 'Borrador'
-      : undefined;
-    const candidateData: ProformaData = candidateIsDraft
-      ? {
-          ...rawCandidate,
-          consecutivo: 0,
-          isDraft: true,
-          draftCode: preservedDraftCode,
-          previousConsecutivo: rawCandidate.previousConsecutivo || preservedDraftCode,
-        }
-      : {
-          ...rawCandidate,
-          consecutivo:
-            rawCandidate.consecutivo > 0
-              ? rawCandidate.consecutivo
-              : record.consecutivo,
-          isDraft: false,
-          draftCode: undefined,
-          previousConsecutivo: undefined,
-        };
+    const resolvedConsec =
+      rawCandidate.consecutivo > 0
+        ? rawCandidate.consecutivo
+        : record.consecutivo > 0
+          ? record.consecutivo
+          : 0;
+    const candidateData: ProformaData = {
+      ...rawCandidate,
+      consecutivo: resolvedConsec,
+      isDraft: false,
+      draftCode: undefined,
+      previousConsecutivo: undefined,
+    };
 
     if (!isProformaConfirmed) {
       const loaded = normalizeProformaClientContact(
@@ -2017,66 +1759,48 @@ export default function App() {
   const handleImportDraftFile = async (file: File) => {
     try {
       const text = await file.text();
-      const parsed = parseProformaFromJsonInput(text, 0);
+      const parsed = parseProformaFromJsonInput(text, 1);
       if (!parsed) {
         showToast(
-          'El archivo seleccionado no contiene un borrador válido de OLMO Proformas (.json).',
+          'El archivo seleccionado no contiene una proforma válida de OLMO Proformas (.json).',
           true
         );
         return;
       }
       const normalized = normalizeProformaClientContact(parsed);
-      const hasNumberedCollision =
-        latestHistoryRef.current.some(
-          (r) => r.id === normalized.id && !isProformaDraft(r)
-        ) ||
-        latestRemoteHistoryRef.current.some(
-          (r) => r.id === normalized.id && !isProformaDraft(r)
-        );
-      const nextDraftCode = computeNextDraftCode(
-        latestHistoryRef.current,
-        latestRemoteHistoryRef.current,
+      const extraUsed =
         latestIsProformaConfirmedRef.current &&
-          isProformaDraft(latestProformaRef.current)
-          ? [latestProformaRef.current.draftCode]
-          : []
-      );
-      const importedAsDraft: ProformaData = {
+        latestProformaRef.current.consecutivo > 0 &&
+        hasProformaUserContent(latestProformaRef.current)
+          ? latestProformaRef.current.consecutivo
+          : undefined;
+      const nextNum = await refreshRemoteAndComputeNextConsecutivo(extraUsed);
+      const importedProforma: ProformaData = {
         ...normalized,
-        id: hasNumberedCollision
-          ? `prof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-          : normalized.id,
-        consecutivo: 0,
-        isDraft: true,
-        draftCode: nextDraftCode,
-        previousConsecutivo: nextDraftCode,
+        id: `prof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        consecutivo: nextNum,
+        isDraft: false,
+        draftCode: undefined,
+        previousConsecutivo: undefined,
         updatedAt: new Date().toISOString(),
       };
-      const importedTotals = computeProformaTotals(importedAsDraft);
 
       if (!isProformaConfirmed) {
         confirmActiveProforma();
-        hasEditedSinceLoadRef.current = false;
-        resetProforma(importedAsDraft);
-        saveDraftProforma(importedAsDraft);
-        const updatedHistory = saveProformaToHistory(
-          importedAsDraft,
-          importedTotals.total,
-          { unsyncedLocal: !latestCloudConfigRef.current.webhookUrl.trim() }
-        );
-        setHistory(updatedHistory);
-        latestHistoryRef.current = updatedHistory;
+        hasEditedSinceLoadRef.current = true;
+        resetProforma(importedProforma);
+        saveDraftProforma(importedProforma);
+        setNextConsecutivoState(setNextConsecutivo(nextNum + 1));
         setActiveSection('editor');
-        void syncDraftToSheetInBackground(importedAsDraft);
         showToast(
-          `Borrador "${file.name}" cargado en el editor como ${nextDraftCode}.`
+          `Archivo "${file.name}" importado con consecutivo Nº ${nextNum}.`
         );
         return;
       }
       setPendingLoadDraft({
-        data: importedAsDraft,
+        data: importedProforma,
         sourceLabel: `Archivo portátil "${file.name}"`,
-        syncAsDraftOnConfirm: true,
+        markEditedOnConfirm: true,
       });
     } catch {
       showToast('No se pudo leer el archivo .json seleccionado.', true);
@@ -2088,19 +1812,13 @@ export default function App() {
     const loaded = normalizeProformaClientContact(
       JSON.parse(JSON.stringify(pendingLoadDraft.data)) as ProformaData
     );
-    const shouldSyncDraft = Boolean(pendingLoadDraft.syncAsDraftOnConfirm);
+    const markEdited = Boolean(pendingLoadDraft.markEditedOnConfirm);
     confirmActiveProforma();
-    hasEditedSinceLoadRef.current = false;
+    hasEditedSinceLoadRef.current = markEdited;
     resetProforma(loaded);
-    if (shouldSyncDraft) {
-      saveDraftProforma(loaded);
-      const loadedTotals = computeProformaTotals(loaded);
-      const updatedHistory = saveProformaToHistory(loaded, loadedTotals.total, {
-        unsyncedLocal: !latestCloudConfigRef.current.webhookUrl.trim(),
-      });
-      setHistory(updatedHistory);
-      latestHistoryRef.current = updatedHistory;
-      void syncDraftToSheetInBackground(loaded);
+    saveDraftProforma(loaded);
+    if (loaded.consecutivo >= nextConsecutivo) {
+      setNextConsecutivoState(setNextConsecutivo(loaded.consecutivo + 1));
     }
     setPendingLoadDraft(null);
     setActiveSection('editor');
@@ -2115,40 +1833,20 @@ export default function App() {
   };
 
   const handleDuplicateRecord = async (record: SavedProformaRecord) => {
-    let latestRemote = latestRemoteHistoryRef.current;
-    const currentCloudCfg = latestCloudConfigRef.current;
-    if (currentCloudCfg.webhookUrl.trim()) {
-      try {
-        const fetched = await fetchRemoteProformasFromAppsScript(currentCloudCfg);
-        latestRemote = fetched.map((rec) => ({
-          ...rec,
-          source: 'sheet' as const,
-          data: normalizeProformaClientContact(rec.data),
-        }));
-        const syncedAt = new Date().toISOString();
-        latestRemoteHistoryRef.current = latestRemote;
-        setRemoteHistory(latestRemote);
-        setLastRemoteHistorySyncAt(syncedAt);
-        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
-      } catch {
-        // Usa historial remoto cacheado si la red falla
-      }
-    }
-
     const extraUsed = Math.max(
-      isProformaConfirmed && !isProformaDraft(proforma) ? proforma.consecutivo : 0,
-      !isProformaDraft(record) ? record.consecutivo : 0
+      isProformaConfirmed && proforma.consecutivo > 0 ? proforma.consecutivo : 0,
+      record.consecutivo > 0 ? record.consecutivo : 0
     );
-    const nextNum = setNextConsecutivo(
-      computeNextConsecutivoFromRecords(
-        latestHistoryRef.current,
-        latestRemote,
-        extraUsed > 0 ? extraUsed : undefined
-      )
+    const nextNum = await refreshRemoteAndComputeNextConsecutivo(
+      extraUsed > 0 ? extraUsed : undefined
     );
-    setNextConsecutivoState(nextNum);
+    const parsedFromDatosJson = record.rawDatosJson
+      ? parseProformaFromJsonInput(record.rawDatosJson, record.consecutivo)
+      : null;
     const cloned = normalizeProformaClientContact(
-      JSON.parse(JSON.stringify(record.data)) as ProformaData
+      JSON.parse(
+        JSON.stringify(parsedFromDatosJson ?? record.data)
+      ) as ProformaData
     );
     cloned.id = `prof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     cloned.consecutivo = nextNum;
@@ -2159,6 +1857,8 @@ export default function App() {
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = true;
     resetProforma(cloned);
+    saveDraftProforma(cloned);
+    setNextConsecutivoState(setNextConsecutivo(nextNum + 1));
     setActiveSection('editor');
     showToast(
       `Proforma ${formatProformaNumberLabel(record)} duplicada con consecutivo Nº ${nextNum}.`
@@ -2429,7 +2129,7 @@ export default function App() {
   const handleUseClientInProforma = (client: SavedClient) => {
     if (!isProformaConfirmed) {
       showToast(
-        'Primero selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de asignar un cliente.',
+        'Primero selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un archivo (.json) antes de asignar un cliente.',
         true
       );
       return;
@@ -2617,7 +2317,6 @@ export default function App() {
         );
 
         const prunedLocal = currentLocal.filter((localRec) => {
-          if (pendingDraftSyncIdsRef.current.has(localRec.id)) return true;
           if (localRec.unsyncedLocal === true) return true;
           if (remoteIdSet.has(localRec.id)) return true;
           const localIsDraft = isProformaDraft(localRec) || localRec.consecutivo <= 0;
@@ -2992,31 +2691,23 @@ export default function App() {
         JSON.stringify(parsedFromDatosJson ?? record.data)
       ) as ProformaData
     );
-    const loadedIsDraft = isProformaDraft(rawLoaded) || isProformaDraft(record);
-    const preservedDraftCode = loadedIsDraft
-      ? (rawLoaded.draftCode ?? record.draftCode ?? record.data?.draftCode ?? 'Borrador').trim() || 'Borrador'
-      : undefined;
-    const loaded: ProformaData = loadedIsDraft
-      ? {
-          ...rawLoaded,
-          consecutivo: 0,
-          isDraft: true,
-          draftCode: preservedDraftCode,
-          previousConsecutivo: rawLoaded.previousConsecutivo || preservedDraftCode,
-        }
-      : {
-          ...rawLoaded,
-          consecutivo:
-            rawLoaded.consecutivo > 0
-              ? rawLoaded.consecutivo
-              : record.consecutivo,
-          isDraft: false,
-          draftCode: undefined,
-          previousConsecutivo: undefined,
-        };
+    const resolvedConsec =
+      rawLoaded.consecutivo > 0
+        ? rawLoaded.consecutivo
+        : record.consecutivo > 0
+          ? record.consecutivo
+          : 0;
+    const loaded: ProformaData = {
+      ...rawLoaded,
+      consecutivo: resolvedConsec,
+      isDraft: false,
+      draftCode: undefined,
+      previousConsecutivo: undefined,
+    };
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(loaded);
+    saveDraftProforma(loaded);
     setActiveSection('editor');
     const numLabel = formatProformaNumberLabel(loaded);
     showToast(
@@ -3036,7 +2727,7 @@ export default function App() {
           next = {
             ...next,
             isDraft: false,
-            previousConsecutivo: next.previousConsecutivo || prev.previousConsecutivo || prev.draftCode,
+            previousConsecutivo: undefined,
             draftCode: undefined,
           };
           if (next.consecutivo >= nextConsecutivo) {
@@ -3044,20 +2735,12 @@ export default function App() {
             setNextConsecutivoState(updatedNext);
           }
         } else {
-          const restoredDraftCode =
-            next.draftCode ||
-            prev.draftCode ||
-            prev.previousConsecutivo ||
-            computeNextDraftCode(
-              latestHistoryRef.current,
-              latestRemoteHistoryRef.current
-            );
           next = {
             ...next,
             consecutivo: 0,
-            isDraft: true,
-            draftCode: restoredDraftCode,
-            previousConsecutivo: next.previousConsecutivo || restoredDraftCode,
+            isDraft: false,
+            draftCode: undefined,
+            previousConsecutivo: undefined,
           };
         }
       }
@@ -3171,10 +2854,7 @@ export default function App() {
     if (isProformaConfirmed) {
       const consecutivoNum = Number(proforma.consecutivo);
       const missingFields: string[] = [];
-      if (
-        !activeIsDraft &&
-        (!Number.isFinite(consecutivoNum) || consecutivoNum <= 0)
-      ) {
+      if (!Number.isFinite(consecutivoNum) || consecutivoNum <= 0) {
         missingFields.push('Número / consecutivo');
       }
       if (!proforma.clientProject.cliente.trim()) {
@@ -3188,9 +2868,8 @@ export default function App() {
           id: `sys-missing-key-fields-${proforma.id}`,
           kind: 'warning',
           source: 'system',
-          title: activeIsDraft
-            ? `Datos clave incompletos en Proforma ${activeNumLabel}`
-            : Number.isFinite(consecutivoNum) && consecutivoNum > 0
+          title:
+            Number.isFinite(consecutivoNum) && consecutivoNum > 0
               ? `Datos clave incompletos en Proforma Nº ${consecutivoNum}`
               : 'Datos clave incompletos en la proforma',
           message: `Falta completar: ${missingFields.join(', ')}.`,
@@ -3500,13 +3179,13 @@ export default function App() {
                         <span className="text-red-700 dark:text-red-300">
                           — Sin confirmar
                         </span>
-                      ) : isProformaDraft(proforma) ? (
-                        <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                          {formatProformaNumberLabel(proforma)}
-                        </span>
-                      ) : (
+                      ) : proforma.consecutivo > 0 ? (
                         <span className="text-zinc-900 dark:text-zinc-100">
                           Nº {proforma.consecutivo}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-500 dark:text-zinc-400">
+                          Sin número
                         </span>
                       )}
                     </td>
@@ -3839,7 +3518,7 @@ export default function App() {
                   ¿Iniciar una nueva cotización limpia?
                 </h2>
                 <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  La proforma actual ({formatProformaNumberLabel(proforma)}) tiene cambios sin guardar en el historial. Al continuar se iniciará una nueva cotización en modo Borrador, sin afectar las cotizaciones ya guardadas en el Historial.
+                  La proforma actual ({formatProformaNumberLabel(proforma)}) tiene cambios sin guardar en el historial. Al continuar se iniciará una nueva cotización con el siguiente consecutivo disponible, sin afectar las cotizaciones ya guardadas en el Historial.
                 </p>
               </div>
             </div>
@@ -4036,7 +3715,7 @@ export default function App() {
                   Crear o cargar una proforma
                 </h2>
                 <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  Elige si deseas iniciar una cotización nueva en modo Borrador o importar una proforma desde Google Sheet (PROFORMAS).
+                  Elige si deseas iniciar una cotización nueva (con el siguiente consecutivo disponible) o importar una proforma desde Google Sheet (PROFORMAS).
                 </p>
               </div>
             </div>
@@ -4054,8 +3733,8 @@ export default function App() {
                   <FilePlus2 className="h-4 w-4 text-[#8C5A32] dark:text-[#D59B69]" aria-hidden="true" />
                   <span>Crear nueva cotización</span>
                 </span>
-                <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                  Borrador
+                <span className="font-mono text-[11px] font-semibold text-[#8C5A32] dark:text-[#D59B69]">
+                  Nº {nextConsecutivo}
                 </span>
               </button>
 
@@ -4595,89 +4274,6 @@ export default function App() {
         );
       })()}
 
-      {pendingDraftPdfModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="draft-pdf-choice-title"
-          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-[1px] dark:bg-black/75"
-        >
-          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
-            <div className="flex items-start gap-3">
-              <div className="rounded-md bg-amber-50 p-2 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300">
-                <PdfIcon className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <h2
-                  id="draft-pdf-choice-title"
-                  className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
-                >
-                  Esta proforma está en modo Borrador
-                </h2>
-                <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  Elige si deseas generar el PDF marcado como{' '}
-                  <strong className="text-zinc-900 dark:text-zinc-100">
-                    Borrador
-                  </strong>{' '}
-                  o asignarle ahora el siguiente consecutivo disponible desde Google Sheets (PROFORMAS) y actualizar su registro antes de exportar.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2">
-              <button
-                type="button"
-                disabled={isAssigningConsecutivoForPdf}
-                onClick={() => void handleAssignConsecutivoAndExportPdf()}
-                className="flex w-full items-center justify-between rounded-lg border border-black bg-black px-3.5 py-2.5 text-left text-xs font-semibold text-white transition-colors hover:bg-zinc-800 disabled:opacity-50 cursor-pointer dark:border-zinc-700"
-              >
-                <span className="inline-flex items-center gap-2">
-                  {isAssigningConsecutivoForPdf ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Hash className="h-4 w-4 text-amber-300" aria-hidden="true" />
-                  )}
-                  <span>
-                    {isAssigningConsecutivoForPdf
-                      ? 'Asignando consecutivo y generando PDF...'
-                      : 'Asignar consecutivo y generar PDF'}
-                  </span>
-                </span>
-                <span className="font-mono text-[11px] text-zinc-300">
-                  Nº {nextConsecutivo}+
-                </span>
-              </button>
-
-              <button
-                type="button"
-                disabled={isAssigningConsecutivoForPdf}
-                onClick={() => void handleExportPdfAsDraft()}
-                className="flex w-full items-center justify-between rounded-lg border border-[#DCDAD3] bg-[#FAF9F6] px-3.5 py-2.5 text-left text-xs font-semibold text-zinc-900 transition-colors hover:bg-zinc-100 disabled:opacity-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <PdfIcon className="h-4 w-4" />
-                  <span>Generar PDF como Borrador</span>
-                </span>
-                <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10.5px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                  BORRADOR
-                </span>
-              </button>
-            </div>
-
-            <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                disabled={isAssigningConsecutivoForPdf}
-                onClick={() => setPendingDraftPdfModal(null)}
-                className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {pendingDeleteProforma && (
         <div
           role="dialog"
@@ -4763,11 +4359,6 @@ export default function App() {
           isProformaConfirmed && hasUnsavedProformaChanges(proforma, history)
         }
         activeConsecutivo={isProformaConfirmed ? proforma.consecutivo : undefined}
-        activeDraftCode={
-          isProformaConfirmed && isProformaDraft(proforma)
-            ? formatProformaNumberLabel(proforma)
-            : undefined
-        }
         onRefreshFromSheet={() => void handleSyncHistoryFromSheet(false)}
         onGoToIntegration={() => {
           setShowIntegrationTab(true);

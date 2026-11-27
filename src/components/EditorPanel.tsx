@@ -70,11 +70,9 @@ import {
   clampVisualReferenceHeightPx,
   clampVisualReferenceWidthPct,
   formatMoney,
-  formatProformaNumberLabel,
   getCurrencyCode,
   getVisualReferenceBoxHeightPx,
   getVisualReferenceWidthPct,
-  isProformaDraft,
   normalizeSpreadsheetParagraphs,
   normalizeVisualReferenceSize,
 } from '../utils/formatters';
@@ -1745,11 +1743,6 @@ export function EditorPanel({
                   <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                     Control de Consecutivo, Tipo y Moneda
                   </h2>
-                  {isProformaDraft(data) && (
-                    <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                      {formatProformaNumberLabel(data)} (sin consecutivo)
-                    </span>
-                  )}
                 </div>
                 <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
                   Siguiente disponible en navegador: Nº {nextStoredConsecutivo}
@@ -1766,23 +1759,17 @@ export function EditorPanel({
                       id="consecutivo-input"
                       type="number"
                       min={1}
-                      placeholder={
-                        isProformaDraft(data)
-                          ? formatProformaNumberLabel(data)
-                          : 'Borrador'
-                      }
-                      value={isProformaDraft(data) ? '' : data.consecutivo}
+                      placeholder="Ej: 2800"
+                      value={data.consecutivo > 0 ? data.consecutivo : ''}
                       onChange={(e) => {
                         const raw = e.target.value.trim();
                         if (!raw) {
                           onChange((prev) => ({
                             ...prev,
                             consecutivo: 0,
-                            isDraft: true,
-                            draftCode:
-                              prev.draftCode ||
-                              prev.previousConsecutivo ||
-                              'Borrador',
+                            isDraft: false,
+                            draftCode: undefined,
+                            previousConsecutivo: undefined,
                           }));
                           return;
                         }
@@ -1791,15 +1778,9 @@ export function EditorPanel({
                         onChange((prev) => ({
                           ...prev,
                           consecutivo: num,
-                          isDraft: num <= 0,
-                          previousConsecutivo:
-                            num > 0
-                              ? prev.previousConsecutivo || prev.draftCode
-                              : prev.previousConsecutivo,
-                          draftCode:
-                            num > 0
-                              ? undefined
-                              : prev.draftCode || prev.previousConsecutivo,
+                          isDraft: false,
+                          previousConsecutivo: undefined,
+                          draftCode: undefined,
                         }));
                       }}
                       className={`${inputClass} font-mono font-semibold tabular-nums`}
