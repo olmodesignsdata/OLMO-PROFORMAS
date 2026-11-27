@@ -258,6 +258,8 @@ function serializeForDiff(data: ProformaData): string {
   });
 }
 
+const SHEET_AUTO_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+
 function hasProformaUserContent(current: ProformaData): boolean {
   const cp = current.clientProject;
   const hasClientContent = Boolean(
@@ -536,6 +538,11 @@ export default function App() {
     DEFAULT_COMPARE_PREVIEW_ZOOM
   );
   const [isClosingAndSaving, setIsClosingAndSaving] = useState(false);
+  // Sobrescritura automática estrictamente por proforma y por sesión (solo en memoria, sin persistir)
+  const [sessionAutoOverwrite, setSessionAutoOverwrite] = useState<{
+    proformaId: string;
+    consecutivo: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!overwriteSheetConfirm) return;
@@ -568,6 +575,9 @@ export default function App() {
   const latestCloudConfigRef = useRef(cloudConfig);
   const latestSavedClientsRef = useRef(savedClients);
   const latestClientsImportConfigRef = useRef(clientsImportConfig);
+  const isSendingToSheetRef = useRef(isSendingToSheet);
+  const isClosingAndSavingRef = useRef(isClosingAndSaving);
+  const isAutoBackingUpSheetRef = useRef(false);
   const didInitialAranFetchRef = useRef(false);
   const didInitialProformasSyncRef = useRef(false);
   const didInitialClientsSyncRef = useRef(false);
@@ -591,6 +601,53 @@ export default function App() {
   latestCloudConfigRef.current = cloudConfig;
   latestSavedClientsRef.current = savedClients;
   latestClientsImportConfigRef.current = clientsImportConfig;
+  isSendingToSheetRef.current = isSendingToSheet;
+  isClosingAndSavingRef.current = isClosingAndSaving;
+
+  const isSessionAutoOverwriteEnabled = Boolean(
+    isProformaConfirmed &&
+      sessionAutoOverwrite &&
+      sessionAutoOverwrite.proformaId === proforma.id &&
+      sessionAutoOverwrite.consecutivo === proforma.consecutivo &&
+      proforma.consecutivo > 0
+  );
+
+  const handleToggleSessionAutoOverwrite = useCallback(
+    (checked: boolean) => {
+      const current = latestProformaRef.current;
+      if (!latestIsProformaConfirmedRef.current || current.consecutivo <= 0) {
+        setSessionAutoOverwrite(null);
+        return;
+      }
+      setSessionAutoOverwrite(
+        checked
+          ? {
+              proformaId: current.id,
+              consecutivo: current.consecutivo,
+            }
+          : null
+      );
+    },
+    []
+  );
+
+  // Limpiar automáticamente la casilla de sobrescritura al cambiar de proforma, cambiar consecutivo o cerrar sesión
+  useEffect(() => {
+    if (!isProformaConfirmed) {
+      setSessionAutoOverwrite(null);
+      return;
+    }
+    setSessionAutoOverwrite((prev) => {
+      if (!prev) return null;
+      if (
+        prev.proformaId !== proforma.id ||
+        prev.consecutivo !== proforma.consecutivo
+      ) {
+        return null;
+      }
+      return prev;
+    });
+  }, [isProformaConfirmed, proforma.id, proforma.consecutivo]);
 
   const confirmActiveProforma = useCallback(() => {
     setIsProformaConfirmed(true);
@@ -1092,6 +1149,7 @@ export default function App() {
     fresh.signatures.representanteNombre =
       latestProformaRef.current.signatures.representanteNombre;
 
+    setSessionAutoOverwrite(null);
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(fresh);
@@ -1224,6 +1282,7 @@ export default function App() {
       setLastLocalSavedAt(null);
       setAutosaveStatus('idle');
       hasEditedSinceLoadRef.current = false;
+      setSessionAutoOverwrite(null);
       setIsProformaConfirmed(false);
       latestIsProformaConfirmedRef.current = false;
       saveActiveProformaConfirmed(false);
@@ -1262,8 +1321,10 @@ export default function App() {
       autosaveTimerRef.current = null;
     }
 
+    isSendingToSheetRef.current = true;
     setIsSendingToSheet(true);
     if (closeAfterSave) {
+      isClosingAndSavingRef.current = true;
       setIsClosingAndSaving(true);
     }
 
@@ -1301,11 +1362,12 @@ export default function App() {
       );
       setNextConsecutivoState(updatedNext);
 
+      const latestCfg = latestCloudConfigRef.current;
       const nextCfg: CloudSyncConfig = {
-        ...cloudConfig,
+        ...latestCfg,
         lastSyncedAt: res.ok
           ? new Date().toISOString()
-          : cloudConfig.lastSyncedAt,
+          : latestCfg.lastSyncedAt,
         lastStatus: res.ok ? 'ok' : 'error',
         lastMessage: res.message,
       };
@@ -1350,9 +1412,155 @@ export default function App() {
         true
       );
     } finally {
+      isSendingToSheetRef.current = false;
+      isClosingAndSavingRef.current = false;
       setIsSendingToSheet(false);
       setIsClosingAndSaving(false);
     }
+  };
+
+  const runSilentSheetAutoBackup = useCallback(async () => {
+    if (!latestIsProformaConfirmedRef.current) return;
+    const currentCfg = latestCloudConfigRef.current;
+    if (!currentCfg.webhookUrl.trim()) return;
+    if (
+      isSendingToSheetRef.current ||
+      isClosingAndSavingRef.current ||
+      isAutoBackingUpSheetRef.current
+    ) {
+      return;
+    }
+
+    const snapshotRaw = latestProformaRef.current;
+    if (!snapshotRaw || snapshotRaw.consecutivo <= 0) return;
+
+    const snapshotData: ProformaData = {
+      ...snapshotRaw,
+      isDraft: false,
+      draftCode: undefined,
+      previousConsecutivo: undefined,
+    };
+    const snapshotTotals = computeProformaTotals(snapshotData);
+
+    isAutoBackingUpSheetRef.current = true;
+    try {
+      const res = await sendProformaToWebhook(
+        currentCfg,
+        snapshotData,
+        snapshotTotals,
+        { overwrite: true }
+      );
+
+      const latestCfg = latestCloudConfigRef.current;
+      const nextCfg: CloudSyncConfig = {
+        ...latestCfg,
+        lastSyncedAt: res.ok
+          ? new Date().toISOString()
+          : latestCfg.lastSyncedAt,
+        lastStatus: res.ok ? 'ok' : 'error',
+        lastMessage: res.message,
+      };
+      setCloudConfig(nextCfg);
+      saveCloudConfig(nextCfg);
+
+      if (res.ok) {
+        const updatedHistory = saveProformaToHistory(
+          snapshotData,
+          snapshotTotals.total,
+          {
+            syncedToSheet: true,
+            unsyncedLocal: false,
+          }
+        );
+        setHistory(updatedHistory);
+        latestHistoryRef.current = updatedHistory;
+        const updatedNext = setNextConsecutivo(
+          computeNextConsecutivoFromRecords(
+            updatedHistory,
+            latestRemoteHistoryRef.current
+          )
+        );
+        setNextConsecutivoState(updatedNext);
+        await syncHistoryFromSheetRef.current?.(true);
+      }
+    } catch {
+      // Respaldo periódico silencioso sin interrumpir la edición
+    } finally {
+      isAutoBackingUpSheetRef.current = false;
+    }
+  }, []);
+
+  // Respaldo automático periódico al Google Sheet de PROFORMAS cada 5 minutos mientras haya una proforma activa/confirmada
+  useEffect(() => {
+    if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
+    const timerId = window.setInterval(() => {
+      void runSilentSheetAutoBackup();
+    }, SHEET_AUTO_BACKUP_INTERVAL_MS);
+    return () => window.clearInterval(timerId);
+  }, [
+    isProformaConfirmed,
+    cloudConfig.webhookUrl,
+    proforma.id,
+    runSilentSheetAutoBackup,
+  ]);
+
+  const handleWorkingBarSave = async () => {
+    if (!isProformaConfirmed || isSendingToSheet || isClosingAndSaving) return;
+
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+
+    const savedAt = saveDraftProforma(proforma);
+    if (savedAt) {
+      setLastLocalSavedAt(savedAt);
+      setAutosaveStatus('saved');
+    }
+
+    const updatedHistory = saveProformaToHistory(proforma, totals.total, {
+      unsyncedLocal: !cloudConfig.webhookUrl.trim() ? true : undefined,
+    });
+    setHistory(updatedHistory);
+    latestHistoryRef.current = updatedHistory;
+    const updatedNext = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(
+        updatedHistory,
+        latestRemoteHistoryRef.current
+      )
+    );
+    setNextConsecutivoState(updatedNext);
+
+    const numLabel = formatProformaNumberLabel(proforma);
+    if (!cloudConfig.webhookUrl.trim()) {
+      showToast(
+        `Proforma ${numLabel} guardada en historial local (configura Integración para sincronizar con el Sheet).`
+      );
+      return;
+    }
+
+    if (isSessionAutoOverwriteEnabled) {
+      await sendActiveProformaToSheetAndSync({
+        overwrite: true,
+        closeAfterSave: false,
+      });
+      return;
+    }
+
+    const existingSheetRecord = findExistingSheetProforma(proforma);
+    if (existingSheetRecord) {
+      setOverwriteModalTab('table');
+      setOverwriteSheetConfirm({
+        existingRecord: existingSheetRecord,
+        closeAfterSave: false,
+      });
+      return;
+    }
+
+    await sendActiveProformaToSheetAndSync({
+      overwrite: false,
+      closeAfterSave: false,
+    });
   };
 
   const handleSendProformaToSheet = () => {
@@ -1368,6 +1576,14 @@ export default function App() {
         'Falta configurar la URL de Google Apps Script (/exec) en la pestaña Integración antes de enviar la proforma al Google Sheet.',
         true
       );
+      return;
+    }
+
+    if (isSessionAutoOverwriteEnabled) {
+      void sendActiveProformaToSheetAndSync({
+        overwrite: true,
+        closeAfterSave: false,
+      });
       return;
     }
 
@@ -1406,6 +1622,14 @@ export default function App() {
     const currentLabel = formatProformaNumberLabel(proforma);
 
     if (cloudConfig.webhookUrl.trim()) {
+      if (isSessionAutoOverwriteEnabled) {
+        await sendActiveProformaToSheetAndSync({
+          overwrite: true,
+          closeAfterSave: true,
+        });
+        return;
+      }
+
       const existingSheetRecord = findExistingSheetProforma(proforma);
       if (existingSheetRecord) {
         setShowCloseQuoteConfirm(false);
@@ -1733,6 +1957,7 @@ export default function App() {
       const loaded = normalizeProformaClientContact(
         JSON.parse(JSON.stringify(candidateData)) as ProformaData
       );
+      setSessionAutoOverwrite(null);
       confirmActiveProforma();
       hasEditedSinceLoadRef.current = false;
       resetProforma(loaded);
@@ -1786,6 +2011,7 @@ export default function App() {
       };
 
       if (!isProformaConfirmed) {
+        setSessionAutoOverwrite(null);
         confirmActiveProforma();
         hasEditedSinceLoadRef.current = true;
         resetProforma(importedProforma);
@@ -1813,6 +2039,7 @@ export default function App() {
       JSON.parse(JSON.stringify(pendingLoadDraft.data)) as ProformaData
     );
     const markEdited = Boolean(pendingLoadDraft.markEditedOnConfirm);
+    setSessionAutoOverwrite(null);
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = markEdited;
     resetProforma(loaded);
@@ -1854,6 +2081,7 @@ export default function App() {
     cloned.draftCode = undefined;
     cloned.previousConsecutivo = undefined;
     cloned.updatedAt = new Date().toISOString();
+    setSessionAutoOverwrite(null);
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = true;
     resetProforma(cloned);
@@ -2704,6 +2932,7 @@ export default function App() {
       draftCode: undefined,
       previousConsecutivo: undefined,
     };
+    setSessionAutoOverwrite(null);
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(loaded);
@@ -3147,9 +3376,28 @@ export default function App() {
                     : 'Trabajando en la cotización'}
                 </span>
               </span>
+
+              {isProformaConfirmed && proforma.consecutivo > 0 && (
+                <label
+                  className="inline-flex items-center gap-2 rounded-md border border-[#E3E1DA] bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 transition-colors hover:border-[#8C5A32]/50 cursor-pointer select-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-[#D59B69]/50"
+                  title="Aplica únicamente a esta proforma durante la sesión actual. Si se marca, Guardar y Guardar y cerrar sobrescriben directamente en el Sheet sin volver a preguntar."
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSessionAutoOverwriteEnabled}
+                    onChange={(e) =>
+                      handleToggleSessionAutoOverwrite(e.target.checked)
+                    }
+                    className="h-3.5 w-3.5 rounded border-zinc-300 text-[#8C5A32] accent-[#8C5A32] cursor-pointer dark:border-zinc-600"
+                  />
+                  <span>
+                    Sobrescribir proforma #{proforma.consecutivo} automáticamente en esta sesión
+                  </span>
+                </label>
+              )}
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] border-collapse text-left text-xs">
+              <table className="w-full min-w-[880px] border-collapse text-left text-xs">
                 <thead>
                   <tr
                     className={`border-b text-[10.5px] font-semibold uppercase tracking-wide ${
@@ -3163,7 +3411,7 @@ export default function App() {
                     <th className="px-3.5 py-1.5">Proyecto</th>
                     <th className="w-[80px] px-3.5 py-1.5 text-center">Ítems</th>
                     <th className="w-[140px] px-3.5 py-1.5 text-right">Total</th>
-                    <th className="w-[450px] px-3.5 py-1.5 text-right">Acciones</th>
+                    <th className="min-w-[360px] px-3.5 py-1.5 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3265,6 +3513,38 @@ export default function App() {
                             <span>Crear o cargar una proforma</span>
                           </button>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleWorkingBarSave()}
+                          disabled={
+                            !isProformaConfirmed ||
+                            isSendingToSheet ||
+                            isClosingAndSaving
+                          }
+                          title={
+                            !isProformaConfirmed
+                              ? 'Selecciona, crea o importa una proforma antes de guardar'
+                              : isSessionAutoOverwriteEnabled
+                                ? `Guardar y sobrescribir directamente la Proforma ${formatProformaNumberLabel(proforma)} en el Sheet durante esta sesión`
+                                : `Guardar la Proforma ${formatProformaNumberLabel(proforma)} en el historial y en Google Sheets`
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                        >
+                          {isSendingToSheet && !isClosingAndSaving ? (
+                            <Loader2
+                              className="h-3.5 w-3.5 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                          <span>
+                            {isSendingToSheet && !isClosingAndSaving
+                              ? 'Guardando...'
+                              : 'Guardar'}
+                          </span>
+                        </button>
 
                         <button
                           type="button"
@@ -4240,34 +4520,54 @@ export default function App() {
               </div>
 
               {/* Pie fijo con acciones siempre visibles y operativas */}
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#E5E4DF] bg-white px-5 py-3.5 dark:border-zinc-800 dark:bg-zinc-900">
-                <button
-                  type="button"
-                  disabled={isSendingToSheet || isClosingAndSaving}
-                  onClick={() => setOverwriteSheetConfirm(null)}
-                  className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  disabled={isSendingToSheet || isClosingAndSaving}
-                  onClick={() => void executeOverwriteSendToSheet()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-amber-700 disabled:opacity-45 cursor-pointer dark:bg-amber-600 dark:hover:bg-amber-500"
-                >
-                  {isSendingToSheet || isClosingAndSaving ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  <span>
-                    {isSendingToSheet || isClosingAndSaving
-                      ? 'Sobrescribiendo...'
-                      : overwriteSheetConfirm.closeAfterSave
-                        ? 'Sí, sobrescribir y cerrar'
-                        : 'Sí, sobrescribir proforma'}
-                  </span>
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E4DF] bg-white px-5 py-3.5 dark:border-zinc-800 dark:bg-zinc-900">
+                {proforma.consecutivo > 0 ? (
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-700 cursor-pointer select-none dark:text-zinc-200">
+                    <input
+                      type="checkbox"
+                      checked={isSessionAutoOverwriteEnabled}
+                      onChange={(e) =>
+                        handleToggleSessionAutoOverwrite(e.target.checked)
+                      }
+                      className="h-3.5 w-3.5 rounded border-zinc-300 text-[#8C5A32] accent-[#8C5A32] cursor-pointer dark:border-zinc-600"
+                    />
+                    <span>
+                      Sobrescribir proforma #{proforma.consecutivo} automáticamente en esta sesión
+                    </span>
+                  </label>
+                ) : (
+                  <span />
+                )}
+
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={isSendingToSheet || isClosingAndSaving}
+                    onClick={() => setOverwriteSheetConfirm(null)}
+                    className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSendingToSheet || isClosingAndSaving}
+                    onClick={() => void executeOverwriteSendToSheet()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-amber-700 disabled:opacity-45 cursor-pointer dark:bg-amber-600 dark:hover:bg-amber-500"
+                  >
+                    {isSendingToSheet || isClosingAndSaving ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <CloudUpload className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    <span>
+                      {isSendingToSheet || isClosingAndSaving
+                        ? 'Sobrescribiendo...'
+                        : overwriteSheetConfirm.closeAfterSave
+                          ? 'Sí, sobrescribir y cerrar'
+                          : 'Sí, sobrescribir proforma'}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
