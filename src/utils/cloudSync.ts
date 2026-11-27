@@ -144,10 +144,12 @@ function doPost(e) {
       rawLegacyAction === "delete_client" ||
       rawEvent === "client_upsert" ||
       rawEvent === "client_delete" ||
+      Boolean(payload.clienteData) ||
       (Boolean(payload.client) && !payload.proforma);
 
     if (isClientReq) {
       const sheetName = payload.sheetName || "CLIENTES";
+      const clientObj = payload.clienteData || payload.client || {};
       const isClientDelete =
         rawAction === "delete" ||
         rawAction === "delete_client" ||
@@ -159,8 +161,14 @@ function doPost(e) {
         if (!sheet) {
           return jsonResponse({ ok: true, deleted: false, sheet: sheetName });
         }
-        const targetName = String((payload.client && payload.client.cliente) || payload.cliente || "").trim().toLowerCase();
-        const originalName = String((payload.client && payload.client.originalCliente) || payload.originalCliente || "").trim().toLowerCase();
+        const targetName = String(clientObj.cliente || payload.cliente || "").trim().toLowerCase();
+        const originalName = String(
+          clientObj.previousCliente ||
+          clientObj.originalCliente ||
+          payload.previousCliente ||
+          payload.originalCliente ||
+          ""
+        ).trim().toLowerCase();
         if (!targetName && !originalName) {
           return jsonResponse({ ok: false, error: "Nombre de cliente requerido para eliminar." });
         }
@@ -186,7 +194,7 @@ function doPost(e) {
         });
       }
 
-      const c = payload.client || {};
+      const c = clientObj;
       let sheet = ss.getSheetByName(sheetName);
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
@@ -196,8 +204,14 @@ function doPost(e) {
 
       removeBlankRows_(sheet, 6);
       const values = sheet.getDataRange().getValues();
-      const targetName = String(c.cliente || "").trim().toLowerCase();
-      const originalName = String(c.originalCliente || "").trim().toLowerCase();
+      const targetName = String(c.cliente || payload.cliente || "").trim().toLowerCase();
+      const originalName = String(
+        c.previousCliente ||
+        c.originalCliente ||
+        payload.previousCliente ||
+        payload.originalCliente ||
+        ""
+      ).trim().toLowerCase();
       const matchedRows = [];
       for (var r = 1; r < values.length; r++) {
         var rowClient = String(values[r][0] || "").trim().toLowerCase();
@@ -210,7 +224,7 @@ function doPost(e) {
       }
 
       const rowValues = [
-        c.cliente || "",
+        c.cliente || payload.cliente || "",
         c.contacto || "",
         c.telefono || "",
         c.correo || "",
@@ -267,14 +281,24 @@ function doPost(e) {
       const targetId = String(payload.draftId || payload.id || "").trim();
       const rawTargetNum = payload.consecutivo !== undefined ? String(payload.consecutivo).trim() : "";
       const isNumberedTarget = Boolean(rawTargetNum && rawTargetNum.toLowerCase() !== "borrador" && Number(rawTargetNum) > 0);
+      const targetCliente = String(payload.cliente || "").trim().toLowerCase();
+      const targetProyecto = String(payload.proyecto || "").trim().toLowerCase();
       const existingDel = sheet.getDataRange().getValues();
       let deletedCount = 0;
       for (var dIdx = existingDel.length - 1; dIdx >= 1; dIdx--) {
         var jsonCell = String(existingDel[dIdx][17] || "");
         var rowNumCell = String(existingDel[dIdx][1] || "").trim();
+        var rowClienteCell = String(existingDel[dIdx][3] || "").trim().toLowerCase();
+        var rowProyectoCell = String(existingDel[dIdx][8] || "").trim().toLowerCase();
         var matchesId = targetId && rowJsonMatchesId_(jsonCell, targetId);
         var matchesNum = isNumberedTarget && rowNumCell === rawTargetNum;
-        if (matchesId || matchesNum) {
+        var matchesMetaFallback =
+          !isNumberedTarget &&
+          (rowNumCell === "" || rowNumCell.toLowerCase() === "borrador") &&
+          Boolean(targetCliente || targetProyecto) &&
+          (!targetCliente || rowClienteCell === targetCliente) &&
+          (!targetProyecto || rowProyectoCell === targetProyecto);
+        if (matchesId || matchesNum || matchesMetaFallback) {
           sheet.deleteRow(dIdx + 1);
           deletedCount++;
         }
@@ -293,7 +317,7 @@ function doPost(e) {
       new Date(),
       targetConsecutivo,
       p.clientProject.fecha,
-      p.clientProject.cliente,
+      payload.cliente || p.clientProject.cliente,
       p.clientProject.contacto,
       p.clientProject.telefono || "",
       p.clientProject.correo || "",
@@ -325,11 +349,15 @@ function doPost(e) {
     }
 
     const allowOverwrite =
-      payload.overwrite === true ||
-      rawAction === "overwrite" ||
-      payload.mode === "overwrite" ||
-      payload.overwrite === undefined ||
-      isDraftDoc;
+      payload.overwrite === false
+        ? false
+        : (
+            payload.overwrite === true ||
+            rawAction === "overwrite" ||
+            payload.mode === "overwrite" ||
+            payload.overwrite === undefined ||
+            isDraftDoc
+          );
 
     if (matchedRows.length > 0) {
       if (!allowOverwrite) {
@@ -359,7 +387,7 @@ function doPost(e) {
 export interface CloudSyncPayload {
   entity: 'proforma';
   event: 'proforma_saved';
-  action: 'overwrite' | 'update';
+  action: 'overwrite';
   sentAt: string;
   token?: string;
   id: string;
@@ -368,6 +396,7 @@ export interface CloudSyncPayload {
   draftId: string;
   overwrite: boolean;
   mode: 'overwrite' | 'create';
+  cliente: string;
   proyecto: string;
   Datos_JSON: string;
   proforma: ProformaData;
@@ -385,7 +414,7 @@ export function buildCloudPayload(
   return {
     entity: 'proforma',
     event: 'proforma_saved',
-    action: isOverwrite ? 'overwrite' : 'update',
+    action: 'overwrite',
     sentAt: new Date().toISOString(),
     ...(secretToken ? { token: secretToken } : {}),
     id: proforma.id,
@@ -394,6 +423,7 @@ export function buildCloudPayload(
     draftId: proforma.id,
     overwrite: isOverwrite,
     mode: isOverwrite ? 'overwrite' : 'create',
+    cliente: (proforma.clientProject.cliente ?? '').trim(),
     proyecto: (proforma.clientProject.proyecto ?? '').trim(),
     Datos_JSON: JSON.stringify(proforma),
     proforma,
@@ -535,7 +565,14 @@ export async function sendProformaToWebhook(
 
 export async function deleteProformaFromSheet(
   config: CloudSyncConfig,
-  record: { id?: string; consecutivo?: number; isDraft?: boolean }
+  record: {
+    id?: string;
+    consecutivo?: number;
+    isDraft?: boolean;
+    cliente?: string;
+    proyecto?: string;
+    data?: ProformaData;
+  }
 ): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
   if (!config.webhookUrl.trim()) {
     return {
@@ -549,6 +586,20 @@ export async function deleteProformaFromSheet(
     return { ok: false, message: validated };
   }
   const url = validated.toString();
+  const isDraftDoc = Boolean(
+    record.isDraft || !record.consecutivo || record.consecutivo <= 0
+  );
+  const resolvedId = record.id ?? record.data?.id ?? '';
+  const resolvedCliente = (
+    record.cliente ??
+    record.data?.clientProject?.cliente ??
+    ''
+  ).trim();
+  const resolvedProyecto = (
+    record.proyecto ??
+    record.data?.clientProject?.proyecto ??
+    ''
+  ).trim();
   const payload = {
     entity: 'proforma',
     event: 'proforma_delete',
@@ -556,12 +607,12 @@ export async function deleteProformaFromSheet(
     legacyAction: 'delete_proforma',
     sentAt: new Date().toISOString(),
     ...(config.secretToken.trim() ? { token: config.secretToken.trim() } : {}),
-    draftId: record.id ?? '',
-    id: record.id ?? '',
-    consecutivo:
-      record.isDraft || !record.consecutivo || record.consecutivo <= 0
-        ? 'Borrador'
-        : record.consecutivo,
+    draftId: resolvedId,
+    id: resolvedId,
+    isDraft: isDraftDoc,
+    consecutivo: isDraftDoc ? 'Borrador' : record.consecutivo,
+    cliente: resolvedCliente,
+    proyecto: resolvedProyecto,
   };
   const serialized = JSON.stringify(payload);
   const label = formatProformaNumberLabel(record);
@@ -653,6 +704,18 @@ export async function sendClientToGoogleSheet(
   }
 
   const url = validated.toString();
+  const cleanCliente = client.cliente.trim();
+  const cleanPrevCliente = originalCliente?.trim() || '';
+  const clientPayloadObj = {
+    id: clientId?.trim() || '',
+    cliente: cleanCliente,
+    previousCliente: cleanPrevCliente,
+    originalCliente: cleanPrevCliente,
+    contacto: client.contacto.trim(),
+    telefono: client.telefono.trim(),
+    correo: client.correo.trim(),
+    ubicacion: client.ubicacion.trim(),
+  };
   const payload = {
     entity: 'client',
     event: 'client_upsert',
@@ -661,15 +724,11 @@ export async function sendClientToGoogleSheet(
     id: clientId?.trim() || '',
     sheetName: sheetName.trim() || 'CLIENTES',
     sentAt: new Date().toISOString(),
-    client: {
-      id: clientId?.trim() || '',
-      cliente: client.cliente.trim(),
-      originalCliente: originalCliente?.trim() || '',
-      contacto: client.contacto.trim(),
-      telefono: client.telefono.trim(),
-      correo: client.correo.trim(),
-      ubicacion: client.ubicacion.trim(),
-    },
+    cliente: cleanCliente,
+    previousCliente: cleanPrevCliente,
+    originalCliente: cleanPrevCliente,
+    clienteData: clientPayloadObj,
+    client: clientPayloadObj,
   };
   const serialized = JSON.stringify(payload);
 
@@ -751,7 +810,8 @@ export async function deleteClientFromGoogleSheet(
   appsScriptUrl: string,
   clienteName: string,
   sheetName = 'CLIENTES',
-  clientId?: string
+  clientId?: string,
+  clientDetails?: Partial<ClientImportRow>
 ): Promise<{ ok: boolean; message: string; opaque?: boolean }> {
   const validated = validateHttpUrl(appsScriptUrl);
   if (typeof validated === 'string') {
@@ -772,6 +832,16 @@ export async function deleteClientFromGoogleSheet(
 
   const url = validated.toString();
   const targetSheet = sheetName.trim() || 'CLIENTES';
+  const clientDeleteObj = {
+    id: clientId?.trim() || '',
+    cliente: cleanName,
+    previousCliente: cleanName,
+    originalCliente: cleanName,
+    contacto: clientDetails?.contacto?.trim() || '',
+    telefono: clientDetails?.telefono?.trim() || '',
+    correo: clientDetails?.correo?.trim() || '',
+    ubicacion: clientDetails?.ubicacion?.trim() || '',
+  };
   const payload = {
     entity: 'client',
     event: 'client_delete',
@@ -781,10 +851,10 @@ export async function deleteClientFromGoogleSheet(
     sheetName: targetSheet,
     sentAt: new Date().toISOString(),
     cliente: cleanName,
-    client: {
-      id: clientId?.trim() || '',
-      cliente: cleanName,
-    },
+    previousCliente: cleanName,
+    originalCliente: cleanName,
+    clienteData: clientDeleteObj,
+    client: clientDeleteObj,
   };
   const serialized = JSON.stringify(payload);
 

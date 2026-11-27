@@ -243,6 +243,7 @@ export async function generateProformaPDF(
   const contentWidth = pageWidth - margin * 2;
 
   const charcoal: [number, number, number] = [24, 24, 27];
+  const headerSlate: [number, number, number] = [39, 39, 42];
   const mutedText: [number, number, number] = [82, 82, 91];
   const lightBorder: [number, number, number] = [228, 228, 231];
   const subtleBg: [number, number, number] = [247, 246, 243];
@@ -512,7 +513,7 @@ export async function generateProformaPDF(
 
   const rightBottomY = boxTopY + 29;
   let y = Math.max(leftBottomY + 3.5, rightBottomY + 4);
-  doc.setDrawColor(...charcoal);
+  doc.setDrawColor(...headerSlate);
   doc.setLineWidth(0.6);
   doc.line(margin, y, pageWidth - margin, y);
   y += 5;
@@ -594,7 +595,7 @@ export async function generateProformaPDF(
       rowPageBreak: 'avoid',
       theme: 'grid',
       headStyles: {
-        fillColor: charcoal,
+        fillColor: headerSlate,
         textColor: [255, 255, 255],
         fontStyle: 'bold',
         fontSize: 7.8,
@@ -668,7 +669,7 @@ export async function generateProformaPDF(
       rowPageBreak: 'avoid',
       theme: 'grid',
       headStyles: {
-        fillColor: charcoal,
+        fillColor: headerSlate,
         textColor: [255, 255, 255],
         fontStyle: 'bold',
         fontSize: 7.8,
@@ -719,7 +720,7 @@ export async function generateProformaPDF(
       rowPageBreak: 'avoid',
       theme: 'grid',
       headStyles: {
-        fillColor: charcoal,
+        fillColor: headerSlate,
         textColor: [255, 255, 255],
         fontStyle: 'bold',
         fontSize: 8,
@@ -831,7 +832,7 @@ export async function generateProformaPDF(
         {
           content: `TOTAL (${data.clientProject.moneda})`,
           styles: {
-            fillColor: charcoal,
+            fillColor: headerSlate,
             textColor: [255, 255, 255],
             fontStyle: 'bold',
             fontSize: 9,
@@ -840,7 +841,7 @@ export async function generateProformaPDF(
         {
           content: formatMoney(totals.total, data.clientProject.moneda),
           styles: {
-            fillColor: charcoal,
+            fillColor: headerSlate,
             textColor: [255, 255, 255],
             fontStyle: 'bold',
             fontSize: 9,
@@ -1163,7 +1164,7 @@ export async function generateProformaPDF(
     margin: { left: margin, right: margin },
     theme: 'grid',
     headStyles: {
-      fillColor: charcoal,
+      fillColor: headerSlate,
       textColor: [255, 255, 255],
       fontStyle: 'bold',
       fontSize: 8.2,
@@ -1242,7 +1243,7 @@ export async function generateProformaPDF(
   const rightSigX = margin + sigWidth + 18;
 
   // Firma Representante OLMO
-  doc.setDrawColor(...charcoal);
+  doc.setDrawColor(...headerSlate);
   doc.setLineWidth(0.45);
   doc.line(leftSigX, y + 10, leftSigX + sigWidth, y + 10);
 
@@ -1272,7 +1273,7 @@ export async function generateProformaPDF(
   });
 
   // Firma Cliente
-  doc.setDrawColor(...charcoal);
+  doc.setDrawColor(...headerSlate);
   doc.line(rightSigX, y + 10, rightSigX + sigWidth, y + 10);
 
   doc.setFont('helvetica', 'bold');

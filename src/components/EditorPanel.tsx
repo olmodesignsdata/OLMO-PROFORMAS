@@ -1027,27 +1027,68 @@ export function EditorPanel({
     }));
   };
 
-  const updateCielosPisosField = (
+  const getEffectiveUnitPrice = (item: ProductLineItem): number => {
+    if (
+      typeof item.valorUnitario === 'number' &&
+      Number.isFinite(item.valorUnitario)
+    ) {
+      return item.valorUnitario;
+    }
+    const qty = Number(item.cantidad);
+    const totalVal = Number(item.valor);
+    if (Number.isFinite(qty) && qty > 0 && Number.isFinite(totalVal)) {
+      return Math.round((totalVal / qty) * 100) / 100;
+    }
+    return 0;
+  };
+
+  const updateItemPricing = (
     id: string,
-    field: 'cantidad' | 'valorUnitario',
-    numericValue: number
+    field: 'cantidad' | 'valorUnitario' | 'valor',
+    numericValue: number,
+    isCielosPisos: boolean
   ) => {
+    const safeVal = Number.isFinite(numericValue)
+      ? Math.max(0, numericValue)
+      : 0;
     onChange((prev) => ({
       ...prev,
       items: prev.items.map((item) => {
         if (item.id !== id) return item;
-        const nextQty = field === 'cantidad' ? numericValue : item.cantidad;
+        if (field === 'cantidad') {
+          const unitPrice = getEffectiveUnitPrice(item);
+          const nextTotal = Math.round(safeVal * unitPrice * 100) / 100;
+          return {
+            ...item,
+            cantidad: safeVal,
+            ...(isCielosPisos ? { unidad: 'm²' } : {}),
+            valorUnitario: unitPrice,
+            valor: nextTotal,
+          };
+        }
+        if (field === 'valorUnitario') {
+          const qty = Number.isFinite(Number(item.cantidad))
+            ? Math.max(0, Number(item.cantidad))
+            : 0;
+          const nextTotal = Math.round(qty * safeVal * 100) / 100;
+          return {
+            ...item,
+            ...(isCielosPisos ? { unidad: 'm²' } : {}),
+            valorUnitario: safeVal,
+            valor: nextTotal,
+          };
+        }
+        const qty = Number.isFinite(Number(item.cantidad))
+          ? Number(item.cantidad)
+          : 0;
         const nextUnit =
-          field === 'valorUnitario'
-            ? numericValue
-            : item.valorUnitario ?? 0;
-        const nextTotal = Math.round(nextQty * nextUnit * 100) / 100;
+          qty > 0
+            ? Math.round((safeVal / qty) * 100) / 100
+            : getEffectiveUnitPrice(item);
         return {
           ...item,
-          cantidad: nextQty,
-          unidad: 'm²',
+          valor: safeVal,
           valorUnitario: nextUnit,
-          valor: nextTotal,
         };
       }),
     }));
@@ -1329,7 +1370,7 @@ export function EditorPanel({
       cantidad: 1,
       unidad: proformaType === 'cielos_pisos' ? 'm²' : 'und(s)',
       valor: 0,
-      valorUnitario: proformaType === 'cielos_pisos' ? 0 : undefined,
+      valorUnitario: 0,
       imagen: '',
     };
     if (productSearchQuery.trim()) {
@@ -3259,10 +3300,11 @@ export function EditorPanel({
                             value={item.cantidad}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              updateCielosPisosField(
+                              updateItemPricing(
                                 item.id,
                                 'cantidad',
-                                Number.isNaN(val) ? 0 : Math.max(0, val)
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                true
                               );
                             }}
                             className={`${inputClass} font-mono tabular-nums`}
@@ -3275,13 +3317,14 @@ export function EditorPanel({
                             type="number"
                             min={0}
                             step="0.01"
-                            value={item.valorUnitario ?? 0}
+                            value={getEffectiveUnitPrice(item)}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              updateCielosPisosField(
+                              updateItemPricing(
                                 item.id,
                                 'valorUnitario',
-                                Number.isNaN(val) ? 0 : Math.max(0, val)
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                true
                               );
                             }}
                             className={`${inputClass} font-mono text-right tabular-nums`}
@@ -3299,10 +3342,11 @@ export function EditorPanel({
                             value={item.valor}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              updateItem(
+                              updateItemPricing(
                                 item.id,
                                 'valor',
-                                Number.isNaN(val) ? 0 : Math.max(0, val)
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                true
                               );
                             }}
                             className={`${inputClass} font-mono text-right font-semibold tabular-nums`}
@@ -3324,7 +3368,7 @@ export function EditorPanel({
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                        <div className="sm:col-span-5">
+                        <div className="sm:col-span-8">
                           <label className={labelClass}>
                             {proformaType === 'griferia'
                               ? 'Código Producto'
@@ -3347,26 +3391,7 @@ export function EditorPanel({
                           />
                         </div>
 
-                        <div className="sm:col-span-2">
-                          <label className={labelClass}>Cantidad</label>
-                          <input
-                            type="number"
-                            min={0}
-                            step="any"
-                            value={item.cantidad}
-                            onChange={(e) => {
-                              const val = parseFloat(e.target.value);
-                              updateItem(
-                                item.id,
-                                'cantidad',
-                                Number.isNaN(val) ? 0 : Math.max(0, val)
-                              );
-                            }}
-                            className={`${inputClass} font-mono tabular-nums`}
-                          />
-                        </div>
-
-                        <div className="sm:col-span-2">
+                        <div className="sm:col-span-4">
                           <label className={labelClass}>Unidad</label>
                           <input
                             type="text"
@@ -3379,9 +3404,49 @@ export function EditorPanel({
                           />
                         </div>
 
-                        <div className="sm:col-span-3">
+                        <div className="sm:col-span-4">
+                          <label className={labelClass}>Cantidad</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={item.cantidad}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              updateItemPricing(
+                                item.id,
+                                'cantidad',
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                false
+                              );
+                            }}
+                            className={`${inputClass} font-mono tabular-nums`}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className={labelClass}>Valor Unitario</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={getEffectiveUnitPrice(item)}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              updateItemPricing(
+                                item.id,
+                                'valorUnitario',
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                false
+                              );
+                            }}
+                            className={`${inputClass} font-mono text-right tabular-nums`}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
                           <label className={labelClass}>
-                            Valor ({data.clientProject.moneda})
+                            Valor ({getCurrencyCode(data.clientProject.moneda)})
                           </label>
                           <input
                             type="number"
@@ -3390,10 +3455,11 @@ export function EditorPanel({
                             value={item.valor}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value);
-                              updateItem(
+                              updateItemPricing(
                                 item.id,
                                 'valor',
-                                Number.isNaN(val) ? 0 : Math.max(0, val)
+                                Number.isNaN(val) ? 0 : Math.max(0, val),
+                                false
                               );
                             }}
                             className={`${inputClass} font-mono text-right font-semibold tabular-nums`}

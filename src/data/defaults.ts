@@ -253,7 +253,7 @@ export function createEmptyProductLine(
     cantidad: 1,
     unidad: proformaType === 'cielos_pisos' ? 'm²' : 'und(s)',
     valor: 0,
-    valorUnitario: proformaType === 'cielos_pisos' ? 0 : undefined,
+    valorUnitario: 0,
     imagen: '',
   };
 }

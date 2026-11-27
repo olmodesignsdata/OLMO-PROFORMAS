@@ -104,7 +104,6 @@ import {
   processLogoUrl,
   rasterizeLogoForPdf,
 } from './utils/logoUtils';
-import { getConnectionButtonClasses } from './utils/connectionStyles';
 import {
   clearDraftProforma,
   computeNextConsecutivoFromRecords,
@@ -492,6 +491,10 @@ export default function App() {
   const [pendingDraftPdfModal, setPendingDraftPdfModal] = useState<{
     data: ProformaData;
     isActiveProforma: boolean;
+    promptPostPdfAction?: boolean;
+  } | null>(null);
+  const [postPdfActionModal, setPostPdfActionModal] = useState<{
+    fileName: string;
   } | null>(null);
   const [isAssigningConsecutivoForPdf, setIsAssigningConsecutivoForPdf] =
     useState(false);
@@ -510,9 +513,6 @@ export default function App() {
   const [showNewQuoteConfirm, setShowNewQuoteConfirm] = useState(false);
   const [showCreateOrLoadModal, setShowCreateOrLoadModal] = useState(false);
   const [showCloseQuoteConfirm, setShowCloseQuoteConfirm] = useState(false);
-  const [closeStepConfirm, setCloseStepConfirm] = useState<
-    'discard' | 'save' | null
-  >(null);
   const [overwriteSheetConfirm, setOverwriteSheetConfirm] = useState<{
     existingRecord: SavedProformaRecord;
     closeAfterSave: boolean;
@@ -861,7 +861,7 @@ export default function App() {
         showNewQuoteConfirm ||
         showCreateOrLoadModal ||
         showCloseQuoteConfirm ||
-        closeStepConfirm ||
+        postPdfActionModal ||
         overwriteSheetConfirm ||
         pendingLoadDraft ||
         showSendToSheetConfirm ||
@@ -898,7 +898,7 @@ export default function App() {
     showNewQuoteConfirm,
     showCreateOrLoadModal,
     showCloseQuoteConfirm,
-    closeStepConfirm,
+    postPdfActionModal,
     overwriteSheetConfirm,
     pendingLoadDraft,
     showSendToSheetConfirm,
@@ -1066,7 +1066,11 @@ export default function App() {
   };
 
   const runPdfExportForData = useCallback(
-    async (targetData: ProformaData, isActiveTarget: boolean) => {
+    async (
+      targetData: ProformaData,
+      isActiveTarget: boolean,
+      promptPostPdfAction = false
+    ) => {
       try {
         const targetTotals = computeProformaTotals(targetData);
         const result = await generateProformaPDF(
@@ -1107,6 +1111,9 @@ export default function App() {
         } else {
           showToast(`PDF "${result.fileName}" generado correctamente.`);
         }
+        if (promptPostPdfAction && isActiveTarget) {
+          setPostPdfActionModal({ fileName: result.fileName });
+        }
       } catch {
         showToast(
           'Ocurrió un error al generar el PDF. Intenta de nuevo.',
@@ -1117,7 +1124,7 @@ export default function App() {
     [mainLogo, footerLogos, showToast]
   );
 
-  const handleDownloadPDF = async () => {
+  const handleDownloadPDF = async (promptPostPdfAction = false) => {
     if (!isProformaConfirmed) {
       showToast(
         'Selecciona una proforma en PROFORMAS, crea una Nueva Cotización o importa un borrador (.json) antes de generar el PDF.',
@@ -1129,10 +1136,11 @@ export default function App() {
       setPendingDraftPdfModal({
         data: proforma,
         isActiveProforma: true,
+        promptPostPdfAction,
       });
       return;
     }
-    await runPdfExportForData(proforma, true);
+    await runPdfExportForData(proforma, true, promptPostPdfAction);
   };
 
   const handleDownloadRecordPDF = (record: SavedProformaRecord) => {
@@ -1149,10 +1157,11 @@ export default function App() {
       setPendingDraftPdfModal({
         data: recordData,
         isActiveProforma: matchesActive,
+        promptPostPdfAction: false,
       });
       return;
     }
-    void runPdfExportForData(recordData, matchesActive);
+    void runPdfExportForData(recordData, matchesActive, false);
   };
 
   const handleExportPdfAsDraft = async () => {
@@ -1164,7 +1173,11 @@ export default function App() {
       consecutivo: 0,
       isDraft: true,
     };
-    await runPdfExportForData(draftPayload, target.isActiveProforma);
+    await runPdfExportForData(
+      draftPayload,
+      target.isActiveProforma,
+      Boolean(target.promptPostPdfAction)
+    );
   };
 
   const handleAssignConsecutivoAndExportPdf = async () => {
@@ -1252,7 +1265,11 @@ export default function App() {
       }
 
       setPendingDraftPdfModal(null);
-      await runPdfExportForData(assignedData, isActive);
+      await runPdfExportForData(
+        assignedData,
+        isActive,
+        Boolean(target.promptPostPdfAction)
+      );
     } finally {
       setIsAssigningConsecutivoForPdf(false);
     }
@@ -1358,7 +1375,7 @@ export default function App() {
       setShowSendToSheetConfirm(false);
       setOverwriteSheetConfirm(null);
       setShowCloseQuoteConfirm(false);
-      setCloseStepConfirm(null);
+      setPostPdfActionModal(null);
 
       if (closeAfterSave) {
         clearActiveProformaSession(updatedHistory);
@@ -1434,18 +1451,6 @@ export default function App() {
     });
   };
 
-  const handleCloseQuoteWithoutSaving = () => {
-    if (isClosingAndSaving || isSendingToSheet) return;
-    const closedLabel = formatProformaNumberLabel(proforma);
-    setShowCloseQuoteConfirm(false);
-    setCloseStepConfirm(null);
-    setOverwriteSheetConfirm(null);
-    clearActiveProformaSession();
-    showToast(
-      `Cotización ${closedLabel} cerrada sin guardar ni enviar al historial.`
-    );
-  };
-
   const handleSaveAndCloseQuote = async () => {
     if (!isProformaConfirmed || isClosingAndSaving || isSendingToSheet) return;
     const currentLabel = formatProformaNumberLabel(proforma);
@@ -1454,7 +1459,7 @@ export default function App() {
       const existingSheetRecord = findExistingSheetProforma(proforma);
       if (existingSheetRecord) {
         setShowCloseQuoteConfirm(false);
-        setCloseStepConfirm(null);
+        setPostPdfActionModal(null);
         setOverwriteModalTab('table');
         setOverwriteSheetConfirm({
           existingRecord: existingSheetRecord,
@@ -1479,7 +1484,7 @@ export default function App() {
     latestHistoryRef.current = updatedHistory;
 
     setShowCloseQuoteConfirm(false);
-    setCloseStepConfirm(null);
+    setPostPdfActionModal(null);
     clearActiveProformaSession(updatedHistory);
     showToast(
       `Proforma ${currentLabel} guardada en historial local y cerrada.`
@@ -1942,6 +1947,19 @@ export default function App() {
         originalClient?.cliente,
         savedClientId
       );
+      if (res.ok) {
+        try {
+          const freshClients = await fetchClientsFromAppsScript(
+            appsScriptUrl,
+            sheetName
+          );
+          if (freshClients.length > 0) {
+            handleImportClients(freshClients, 'replace', { silent: true });
+          }
+        } catch {
+          // Mantiene lista actualizada localmente si doGet no responde
+        }
+      }
       setClientsSyncFeedback({ ok: res.ok, message: res.message });
       showToast(res.message, !res.ok);
       return { ok: res.ok, message: res.message };
@@ -2005,8 +2023,20 @@ export default function App() {
         appsScriptUrl,
         target.cliente,
         sheetName,
-        target.id
+        target.id,
+        target
       );
+      if (res.ok) {
+        try {
+          const freshClients = await fetchClientsFromAppsScript(
+            appsScriptUrl,
+            sheetName
+          );
+          handleImportClients(freshClients, 'replace', { silent: true });
+        } catch {
+          // Mantiene lista ya filtrada localmente si doGet no responde
+        }
+      }
       setClientsSyncFeedback({ ok: res.ok, message: res.message });
       showToast(res.message, !res.ok);
       return { ok: res.ok, message: res.message };
@@ -2604,11 +2634,18 @@ export default function App() {
       if (latestCloudConfigRef.current.webhookUrl.trim()) {
         const sheetRes = await deleteProformaFromSheet(
           latestCloudConfigRef.current,
-          record
+          {
+            id: record.id,
+            consecutivo: record.consecutivo,
+            isDraft: record.isDraft,
+            cliente: record.data?.clientProject?.cliente,
+            proyecto: record.data?.clientProject?.proyecto,
+            data: record.data,
+          }
         );
         showToast(sheetRes.message, !sheetRes.ok);
         if (sheetRes.ok) {
-          void syncHistoryFromSheetRef.current?.(true);
+          await syncHistoryFromSheetRef.current?.(true);
         }
       } else {
         showToast(
@@ -3195,7 +3232,7 @@ export default function App() {
                     </td>
                     <td className="px-3.5 py-1.5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center justify-end gap-2">
-                        {!isProformaConfirmed ? (
+                        {!isProformaConfirmed && (
                           <button
                             type="button"
                             onClick={() => setShowCreateOrLoadModal(true)}
@@ -3205,43 +3242,11 @@ export default function App() {
                             <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
                             <span>Crear o cargar una proforma</span>
                           </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => void handleSendProformaToSheet()}
-                            disabled={isSendingToSheet}
-                            title={
-                              isSheetWebhookConnected
-                                ? `Conectado: enviar Proforma ${formatProformaNumberLabel(proforma)} a la hoja PROFORMAS`
-                                : 'Sin URL o último envío con error: revisa Integración'
-                            }
-                            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 ${getConnectionButtonClasses(
-                              isSheetWebhookConnected,
-                              'outline'
-                            )}`}
-                          >
-                            {isSendingToSheet ? (
-                              <Loader2
-                                className="h-3.5 w-3.5 animate-spin"
-                                aria-hidden="true"
-                              />
-                            ) : (
-                              <CloudUpload
-                                className="h-3.5 w-3.5"
-                                aria-hidden="true"
-                              />
-                            )}
-                            <span>
-                              {isSendingToSheet
-                                ? 'Enviando al Sheet...'
-                                : 'Enviar Proforma al Sheet'}
-                            </span>
-                          </button>
                         )}
 
                         <button
                           type="button"
-                          onClick={() => void handleDownloadPDF()}
+                          onClick={() => void handleDownloadPDF(true)}
                           disabled={!isProformaConfirmed}
                           title={
                             isProformaConfirmed
@@ -3748,20 +3753,20 @@ export default function App() {
         >
           <div className="w-full max-w-lg rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
             <div className="flex items-start gap-3">
-              <div className="rounded-md bg-amber-50 p-2 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300">
-                <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+              <div className="rounded-md bg-emerald-50 p-2 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300">
+                <Save className="h-5 w-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
                 <h2
                   id="close-quote-dialog-title"
                   className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
                 >
-                  ¿Cómo deseas cerrar la Proforma {formatProformaNumberLabel(proforma)}?
+                  ¿Guardar y cerrar la Proforma {formatProformaNumberLabel(proforma)}?
                 </h2>
                 <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  Puedes descartar la sesión de trabajo actual sin enviar ni guardar cambios, o guardar y enviar la cotización al historial
-                  {cloudConfig.webhookUrl.trim() ? ' (y al Google Sheet PROFORMAS)' : ''}{' '}
-                  antes de cerrar.
+                  Tus cambios se respaldan automáticamente en tiempo real. Al confirmar, la cotización se guardará en el historial
+                  {cloudConfig.webhookUrl.trim() ? ' y se enviará al Google Sheet PROFORMAS' : ''}{' '}
+                  antes de cerrar la sesión actual.
                 </p>
 
                 <div className="mt-3 space-y-1 rounded-md border border-[#E5E4DF] bg-[#FAF9F6] p-3 text-xs dark:border-zinc-800 dark:bg-zinc-800/60">
@@ -3804,84 +3809,61 @@ export default function App() {
             <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
-                disabled={isClosingAndSaving}
+                disabled={isClosingAndSaving || isSendingToSheet}
                 onClick={() => setShowCloseQuoteConfirm(false)}
-                className="rounded-md border border-[#DCDAD3] bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
                 Cancelar
               </button>
               <button
                 type="button"
-                disabled={isClosingAndSaving}
-                onClick={() => {
-                  setShowCloseQuoteConfirm(false);
-                  setCloseStepConfirm('discard');
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-red-700 disabled:opacity-45 cursor-pointer dark:bg-red-600 dark:hover:bg-red-500"
-              >
-                <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Salir sin guardar</span>
-              </button>
-              <button
-                type="button"
-                disabled={isClosingAndSaving}
-                onClick={() => {
-                  setShowCloseQuoteConfirm(false);
-                  setCloseStepConfirm('save');
-                }}
+                disabled={isClosingAndSaving || isSendingToSheet}
+                onClick={() => void handleSaveAndCloseQuote()}
                 className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:opacity-45 cursor-pointer dark:bg-emerald-600 dark:hover:bg-emerald-500"
               >
-                <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Guardar y cerrar</span>
+                {isClosingAndSaving || isSendingToSheet ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>
+                  {isClosingAndSaving || isSendingToSheet
+                    ? 'Guardando y enviando...'
+                    : 'Guardar y cerrar'}
+                </span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {closeStepConfirm && (
+      {postPdfActionModal && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-labelledby="close-step-dialog-title"
+          aria-labelledby="post-pdf-action-dialog-title"
           className="no-print fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/50 p-4 backdrop-blur-[1px] dark:bg-black/75"
         >
-          <div
-            className={`w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl dark:bg-zinc-900 ${
-              closeStepConfirm === 'discard'
-                ? 'border-red-300 dark:border-red-800/80'
-                : 'border-emerald-300 dark:border-emerald-800/80'
-            }`}
-          >
+          <div className="w-full max-w-md rounded-xl border border-[#E5E4DF] bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
             <div className="flex items-start gap-3">
-              <div
-                className={`rounded-md p-2 ${
-                  closeStepConfirm === 'discard'
-                    ? 'bg-red-100 text-red-700 dark:bg-red-950/70 dark:text-red-300'
-                    : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300'
-                }`}
-              >
-                {closeStepConfirm === 'discard' ? (
-                  <AlertTriangle className="h-5 w-5" aria-hidden="true" />
-                ) : (
-                  <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
-                )}
+              <div className="rounded-md bg-emerald-50 p-2 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300">
+                <PdfIcon className="h-5 w-5" />
               </div>
               <div className="flex-1">
                 <h2
-                  id="close-step-dialog-title"
+                  id="post-pdf-action-dialog-title"
                   className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100"
                 >
-                  {closeStepConfirm === 'discard'
-                    ? '¿Estás seguro de que deseas salir sin guardar?'
-                    : `¿Estás de acuerdo en guardar y cerrar la Proforma ${formatProformaNumberLabel(proforma)}?`}
+                  PDF generado correctamente
                 </h2>
                 <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  {closeStepConfirm === 'discard'
-                    ? `Se descartará la sesión activa de la Proforma ${formatProformaNumberLabel(proforma)} y NO se guardarán ni enviarán cambios al Google Sheet PROFORMAS.`
-                    : cloudConfig.webhookUrl.trim()
-                      ? `Se guardará la Proforma ${formatProformaNumberLabel(proforma)} en el historial y se enviará al Google Sheet PROFORMAS antes de cerrar. Si ya existe en el Sheet, se te pedirá confirmar la sobrescritura.`
-                      : `Se guardará la Proforma ${formatProformaNumberLabel(proforma)} en el historial local antes de cerrar la sesión activa.`}
+                  Se guardó el archivo{' '}
+                  <strong className="text-zinc-900 dark:text-zinc-100">
+                    {postPdfActionModal.fileName}
+                  </strong>
+                  . ¿Deseas seguir trabajando en esta cotización o guardarla
+                  {cloudConfig.webhookUrl.trim() ? ' (enviándola al Google Sheet PROFORMAS)' : ''}{' '}
+                  y cerrar la sesión actual?
                 </p>
               </div>
             </div>
@@ -3890,40 +3872,28 @@ export default function App() {
               <button
                 type="button"
                 disabled={isClosingAndSaving || isSendingToSheet}
-                onClick={() => setCloseStepConfirm(null)}
+                onClick={() => setPostPdfActionModal(null)}
                 className="rounded-md border border-[#DCDAD3] bg-white px-3.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-45 cursor-pointer dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
               >
-                Cancelar
+                Seguir trabajando en la cotización
               </button>
-              {closeStepConfirm === 'discard' ? (
-                <button
-                  type="button"
-                  disabled={isClosingAndSaving || isSendingToSheet}
-                  onClick={handleCloseQuoteWithoutSaving}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-red-700 disabled:opacity-45 cursor-pointer dark:bg-red-600 dark:hover:bg-red-500"
-                >
-                  <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>Sí, salir sin guardar</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={isClosingAndSaving || isSendingToSheet}
-                  onClick={() => void handleSaveAndCloseQuote()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:opacity-45 cursor-pointer dark:bg-emerald-600 dark:hover:bg-emerald-500"
-                >
-                  {isClosingAndSaving || isSendingToSheet ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  <span>
-                    {isClosingAndSaving || isSendingToSheet
-                      ? 'Guardando y enviando...'
-                      : 'Sí, guardar y cerrar'}
-                  </span>
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={isClosingAndSaving || isSendingToSheet}
+                onClick={() => void handleSaveAndCloseQuote()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-emerald-700 disabled:opacity-45 cursor-pointer dark:bg-emerald-600 dark:hover:bg-emerald-500"
+              >
+                {isClosingAndSaving || isSendingToSheet ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>
+                  {isClosingAndSaving || isSendingToSheet
+                    ? 'Guardando y enviando...'
+                    : 'Guardar y cerrar la cotización'}
+                </span>
+              </button>
             </div>
           </div>
         </div>

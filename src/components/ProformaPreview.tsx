@@ -379,7 +379,7 @@ export function ProformaPreview({
       >
         <div>
           {/* Encabezado Principal */}
-          <div className="flex flex-col justify-between gap-6 border-b-2 border-zinc-900 pb-5 sm:flex-row sm:items-start">
+          <div className="flex flex-col justify-between gap-6 border-b-2 border-[#27272a] pb-5 sm:flex-row sm:items-start">
             <div className="min-w-0 flex-1">
               {/* Logo principal fijo OLMO B.N. */}
               <div className="flex h-14 max-w-[210px] items-center">
@@ -543,7 +543,7 @@ export function ProformaPreview({
                     <col style={{ width: `${colWidths.valorPct}%` }} />
                   </colgroup>
                   <thead>
-                    <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
+                    <tr className="bg-[#27272a] text-[10.5px] font-semibold tracking-wide text-white">
                       <th className="px-2 py-2.5 text-center">#</th>
                       <th className="px-2.5 py-2.5">CÓDIGO PRODUCTO</th>
                       <th className="px-2 py-2.5 text-center">IMAGEN</th>
@@ -608,7 +608,7 @@ export function ProformaPreview({
                     <col style={{ width: `${colWidths.valorPct}%` }} />
                   </colgroup>
                   <thead>
-                    <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
+                    <tr className="bg-[#27272a] text-[10.5px] font-semibold tracking-wide text-white">
                       <th className="px-2 py-2.5 text-center">#</th>
                       <th className="px-2.5 py-2.5">ESPACIO</th>
                       <th className="px-2.5 py-2.5">ACABADO</th>
@@ -675,7 +675,7 @@ export function ProformaPreview({
                     <col style={{ width: `${colWidths.valorPct}%` }} />
                   </colgroup>
                   <thead>
-                    <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
+                    <tr className="bg-[#27272a] text-[10.5px] font-semibold tracking-wide text-white">
                       <th className="px-2 py-2.5 text-center">#</th>
                       <th className="px-2.5 py-2.5">PRODUCTO</th>
                       <th className="px-3 py-2.5">
@@ -768,7 +768,7 @@ export function ProformaPreview({
                   {formatMoney(totals.impuesto, data.clientProject.moneda)}
                 </span>
               </div>
-              <div className="flex items-center justify-between bg-zinc-900 px-4 py-3 text-white">
+              <div className="flex items-center justify-between bg-[#27272a] px-4 py-3 text-white">
                 <span className="font-semibold tracking-wide">
                   TOTAL ({data.clientProject.moneda})
                 </span>
@@ -1321,7 +1321,7 @@ export function ProformaPreview({
             <div className="mt-3 overflow-hidden border border-[#E5E4DF] text-[12px]">
               <table className="w-full border-collapse text-left">
                 <thead>
-                  <tr className="bg-zinc-900 text-[10.5px] font-semibold tracking-wide text-white">
+                  <tr className="bg-[#27272a] text-[10.5px] font-semibold tracking-wide text-white">
                     <th className="px-4 py-2.5">CONCEPTO / HITO DE PAGO</th>
                     <th className="w-28 px-4 py-2.5 text-right">PORCENTAJE</th>
                     <th className="w-36 px-4 py-2.5 text-right">MONTO</th>
@@ -1376,7 +1376,7 @@ export function ProformaPreview({
             </h2>
             <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">
               <div className="text-center">
-                <div className="h-14 border-b border-zinc-900" />
+                <div className="h-14 border-b border-[#27272a]" />
                 <div className="mt-2 text-[11.5px] font-bold tracking-wide text-zinc-900">
                   {data.signatures.representanteTitulo ||
                     'FIRMA REPRESENTANTE OLMO'}
@@ -1392,7 +1392,7 @@ export function ProformaPreview({
               </div>
 
               <div className="text-center">
-                <div className="h-14 border-b border-zinc-900" />
+                <div className="h-14 border-b border-[#27272a]" />
                 <div className="mt-2 text-[11.5px] font-bold tracking-wide text-zinc-900">
                   {data.signatures.clienteTitulo || 'FIRMA CLIENTE'}
                 </div>
