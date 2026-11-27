@@ -109,15 +109,31 @@ export function mergeProformaHistoryRecords(
 
   const findMatchingIndexes = (target: SavedProformaRecord): number[] => {
     const targetIsDraft = isProformaDraft(target) || target.consecutivo <= 0;
+    const targetDraftCode = String(
+      target.draftCode ?? target.data?.draftCode ?? ''
+    )
+      .trim()
+      .toLowerCase();
     const matches: number[] = [];
     merged.forEach((item, idx) => {
       const itemIsDraft = isProformaDraft(item) || item.consecutivo <= 0;
+      const itemDraftCode = String(
+        item.draftCode ?? item.data?.draftCode ?? ''
+      )
+        .trim()
+        .toLowerCase();
       const sameId = Boolean(target.id && item.id === target.id);
+      const sameDraftCode =
+        targetIsDraft &&
+        itemIsDraft &&
+        Boolean(targetDraftCode) &&
+        targetDraftCode !== 'borrador' &&
+        itemDraftCode === targetDraftCode;
       const sameNum =
         !targetIsDraft &&
         !itemIsDraft &&
         Number(item.consecutivo) === Number(target.consecutivo);
-      if (sameId || sameNum) {
+      if (sameId || sameDraftCode || sameNum) {
         matches.push(idx);
       }
     });
@@ -919,7 +935,7 @@ export function HistoryView({
                       <td className="px-4 py-3.5 font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap tabular-nums">
                         {isProformaDraft(rec) ? (
                           <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-sans text-xs font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                            Borrador
+                            {formatProformaNumberLabel(rec)}
                           </span>
                         ) : (
                           <span>Nº {rec.consecutivo}</span>

@@ -31,6 +31,7 @@ import {
   EditableTableColumnKey,
   formatDateSpanish,
   formatMoney,
+  formatProformaNumberLabel,
   getColumnMinWidthPct,
   getCompanyHeaderLines,
   getCurrencyCode,
@@ -423,7 +424,9 @@ export function ProformaPreview({
                 PROFORMA DE COTIZACIÓN
               </div>
               <div className="mt-1 font-mono text-2xl font-bold text-zinc-900 tabular-nums">
-                {isProformaDraft(data) ? 'BORRADOR' : `Nº ${data.consecutivo}`}
+                {isProformaDraft(data)
+                  ? formatProformaNumberLabel(data).toUpperCase()
+                  : `Nº ${data.consecutivo}`}
               </div>
               <div className="mt-2.5 space-y-1 border-t border-[#E5E4DF] pt-2 text-left text-[11px] text-zinc-600">
                 <div className="flex justify-between gap-3">
@@ -801,10 +804,8 @@ export function ProformaPreview({
           )}
           <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              {isProformaDraft(data)
-                ? 'Proforma Borrador'
-                : `Proforma Nº ${data.consecutivo}`}{' '}
-              · Página 1 de {totalPages}
+              {`Proforma ${formatProformaNumberLabel(data)}`} · Página 1 de{' '}
+              {totalPages}
             </span>
           </div>
         </footer>
@@ -853,9 +854,7 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              {isProformaDraft(data)
-                ? 'PROFORMA BORRADOR'
-                : `PROFORMA Nº ${data.consecutivo}`}
+              {`PROFORMA ${formatProformaNumberLabel(data).toUpperCase()}`}
             </span>
           </div>
 
@@ -1095,10 +1094,8 @@ export function ProformaPreview({
           )}
           <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              {isProformaDraft(data)
-                ? 'Proforma Borrador'
-                : `Proforma Nº ${data.consecutivo}`}{' '}
-              · Página {pageNum} de {totalPages}
+              {`Proforma ${formatProformaNumberLabel(data)}`} · Página{' '}
+              {pageNum} de {totalPages}
             </span>
           </div>
         </footer>
@@ -1137,9 +1134,7 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              {isProformaDraft(data)
-                ? 'PROFORMA BORRADOR'
-                : `PROFORMA Nº ${data.consecutivo}`}
+              {`PROFORMA ${formatProformaNumberLabel(data).toUpperCase()}`}
             </span>
           </div>
 
@@ -1204,10 +1199,8 @@ export function ProformaPreview({
           )}
           <div className="flex items-center justify-end gap-4">
             <span className="font-mono tabular-nums whitespace-nowrap">
-              {isProformaDraft(data)
-                ? 'Proforma Borrador'
-                : `Proforma Nº ${data.consecutivo}`}{' '}
-              · Página {termsPageNumber} de {totalPages}
+              {`Proforma ${formatProformaNumberLabel(data)}`} · Página{' '}
+              {termsPageNumber} de {totalPages}
             </span>
           </div>
         </footer>
@@ -1246,9 +1239,7 @@ export function ProformaPreview({
               </span>
             </div>
             <span className="font-mono font-semibold text-zinc-900 tabular-nums">
-              {isProformaDraft(data)
-                ? 'PROFORMA BORRADOR'
-                : `PROFORMA Nº ${data.consecutivo}`}
+              {`PROFORMA ${formatProformaNumberLabel(data).toUpperCase()}`}
             </span>
           </div>
 
@@ -1429,10 +1420,8 @@ export function ProformaPreview({
             )}
             <div className="flex items-center justify-end gap-4">
               <span className="font-mono tabular-nums whitespace-nowrap">
-                {isProformaDraft(data)
-                  ? 'Proforma Borrador'
-                  : `Proforma Nº ${data.consecutivo}`}{' '}
-                · Página {bankPageNumber} de {totalPages}
+                {`Proforma ${formatProformaNumberLabel(data)}`} · Página{' '}
+                {bankPageNumber} de {totalPages}
               </span>
             </div>
           </footer>

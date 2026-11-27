@@ -272,31 +272,42 @@ export function ClientsView({
     setSyncBanner(null);
 
     try {
-      if (hasSheetUrl) {
-        const result = await fetchAndParseGoogleSheetClients(
-          importConfig.sheetUrl,
-          importConfig.sheetName || DEFAULT_CLIENTS_SHEET_NAME
-        );
-        applyImportResult(
-          result.clients,
-          result.ignoredCount,
-          result.sheetNameUsed
-        );
-      } else {
+      if (hasAppsScriptUrl) {
         const rows = await fetchClientsFromAppsScript(
           importConfig.appsScriptUrl,
           importConfig.sheetName || DEFAULT_CLIENTS_SHEET_NAME
         );
-        if (rows.length === 0) {
-          throw new Error(
-            'No se encontraron clientes en la pestaña CLIENTES del Apps Script.'
-          );
-        }
-        applyImportResult(
-          rows,
-          0,
+        onImportClients(rows, 'replace');
+        onImportConfigChange({
+          ...importConfig,
+          lastImportedAt: new Date().toISOString(),
+        });
+        const targetSheet = importConfig.sheetName || DEFAULT_CLIENTS_SHEET_NAME;
+        setSyncBanner({
+          ok: true,
+          message:
+            rows.length > 0
+              ? `Clientes sincronizados desde "${targetSheet}": ${rows.length} cliente(s) vigentes en Sheet.`
+              : `Conexión correcta con "${targetSheet}". La pestaña no contiene clientes actualmente.`,
+        });
+      } else {
+        const result = await fetchAndParseGoogleSheetClients(
+          importConfig.sheetUrl,
           importConfig.sheetName || DEFAULT_CLIENTS_SHEET_NAME
         );
+        const summary = onImportClients(result.clients, 'replace');
+        onImportConfigChange({
+          ...importConfig,
+          sheetName: result.sheetNameUsed || importConfig.sheetName,
+          lastImportedAt: new Date().toISOString(),
+        });
+        const sheetNote = result.sheetNameUsed
+          ? ` desde la hoja "${result.sheetNameUsed}"`
+          : '';
+        setSyncBanner({
+          ok: true,
+          message: `Clientes sincronizados${sheetNote}: ${summary.added} cliente(s) vigentes en Sheet.`,
+        });
       }
     } catch (err) {
       const msg =

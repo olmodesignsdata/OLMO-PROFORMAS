@@ -65,7 +65,8 @@ export function exportProformaToJSON(data: ProformaData, totals: ComputedTotals)
       data.clientProject.proyecto,
       'json',
       data.clientProject.cliente,
-      isProformaDraft(data)
+      isProformaDraft(data),
+      data.draftCode
     )
   );
 }
@@ -199,7 +200,8 @@ export function exportProformaToCSV(data: ProformaData, totals: ComputedTotals):
       data.clientProject.proyecto,
       'csv',
       data.clientProject.cliente,
-      isProformaDraft(data)
+      isProformaDraft(data),
+      data.draftCode
     )
   );
 }
@@ -373,12 +375,15 @@ export async function generateProformaPDF(
   const bottomReservedMm = hasFooterLogos ? 26 : 20;
 
   const isDraftDoc = isProformaDraft(data);
-  const pdfNumberBadge = isDraftDoc ? 'BORRADOR' : `Nº ${data.consecutivo}`;
+  const draftDisplayLabel = formatProformaNumberLabel(data);
+  const pdfNumberBadge = isDraftDoc
+    ? draftDisplayLabel.toUpperCase()
+    : `Nº ${data.consecutivo}`;
   const pdfProformaLabel = isDraftDoc
-    ? 'PROFORMA BORRADOR'
+    ? `PROFORMA ${draftDisplayLabel.toUpperCase()}`
     : `PROFORMA Nº ${data.consecutivo}`;
   const pdfFooterProformaLabel = isDraftDoc
-    ? 'Proforma Borrador'
+    ? `Proforma ${draftDisplayLabel}`
     : `Proforma Nº ${data.consecutivo}`;
 
   const drawContinuationHeader = (subtitle: string) => {
@@ -1374,7 +1379,8 @@ export async function generateProformaPDF(
     data.clientProject.proyecto,
     'pdf',
     data.clientProject.cliente,
-    isDraftDoc
+    isDraftDoc,
+    data.draftCode
   );
   const pdfBlob = doc.output('blob');
 

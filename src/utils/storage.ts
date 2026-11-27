@@ -192,9 +192,30 @@ export function loadSavedProformas(): SavedProformaRecord[] {
   }
 }
 
+export function saveLocalHistoryList(
+  records: SavedProformaRecord[]
+): SavedProformaRecord[] {
+  const sorted = [...records].sort((a, b) => {
+    if (b.consecutivo !== a.consecutivo) {
+      return b.consecutivo - a.consecutivo;
+    }
+    return String(b.savedAt ?? '').localeCompare(String(a.savedAt ?? ''));
+  });
+  try {
+    localStorage.setItem(KEYS.HISTORY, JSON.stringify(sorted));
+  } catch {
+    // ignore storage errors
+  }
+  return sorted;
+}
+
 export function saveProformaToHistory(
   data: ProformaData,
-  total: number
+  total: number,
+  options?: {
+    syncedToSheet?: boolean;
+    unsyncedLocal?: boolean;
+  }
 ): SavedProformaRecord[] {
   const history = loadSavedProformas();
   const now = new Date().toISOString();
@@ -204,16 +225,37 @@ export function saveProformaToHistory(
   const normalizedConsecutivo = isDraftRecord
     ? 0
     : Math.floor(Number(data.consecutivo));
+  const resolvedDraftCode = isDraftRecord
+    ? (data.draftCode ?? '').trim() || 'Borrador'
+    : undefined;
+  const previousConsecNorm = (data.previousConsecutivo ?? '').trim().toLowerCase();
+
   const snapshot: ProformaData = JSON.parse(
     JSON.stringify({
       ...data,
       consecutivo: normalizedConsecutivo,
       isDraft: isDraftRecord,
+      draftCode: resolvedDraftCode,
       updatedAt: now,
     })
   );
 
-  const existingIdx = history.findIndex(
+  // Si se asignó un consecutivo final a un borrador previo, limpiar cualquier fila local de ese borrador previo
+  const filteredHistory =
+    !isDraftRecord && previousConsecNorm
+      ? history.filter((r) => {
+          const rIsDraft = Boolean(
+            r.isDraft || r.data?.isDraft || !Number.isFinite(r.consecutivo) || r.consecutivo <= 0
+          );
+          if (!rIsDraft || r.id === data.id) return true;
+          const rDraftCode = (r.draftCode ?? r.data?.draftCode ?? '')
+            .trim()
+            .toLowerCase();
+          return rDraftCode !== previousConsecNorm;
+        })
+      : history;
+
+  const existingIdx = filteredHistory.findIndex(
     (r) =>
       r.id === data.id ||
       (!isDraftRecord &&
@@ -223,36 +265,40 @@ export function saveProformaToHistory(
         r.consecutivo === normalizedConsecutivo)
   );
 
+  const prevExisting = existingIdx >= 0 ? filteredHistory[existingIdx] : undefined;
+  const syncedToSheet =
+    options?.syncedToSheet !== undefined
+      ? options.syncedToSheet
+      : prevExisting?.syncedToSheet;
+  const unsyncedLocal =
+    options?.unsyncedLocal !== undefined
+      ? options.unsyncedLocal
+      : syncedToSheet
+        ? false
+        : prevExisting?.unsyncedLocal;
+
   const newRecord: SavedProformaRecord = {
     id: data.id,
     consecutivo: normalizedConsecutivo,
     isDraft: isDraftRecord,
+    ...(resolvedDraftCode ? { draftCode: resolvedDraftCode } : {}),
     savedAt: now,
     data: snapshot,
     total,
+    ...(syncedToSheet !== undefined ? { syncedToSheet } : {}),
+    ...(unsyncedLocal !== undefined ? { unsyncedLocal } : {}),
   };
 
   let updated: SavedProformaRecord[];
   if (existingIdx >= 0) {
-    updated = [...history];
+    updated = [...filteredHistory];
     updated[existingIdx] = newRecord;
   } else {
-    updated = [newRecord, ...history];
+    updated = [newRecord, ...filteredHistory];
   }
 
   // Ordenar por consecutivo descendente (borradores más recientes primero entre sí)
-  updated.sort((a, b) => {
-    if (b.consecutivo !== a.consecutivo) {
-      return b.consecutivo - a.consecutivo;
-    }
-    return String(b.savedAt ?? '').localeCompare(String(a.savedAt ?? ''));
-  });
-
-  try {
-    localStorage.setItem(KEYS.HISTORY, JSON.stringify(updated));
-  } catch {
-    // ignore storage errors
-  }
+  const saved = saveLocalHistoryList(updated);
 
   // Asegurar que el próximo consecutivo sugerido supere el guardado (solo si no es borrador)
   if (!isDraftRecord && normalizedConsecutivo > 0) {
@@ -262,7 +308,7 @@ export function saveProformaToHistory(
     }
   }
 
-  return updated;
+  return saved;
 }
 
 export function deleteProformaFromHistory(id: string): SavedProformaRecord[] {

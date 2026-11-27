@@ -47,6 +47,7 @@ interface ImportFromSheetModalProps {
   hasWebhookUrl: boolean;
   hasUnsavedActiveChanges: boolean;
   activeConsecutivo?: number;
+  activeDraftCode?: string;
   onRefreshFromSheet: () => void;
   onGoToIntegration: () => void;
   onClose: () => void;
@@ -68,6 +69,7 @@ export function ImportFromSheetModal({
   hasWebhookUrl,
   hasUnsavedActiveChanges,
   activeConsecutivo,
+  activeDraftCode,
   onRefreshFromSheet,
   onGoToIntegration,
   onClose,
@@ -639,7 +641,7 @@ export function ImportFromSheetModal({
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E4DF] bg-white px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
             {hasUnsavedActiveChanges && activeConsecutivo !== undefined
-              ? `Nota: tienes cambios sin guardar en la Proforma ${activeConsecutivo > 0 ? `Nº ${activeConsecutivo}` : 'Borrador'}; al editar podrás guardarlos antes de reemplazar el editor.`
+              ? `Nota: tienes cambios sin guardar en la Proforma ${activeConsecutivo > 0 ? `Nº ${activeConsecutivo}` : activeDraftCode || 'Borrador'}; al editar podrás guardarlos antes de reemplazar el editor.`
               : 'La proforma seleccionada se cargará lista para editar en el Editor.'}
           </div>
           <div className="flex flex-wrap items-center gap-2">

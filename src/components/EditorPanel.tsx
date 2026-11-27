@@ -70,6 +70,7 @@ import {
   clampVisualReferenceHeightPx,
   clampVisualReferenceWidthPct,
   formatMoney,
+  formatProformaNumberLabel,
   getCurrencyCode,
   getVisualReferenceBoxHeightPx,
   getVisualReferenceWidthPct,
@@ -1746,7 +1747,7 @@ export function EditorPanel({
                   </h2>
                   {isProformaDraft(data) && (
                     <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                      Borrador (sin consecutivo)
+                      {formatProformaNumberLabel(data)} (sin consecutivo)
                     </span>
                   )}
                 </div>
@@ -1765,7 +1766,11 @@ export function EditorPanel({
                       id="consecutivo-input"
                       type="number"
                       min={1}
-                      placeholder="Borrador"
+                      placeholder={
+                        isProformaDraft(data)
+                          ? formatProformaNumberLabel(data)
+                          : 'Borrador'
+                      }
                       value={isProformaDraft(data) ? '' : data.consecutivo}
                       onChange={(e) => {
                         const raw = e.target.value.trim();
@@ -1774,14 +1779,27 @@ export function EditorPanel({
                             ...prev,
                             consecutivo: 0,
                             isDraft: true,
+                            draftCode:
+                              prev.draftCode ||
+                              prev.previousConsecutivo ||
+                              'Borrador',
                           }));
                           return;
                         }
                         const val = parseInt(raw, 10);
+                        const num = Number.isNaN(val) ? 0 : Math.max(1, val);
                         onChange((prev) => ({
                           ...prev,
-                          consecutivo: Number.isNaN(val) ? 0 : Math.max(1, val),
-                          isDraft: Number.isNaN(val) || val <= 0,
+                          consecutivo: num,
+                          isDraft: num <= 0,
+                          previousConsecutivo:
+                            num > 0
+                              ? prev.previousConsecutivo || prev.draftCode
+                              : prev.previousConsecutivo,
+                          draftCode:
+                            num > 0
+                              ? undefined
+                              : prev.draftCode || prev.previousConsecutivo,
                         }));
                       }}
                       className={`${inputClass} font-mono font-semibold tabular-nums`}

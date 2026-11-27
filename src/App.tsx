@@ -88,6 +88,7 @@ import {
 } from './utils/cloudSync';
 import { generateProformaPDF } from './utils/exporters';
 import {
+  computeNextDraftCode,
   computeProformaTotals,
   formatMoney,
   formatProformaNumberLabel,
@@ -130,7 +131,6 @@ import {
   loadSheetShortcutUrls,
   loadTerminosTemplatesCache,
   loadThemeMode,
-  reserveNextConsecutivo,
   saveActiveProformaConfirmed,
   saveAranTemplatesCache,
   saveAutoRefreshMinutes,
@@ -142,6 +142,7 @@ import {
   saveFooterLogos,
   saveGoogleSheetsConfig,
   saveIntegrationTabEnabled,
+  saveLocalHistoryList,
   saveMainLogo,
   saveNotificationsEnabled,
   saveNotificationState,
@@ -479,6 +480,7 @@ export default function App() {
     token: number;
   } | null>(null);
   const undoHighlightTokenRef = useRef(0);
+  const pendingDraftSyncIdsRef = useRef<Set<string>>(new Set());
   const [showIntegrationTab, setShowIntegrationTab] = useState<boolean>(() =>
     loadIntegrationTabEnabled()
   );
@@ -911,11 +913,51 @@ export default function App() {
     handleRedo,
   ]);
 
+  const cleanupPreviousDraftInSheetIfNeeded = useCallback(
+    async (
+      config: CloudSyncConfig,
+      previousDraftCode?: string,
+      draftId?: string
+    ) => {
+      const prevNorm = (previousDraftCode ?? '').trim().toLowerCase();
+      if (!prevNorm || !config.webhookUrl.trim()) return;
+      try {
+        const freshRemote = await fetchRemoteProformasFromAppsScript(config);
+        const orphan = freshRemote.find((r) => {
+          const rIsDraft = isProformaDraft(r) || r.consecutivo <= 0;
+          if (!rIsDraft) return false;
+          const rDraftCode = (r.draftCode ?? r.data?.draftCode ?? '')
+            .trim()
+            .toLowerCase();
+          return (
+            (prevNorm && rDraftCode === prevNorm) ||
+            (Boolean(draftId) && (r.id === draftId || r.data?.id === draftId))
+          );
+        });
+        if (orphan) {
+          await deleteProformaFromSheet(config, {
+            id: orphan.id,
+            consecutivo: 0,
+            isDraft: true,
+            draftCode: orphan.draftCode ?? orphan.data?.draftCode ?? previousDraftCode,
+            cliente: orphan.data?.clientProject?.cliente,
+            proyecto: orphan.data?.clientProject?.proyecto,
+            data: orphan.data,
+          });
+        }
+      } catch {
+        // Silencioso si el doGet de verificación falla temporalmente
+      }
+    },
+    []
+  );
+
   const syncDraftToSheetInBackground = useCallback(
     async (draftData: ProformaData) => {
       const currentCfg = latestCloudConfigRef.current;
       if (!currentCfg.webhookUrl.trim()) return;
       const draftTotals = computeProformaTotals(draftData);
+      pendingDraftSyncIdsRef.current.add(draftData.id);
       try {
         const res = await sendProformaToWebhook(
           currentCfg,
@@ -934,29 +976,66 @@ export default function App() {
         setCloudConfig(nextCfg);
         saveCloudConfig(nextCfg);
         if (res.ok) {
+          const marked = saveProformaToHistory(draftData, draftTotals.total, {
+            syncedToSheet: true,
+            unsyncedLocal: false,
+          });
+          setHistory(marked);
+          latestHistoryRef.current = marked;
           await syncHistoryFromSheetRef.current?.(true);
+        } else {
+          const marked = saveProformaToHistory(draftData, draftTotals.total, {
+            unsyncedLocal: true,
+          });
+          setHistory(marked);
+          latestHistoryRef.current = marked;
         }
       } catch {
-        // Ignorar fallo silencioso en registro inicial de borrador; el usuario aún puede reintentar enviar
+        const marked = saveProformaToHistory(draftData, draftTotals.total, {
+          unsyncedLocal: true,
+        });
+        setHistory(marked);
+        latestHistoryRef.current = marked;
+      } finally {
+        pendingDraftSyncIdsRef.current.delete(draftData.id);
       }
     },
     []
   );
 
   const findExistingSheetProforma = useCallback((targetData: ProformaData) => {
-    const byId = latestRemoteHistoryRef.current.find(
-      (rec) => rec.id === targetData.id || rec.data?.id === targetData.id
-    );
-    if (byId) return byId;
-    if (isProformaDraft(targetData) || targetData.consecutivo <= 0) {
-      return null;
+    const targetIsDraft = isProformaDraft(targetData) || targetData.consecutivo <= 0;
+    if (targetIsDraft) {
+      const targetDraftCode = (targetData.draftCode ?? '').trim().toLowerCase();
+      return (
+        latestRemoteHistoryRef.current.find((rec) => {
+          const recIsDraft = isProformaDraft(rec) || rec.consecutivo <= 0;
+          if (!recIsDraft) return false;
+          if (rec.id === targetData.id || rec.data?.id === targetData.id) {
+            return true;
+          }
+          const recDraftCode = (rec.draftCode ?? rec.data?.draftCode ?? '')
+            .trim()
+            .toLowerCase();
+          return (
+            Boolean(targetDraftCode) &&
+            targetDraftCode !== 'borrador' &&
+            recDraftCode === targetDraftCode
+          );
+        }) ?? null
+      );
     }
+
     const targetNum = Number(targetData.consecutivo);
     return (
-      latestRemoteHistoryRef.current.find(
-        (rec) =>
-          !isProformaDraft(rec) && Number(rec.consecutivo) === targetNum
-      ) ?? null
+      latestRemoteHistoryRef.current.find((rec) => {
+        if (isProformaDraft(rec) || rec.consecutivo <= 0) return false;
+        return (
+          Number(rec.consecutivo) === targetNum ||
+          rec.id === targetData.id ||
+          rec.data?.id === targetData.id
+        );
+      }) ?? null
     );
   }, []);
 
@@ -977,8 +1056,11 @@ export default function App() {
       setLastLocalSavedAt(savedAt);
       setAutosaveStatus('saved');
     }
-    const updatedHistory = saveProformaToHistory(proforma, totals.total);
+    const updatedHistory = saveProformaToHistory(proforma, totals.total, {
+      unsyncedLocal: !cloudConfig.webhookUrl.trim() ? true : undefined,
+    });
     setHistory(updatedHistory);
+    latestHistoryRef.current = updatedHistory;
     const updatedNext = setNextConsecutivo(
       computeNextConsecutivoFromRecords(
         updatedHistory,
@@ -1007,20 +1089,58 @@ export default function App() {
     }
   };
 
-  const executeNewProforma = () => {
+  const executeNewProforma = async () => {
+    let latestRemote = latestRemoteHistoryRef.current;
+    const currentCloudCfg = latestCloudConfigRef.current;
+    if (currentCloudCfg.webhookUrl.trim()) {
+      try {
+        const fetched = await fetchRemoteProformasFromAppsScript(currentCloudCfg);
+        latestRemote = fetched.map((rec) => ({
+          ...rec,
+          source: 'sheet' as const,
+          data: normalizeProformaClientContact(rec.data),
+        }));
+        const syncedAt = new Date().toISOString();
+        latestRemoteHistoryRef.current = latestRemote;
+        setRemoteHistory(latestRemote);
+        setLastRemoteHistorySyncAt(syncedAt);
+        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
+      } catch {
+        // Usa historial remoto cacheado si la red falla momentáneamente
+      }
+    }
+
+    const updatedNext = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(latestHistoryRef.current, latestRemote)
+    );
+    setNextConsecutivoState(updatedNext);
+
+    const nextDraftCode = computeNextDraftCode(
+      latestHistoryRef.current,
+      latestRemote,
+      latestIsProformaConfirmedRef.current &&
+        isProformaDraft(latestProformaRef.current)
+        ? [latestProformaRef.current.draftCode]
+        : []
+    );
+
     const fresh = createInitialProforma(0, true);
     fresh.isDraft = true;
     fresh.consecutivo = 0;
+    fresh.draftCode = nextDraftCode;
+    fresh.previousConsecutivo = nextDraftCode;
     fresh.company = loadSavedCompanyDefaults();
     fresh.bankAccount = loadSavedBankDefaults();
     fresh.signatures.representanteNombre =
-      proforma.signatures.representanteNombre;
+      latestProformaRef.current.signatures.representanteNombre;
 
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(fresh);
     saveDraftProforma(fresh);
-    const updatedHistory = saveProformaToHistory(fresh, 0);
+    const updatedHistory = saveProformaToHistory(fresh, 0, {
+      unsyncedLocal: !currentCloudCfg.webhookUrl.trim(),
+    });
     setHistory(updatedHistory);
     latestHistoryRef.current = updatedHistory;
 
@@ -1028,9 +1148,9 @@ export default function App() {
     setActiveSection('editor');
     void syncDraftToSheetInBackground(fresh);
     showToast(
-      cloudConfig.webhookUrl.trim()
-        ? 'Nueva cotización iniciada en modo Borrador y registrada en PROFORMAS.'
-        : 'Nueva cotización iniciada en modo Borrador.'
+      currentCloudCfg.webhookUrl.trim()
+        ? `Nueva cotización iniciada como ${nextDraftCode} y registrada en PROFORMAS.`
+        : `Nueva cotización iniciada como ${nextDraftCode}.`
     );
   };
 
@@ -1039,21 +1159,38 @@ export default function App() {
       setShowNewQuoteConfirm(true);
       return;
     }
-    executeNewProforma();
+    void executeNewProforma();
   };
 
   const handleSaveAndStartNewProforma = async () => {
     await handleSaveToHistory();
-    executeNewProforma();
+    await executeNewProforma();
   };
 
-  const handleSyncNextConsecutivo = () => {
+  const handleSyncNextConsecutivo = async () => {
     if (!isProformaConfirmed) return;
+    let latestRemote = latestRemoteHistoryRef.current;
+    if (latestCloudConfigRef.current.webhookUrl.trim()) {
+      try {
+        const fetched = await fetchRemoteProformasFromAppsScript(
+          latestCloudConfigRef.current
+        );
+        latestRemote = fetched.map((rec) => ({
+          ...rec,
+          source: 'sheet' as const,
+          data: normalizeProformaClientContact(rec.data),
+        }));
+        const syncedAt = new Date().toISOString();
+        latestRemoteHistoryRef.current = latestRemote;
+        setRemoteHistory(latestRemote);
+        setLastRemoteHistorySyncAt(syncedAt);
+        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
+      } catch {
+        // Fallback a caché si falla consulta momentánea
+      }
+    }
     const nextNum = setNextConsecutivo(
-      computeNextConsecutivoFromRecords(
-        latestHistoryRef.current,
-        latestRemoteHistoryRef.current
-      )
+      computeNextConsecutivoFromRecords(latestHistoryRef.current, latestRemote)
     );
     setNextConsecutivoState(nextNum);
     hasEditedSinceLoadRef.current = true;
@@ -1061,8 +1198,10 @@ export default function App() {
       ...prev,
       consecutivo: nextNum,
       isDraft: false,
+      previousConsecutivo: prev.previousConsecutivo || prev.draftCode,
+      draftCode: undefined,
     }));
-    showToast(`Consecutivo sincronizado a Nº ${nextNum}.`);
+    showToast(`Consecutivo sincronizado a Nº ${nextNum} desde PROFORMAS.`);
   };
 
   const runPdfExportForData = useCallback(
@@ -1211,38 +1350,39 @@ export default function App() {
         latestHistoryRef.current,
         latestRemote
       );
-      const assignedData: ProformaData = {
+      const previousConsec = (
+        target.data.previousConsecutivo ||
+        target.data.draftCode ||
+        (isProformaDraft(target.data) ? 'Borrador' : '')
+      ).trim();
+
+      const assignedWithPrev: ProformaData = {
         ...target.data,
         consecutivo: assignedNum,
         isDraft: false,
+        draftCode: undefined,
+        previousConsecutivo: previousConsec || undefined,
         updatedAt: new Date().toISOString(),
       };
-      const assignedTotals = computeProformaTotals(assignedData);
+      const assignedClean: ProformaData = {
+        ...assignedWithPrev,
+        previousConsecutivo: undefined,
+        draftCode: undefined,
+      };
+      const assignedTotals = computeProformaTotals(assignedClean);
 
       const isActive =
         target.isActiveProforma ||
         (latestIsProformaConfirmedRef.current &&
-          latestProformaRef.current.id === assignedData.id);
+          latestProformaRef.current.id === assignedClean.id);
 
-      if (isActive) {
-        hasEditedSinceLoadRef.current = true;
-        resetProforma(assignedData);
-        saveDraftProforma(assignedData);
-      }
-
-      const updatedHistory = saveProformaToHistory(
-        assignedData,
-        assignedTotals.total
-      );
-      setHistory(updatedHistory);
-      latestHistoryRef.current = updatedHistory;
-      setNextConsecutivoState(setNextConsecutivo(assignedNum + 1));
+      let finalLocalData = assignedWithPrev;
 
       if (latestCloudConfigRef.current.webhookUrl.trim()) {
         try {
           const sheetRes = await sendProformaToWebhook(
             latestCloudConfigRef.current,
-            assignedData,
+            assignedWithPrev,
             assignedTotals,
             { overwrite: true }
           );
@@ -1257,6 +1397,21 @@ export default function App() {
           setCloudConfig(nextCfg);
           saveCloudConfig(nextCfg);
           if (sheetRes.ok) {
+            finalLocalData = assignedClean;
+            if (previousConsec) {
+              await cleanupPreviousDraftInSheetIfNeeded(
+                latestCloudConfigRef.current,
+                previousConsec,
+                assignedClean.id
+              );
+            }
+            const syncedLocal = saveProformaToHistory(
+              assignedClean,
+              assignedTotals.total,
+              { syncedToSheet: true, unsyncedLocal: false }
+            );
+            setHistory(syncedLocal);
+            latestHistoryRef.current = syncedLocal;
             void syncHistoryFromSheetRef.current?.(true);
           }
         } catch {
@@ -1264,9 +1419,25 @@ export default function App() {
         }
       }
 
+      if (finalLocalData === assignedWithPrev) {
+        const updatedHistory = saveProformaToHistory(
+          assignedWithPrev,
+          assignedTotals.total
+        );
+        setHistory(updatedHistory);
+        latestHistoryRef.current = updatedHistory;
+      }
+
+      if (isActive) {
+        hasEditedSinceLoadRef.current = true;
+        resetProforma(finalLocalData);
+        saveDraftProforma(finalLocalData);
+      }
+      setNextConsecutivoState(setNextConsecutivo(assignedNum + 1));
+
       setPendingDraftPdfModal(null);
       await runPdfExportForData(
-        assignedData,
+        finalLocalData,
         isActive,
         Boolean(target.promptPostPdfAction)
       );
@@ -1316,7 +1487,12 @@ export default function App() {
     closeAfterSave: boolean;
   }) => {
     if (!isProformaConfirmed || !cloudConfig.webhookUrl.trim()) return;
-    const currentLabel = formatProformaNumberLabel(proforma);
+    const activeData = proforma;
+    const activeIsDraft = isProformaDraft(activeData);
+    const prevConsecToClean = !activeIsDraft
+      ? (activeData.previousConsecutivo ?? activeData.draftCode ?? '').trim()
+      : '';
+    const currentLabel = formatProformaNumberLabel(activeData);
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -1328,19 +1504,34 @@ export default function App() {
     }
 
     try {
-      const res = await sendProformaToWebhook(cloudConfig, proforma, totals, {
+      const res = await sendProformaToWebhook(cloudConfig, activeData, totals, {
         overwrite,
       });
 
+      const persistedData: ProformaData =
+        res.ok && !activeIsDraft
+          ? {
+              ...activeData,
+              draftCode: undefined,
+              previousConsecutivo: undefined,
+            }
+          : activeData;
+
       if (!closeAfterSave) {
-        const savedAt = saveDraftProforma(proforma);
+        if (res.ok && !activeIsDraft && (activeData.previousConsecutivo || activeData.draftCode)) {
+          resetProforma(persistedData);
+        }
+        const savedAt = saveDraftProforma(persistedData);
         if (savedAt) {
           setLastLocalSavedAt(savedAt);
           setAutosaveStatus('saved');
         }
       }
 
-      const updatedHistory = saveProformaToHistory(proforma, totals.total);
+      const updatedHistory = saveProformaToHistory(persistedData, totals.total, {
+        syncedToSheet: res.ok ? true : undefined,
+        unsyncedLocal: res.ok ? false : undefined,
+      });
       setHistory(updatedHistory);
       latestHistoryRef.current = updatedHistory;
       const updatedNext = setNextConsecutivo(
@@ -1370,6 +1561,14 @@ export default function App() {
           true
         );
         return;
+      }
+
+      if (prevConsecToClean) {
+        await cleanupPreviousDraftInSheetIfNeeded(
+          cloudConfig,
+          prevConsecToClean,
+          persistedData.id
+        );
       }
 
       setShowSendToSheetConfirm(false);
@@ -1760,11 +1959,33 @@ export default function App() {
       ? parseProformaFromJsonInput(record.rawDatosJson, record.consecutivo)
       : null;
 
-    const candidateData =
+    const rawCandidate =
       parsedFromDatosJson ??
       normalizeProformaClientContact(
         JSON.parse(JSON.stringify(record.data)) as ProformaData
       );
+    const candidateIsDraft = isProformaDraft(rawCandidate) || isProformaDraft(record);
+    const preservedDraftCode = candidateIsDraft
+      ? (rawCandidate.draftCode ?? record.draftCode ?? record.data?.draftCode ?? 'Borrador').trim() || 'Borrador'
+      : undefined;
+    const candidateData: ProformaData = candidateIsDraft
+      ? {
+          ...rawCandidate,
+          consecutivo: 0,
+          isDraft: true,
+          draftCode: preservedDraftCode,
+          previousConsecutivo: rawCandidate.previousConsecutivo || preservedDraftCode,
+        }
+      : {
+          ...rawCandidate,
+          consecutivo:
+            rawCandidate.consecutivo > 0
+              ? rawCandidate.consecutivo
+              : record.consecutivo,
+          isDraft: false,
+          draftCode: undefined,
+          previousConsecutivo: undefined,
+        };
 
     if (!isProformaConfirmed) {
       const loaded = normalizeProformaClientContact(
@@ -1812,6 +2033,14 @@ export default function App() {
         latestRemoteHistoryRef.current.some(
           (r) => r.id === normalized.id && !isProformaDraft(r)
         );
+      const nextDraftCode = computeNextDraftCode(
+        latestHistoryRef.current,
+        latestRemoteHistoryRef.current,
+        latestIsProformaConfirmedRef.current &&
+          isProformaDraft(latestProformaRef.current)
+          ? [latestProformaRef.current.draftCode]
+          : []
+      );
       const importedAsDraft: ProformaData = {
         ...normalized,
         id: hasNumberedCollision
@@ -1819,6 +2048,8 @@ export default function App() {
           : normalized.id,
         consecutivo: 0,
         isDraft: true,
+        draftCode: nextDraftCode,
+        previousConsecutivo: nextDraftCode,
         updatedAt: new Date().toISOString(),
       };
       const importedTotals = computeProformaTotals(importedAsDraft);
@@ -1830,14 +2061,15 @@ export default function App() {
         saveDraftProforma(importedAsDraft);
         const updatedHistory = saveProformaToHistory(
           importedAsDraft,
-          importedTotals.total
+          importedTotals.total,
+          { unsyncedLocal: !latestCloudConfigRef.current.webhookUrl.trim() }
         );
         setHistory(updatedHistory);
         latestHistoryRef.current = updatedHistory;
         setActiveSection('editor');
         void syncDraftToSheetInBackground(importedAsDraft);
         showToast(
-          `Borrador "${file.name}" cargado en el editor en modo Borrador.`
+          `Borrador "${file.name}" cargado en el editor como ${nextDraftCode}.`
         );
         return;
       }
@@ -1863,7 +2095,9 @@ export default function App() {
     if (shouldSyncDraft) {
       saveDraftProforma(loaded);
       const loadedTotals = computeProformaTotals(loaded);
-      const updatedHistory = saveProformaToHistory(loaded, loadedTotals.total);
+      const updatedHistory = saveProformaToHistory(loaded, loadedTotals.total, {
+        unsyncedLocal: !latestCloudConfigRef.current.webhookUrl.trim(),
+      });
       setHistory(updatedHistory);
       latestHistoryRef.current = updatedHistory;
       void syncDraftToSheetInBackground(loaded);
@@ -1880,12 +2114,37 @@ export default function App() {
     executeLoadPendingDraft();
   };
 
-  const handleDuplicateRecord = (record: SavedProformaRecord) => {
-    const nextNum = reserveNextConsecutivo(
-      isProformaConfirmed
-        ? Math.max(proforma.consecutivo, record.consecutivo)
-        : record.consecutivo,
-      latestRemoteHistoryRef.current
+  const handleDuplicateRecord = async (record: SavedProformaRecord) => {
+    let latestRemote = latestRemoteHistoryRef.current;
+    const currentCloudCfg = latestCloudConfigRef.current;
+    if (currentCloudCfg.webhookUrl.trim()) {
+      try {
+        const fetched = await fetchRemoteProformasFromAppsScript(currentCloudCfg);
+        latestRemote = fetched.map((rec) => ({
+          ...rec,
+          source: 'sheet' as const,
+          data: normalizeProformaClientContact(rec.data),
+        }));
+        const syncedAt = new Date().toISOString();
+        latestRemoteHistoryRef.current = latestRemote;
+        setRemoteHistory(latestRemote);
+        setLastRemoteHistorySyncAt(syncedAt);
+        saveRemoteHistoryCache({ records: latestRemote, syncedAt });
+      } catch {
+        // Usa historial remoto cacheado si la red falla
+      }
+    }
+
+    const extraUsed = Math.max(
+      isProformaConfirmed && !isProformaDraft(proforma) ? proforma.consecutivo : 0,
+      !isProformaDraft(record) ? record.consecutivo : 0
+    );
+    const nextNum = setNextConsecutivo(
+      computeNextConsecutivoFromRecords(
+        latestHistoryRef.current,
+        latestRemote,
+        extraUsed > 0 ? extraUsed : undefined
+      )
     );
     setNextConsecutivoState(nextNum);
     const cloned = normalizeProformaClientContact(
@@ -1894,13 +2153,15 @@ export default function App() {
     cloned.id = `prof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     cloned.consecutivo = nextNum;
     cloned.isDraft = false;
+    cloned.draftCode = undefined;
+    cloned.previousConsecutivo = undefined;
     cloned.updatedAt = new Date().toISOString();
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = true;
     resetProforma(cloned);
     setActiveSection('editor');
     showToast(
-      `Proforma ${formatProformaNumberLabel(record)} duplicada como Nº ${nextNum}.`
+      `Proforma ${formatProformaNumberLabel(record)} duplicada con consecutivo Nº ${nextNum}.`
     );
   };
 
@@ -2326,6 +2587,8 @@ export default function App() {
         const normalized = fetched.map((rec) => ({
           ...rec,
           source: 'sheet' as const,
+          syncedToSheet: true,
+          unsyncedLocal: false,
           data: normalizeProformaClientContact(rec.data),
         }));
         const syncedAt = new Date().toISOString();
@@ -2334,30 +2597,55 @@ export default function App() {
         setLastRemoteHistorySyncAt(syncedAt);
         saveRemoteHistoryCache({ records: normalized, syncedAt });
 
-        const suggestedNext = setNextConsecutivo(
-          computeNextConsecutivoFromRecords(
-            latestHistoryRef.current,
-            normalized
+        // El Sheet PROFORMAS prevalece sobre copias locales cacheadas eliminadas en el Sheet
+        const currentLocal = latestHistoryRef.current;
+        const remoteIdSet = new Set(
+          normalized.flatMap((r) =>
+            [r.id, r.data?.id].filter((x): x is string => Boolean(x))
           )
         );
-        setNextConsecutivoState(suggestedNext);
-
-        const currentActive = latestProformaRef.current;
-        const isSavedLocally = latestHistoryRef.current.some(
-          (rec) => rec.id === currentActive.id
+        const remoteNumSet = new Set(
+          normalized
+            .filter((r) => !isProformaDraft(r) && r.consecutivo > 0)
+            .map((r) => Math.floor(Number(r.consecutivo)))
         );
-        if (
-          !isProformaDraft(currentActive) &&
-          !hasEditedSinceLoadRef.current &&
-          !isSavedLocally &&
-          !hasProformaUserContent(currentActive) &&
-          currentActive.consecutivo !== suggestedNext
-        ) {
-          resetProforma({
-            ...currentActive,
-            consecutivo: suggestedNext,
-          });
+        const remoteDraftCodeSet = new Set(
+          normalized
+            .filter((r) => isProformaDraft(r))
+            .map((r) => (r.draftCode ?? r.data?.draftCode ?? '').trim().toLowerCase())
+            .filter((c) => Boolean(c) && c !== 'borrador')
+        );
+
+        const prunedLocal = currentLocal.filter((localRec) => {
+          if (pendingDraftSyncIdsRef.current.has(localRec.id)) return true;
+          if (localRec.unsyncedLocal === true) return true;
+          if (remoteIdSet.has(localRec.id)) return true;
+          const localIsDraft = isProformaDraft(localRec) || localRec.consecutivo <= 0;
+          if (!localIsDraft && remoteNumSet.has(Math.floor(Number(localRec.consecutivo)))) {
+            return true;
+          }
+          if (localIsDraft) {
+            const localCode = (localRec.draftCode ?? localRec.data?.draftCode ?? '')
+              .trim()
+              .toLowerCase();
+            if (localCode && remoteDraftCodeSet.has(localCode)) {
+              return true;
+            }
+          }
+          return false;
+        });
+
+        let finalLocal = prunedLocal;
+        if (prunedLocal.length !== currentLocal.length) {
+          finalLocal = saveLocalHistoryList(prunedLocal);
+          setHistory(finalLocal);
+          latestHistoryRef.current = finalLocal;
         }
+
+        const suggestedNext = setNextConsecutivo(
+          computeNextConsecutivoFromRecords(finalLocal, normalized)
+        );
+        setNextConsecutivoState(suggestedNext);
 
         const msg =
           normalized.length > 0
@@ -2380,7 +2668,7 @@ export default function App() {
         setIsSyncingRemoteHistory(false);
       }
     },
-    [resetProforma, showToast]
+    [showToast]
   );
 
   syncHistoryFromSheetRef.current = handleSyncHistoryFromSheet;
@@ -2413,87 +2701,71 @@ export default function App() {
       try {
         const targetSheetName = cfg.sheetName || DEFAULT_CLIENTS_SHEET_NAME;
 
-        if (hasSheetUrl) {
-          const result = await fetchAndParseGoogleSheetClients(
-            cfg.sheetUrl,
-            targetSheetName
-          );
-          let summary: ClientsImportSummary = {
-            added: 0,
-            updated: 0,
-            total: latestSavedClientsRef.current.length,
-          };
-          if (result.clients.length > 0 || !silent) {
-            summary = handleImportClients(result.clients, cfg.strategy, {
-              silent,
-            });
+        if (hasAppsScriptUrl) {
+          try {
+            const rows = await fetchClientsFromAppsScript(
+              cfg.appsScriptUrl,
+              targetSheetName
+            );
+            const summary = handleImportClients(rows, 'replace', { silent: true });
             const nextCfg: ClientsImportConfig = {
               ...latestClientsImportConfigRef.current,
-              sheetName: result.sheetNameUsed || cfg.sheetName,
+              sheetName: targetSheetName,
               lastImportedAt: new Date().toISOString(),
             };
             setClientsImportConfig(nextCfg);
             saveClientsImportConfig(nextCfg);
-          }
 
-          const sheetNote = result.sheetNameUsed
-            ? ` desde la hoja "${result.sheetNameUsed}"`
-            : '';
-          const ignoredNote =
-            result.ignoredCount > 0
-              ? ` (${result.ignoredCount} fila(s) vacía(s) o sin cliente omitida(s))`
-              : '';
-          const message =
-            cfg.strategy === 'replace'
-              ? `Lista de clientes reemplazada${sheetNote}: ${summary.added} cliente(s) importado(s)${ignoredNote}.`
-              : `Clientes actualizados${sheetNote}: ${summary.added} agregado(s), ${summary.updated} actualizado(s)${ignoredNote}.`;
+            const message =
+              rows.length > 0
+                ? `Clientes sincronizados desde "${targetSheetName}": ${summary.added} cliente(s) vigentes en Sheet.`
+                : `Conexión correcta con "${targetSheetName}". No hay clientes registrados en el Sheet actualmente.`;
 
-          if (!silent) {
-            setClientsSyncFeedback({ ok: true, message });
-          } else {
-            setClientsSyncFeedback(null);
-          }
-          return { ok: true, message };
-        } else {
-          const rows = await fetchClientsFromAppsScript(
-            cfg.appsScriptUrl,
-            targetSheetName
-          );
-          if (rows.length === 0) {
             if (!silent) {
-              throw new Error(
-                'No se encontraron clientes en la pestaña CLIENTES del Apps Script.'
-              );
+              setClientsSyncFeedback({ ok: true, message });
+              showToast(message);
+            } else {
+              setClientsSyncFeedback(null);
             }
-            setClientsSyncFeedback(null);
-            return {
-              ok: true,
-              message:
-                'Conexión correcta con CLIENTES, sin registros nuevos.',
-            };
+            return { ok: true, message };
+          } catch (appsScriptErr) {
+            if (!hasSheetUrl) {
+              throw appsScriptErr;
+            }
           }
-
-          const summary = handleImportClients(rows, cfg.strategy, { silent });
-          const nextCfg: ClientsImportConfig = {
-            ...latestClientsImportConfigRef.current,
-            sheetName: targetSheetName,
-            lastImportedAt: new Date().toISOString(),
-          };
-          setClientsImportConfig(nextCfg);
-          saveClientsImportConfig(nextCfg);
-
-          const message =
-            cfg.strategy === 'replace'
-              ? `Lista de clientes reemplazada desde la hoja "${targetSheetName}": ${summary.added} cliente(s) importado(s).`
-              : `Clientes actualizados desde la hoja "${targetSheetName}": ${summary.added} agregado(s), ${summary.updated} actualizado(s).`;
-
-          if (!silent) {
-            setClientsSyncFeedback({ ok: true, message });
-          } else {
-            setClientsSyncFeedback(null);
-          }
-          return { ok: true, message };
         }
+
+        const result = await fetchAndParseGoogleSheetClients(
+          cfg.sheetUrl,
+          targetSheetName
+        );
+        const summary = handleImportClients(result.clients, 'replace', {
+          silent: true,
+        });
+        const nextCfg: ClientsImportConfig = {
+          ...latestClientsImportConfigRef.current,
+          sheetName: result.sheetNameUsed || cfg.sheetName,
+          lastImportedAt: new Date().toISOString(),
+        };
+        setClientsImportConfig(nextCfg);
+        saveClientsImportConfig(nextCfg);
+
+        const sheetNote = result.sheetNameUsed
+          ? ` desde la hoja "${result.sheetNameUsed}"`
+          : '';
+        const ignoredNote =
+          result.ignoredCount > 0
+            ? ` (${result.ignoredCount} fila(s) vacía(s) o sin cliente omitida(s))`
+            : '';
+        const message = `Clientes sincronizados${sheetNote}: ${summary.added} cliente(s) vigentes en Sheet${ignoredNote}.`;
+
+        if (!silent) {
+          setClientsSyncFeedback({ ok: true, message });
+          showToast(message);
+        } else {
+          setClientsSyncFeedback(null);
+        }
+        return { ok: true, message };
       } catch (err) {
         if (err instanceof SpreadsheetSheetNotFoundError) {
           const msg = `${err.message} Selecciona la pestaña correcta abajo.`;
@@ -2585,16 +2857,34 @@ export default function App() {
 
     try {
       const isDraft = isProformaDraft(record);
+      const targetDraftCode = (
+        record.draftCode ??
+        record.data?.draftCode ??
+        ''
+      )
+        .trim()
+        .toLowerCase();
       let updatedLocal = deleteProformaFromHistory(record.id);
       if (!isDraft && record.consecutivo > 0) {
-        const matchingLocal = updatedLocal.find(
+        const matchingLocal = updatedLocal.filter(
           (r) =>
             !isProformaDraft(r) &&
             Number(r.consecutivo) === Number(record.consecutivo)
         );
-        if (matchingLocal) {
-          updatedLocal = deleteProformaFromHistory(matchingLocal.id);
-        }
+        matchingLocal.forEach((m) => {
+          updatedLocal = deleteProformaFromHistory(m.id);
+        });
+      } else if (isDraft && targetDraftCode && targetDraftCode !== 'borrador') {
+        const matchingDrafts = updatedLocal.filter((r) => {
+          if (!isProformaDraft(r)) return false;
+          const rCode = (r.draftCode ?? r.data?.draftCode ?? '')
+            .trim()
+            .toLowerCase();
+          return rCode === targetDraftCode;
+        });
+        matchingDrafts.forEach((m) => {
+          updatedLocal = deleteProformaFromHistory(m.id);
+        });
       }
       setHistory(updatedLocal);
       latestHistoryRef.current = updatedLocal;
@@ -2608,6 +2898,12 @@ export default function App() {
           Number(r.consecutivo) === Number(record.consecutivo)
         ) {
           return false;
+        }
+        if (isDraft && targetDraftCode && targetDraftCode !== 'borrador' && isProformaDraft(r)) {
+          const rCode = (r.draftCode ?? r.data?.draftCode ?? '')
+            .trim()
+            .toLowerCase();
+          if (rCode === targetDraftCode) return false;
         }
         return true;
       });
@@ -2638,6 +2934,7 @@ export default function App() {
             id: record.id,
             consecutivo: record.consecutivo,
             isDraft: record.isDraft,
+            draftCode: record.draftCode ?? record.data?.draftCode,
             cliente: record.data?.clientProject?.cliente,
             proyecto: record.data?.clientProject?.proyecto,
             data: record.data,
@@ -2690,11 +2987,33 @@ export default function App() {
     const parsedFromDatosJson = record.rawDatosJson
       ? parseProformaFromJsonInput(record.rawDatosJson, record.consecutivo)
       : null;
-    const loaded = normalizeProformaClientContact(
+    const rawLoaded = normalizeProformaClientContact(
       JSON.parse(
         JSON.stringify(parsedFromDatosJson ?? record.data)
       ) as ProformaData
     );
+    const loadedIsDraft = isProformaDraft(rawLoaded) || isProformaDraft(record);
+    const preservedDraftCode = loadedIsDraft
+      ? (rawLoaded.draftCode ?? record.draftCode ?? record.data?.draftCode ?? 'Borrador').trim() || 'Borrador'
+      : undefined;
+    const loaded: ProformaData = loadedIsDraft
+      ? {
+          ...rawLoaded,
+          consecutivo: 0,
+          isDraft: true,
+          draftCode: preservedDraftCode,
+          previousConsecutivo: rawLoaded.previousConsecutivo || preservedDraftCode,
+        }
+      : {
+          ...rawLoaded,
+          consecutivo:
+            rawLoaded.consecutivo > 0
+              ? rawLoaded.consecutivo
+              : record.consecutivo,
+          isDraft: false,
+          draftCode: undefined,
+          previousConsecutivo: undefined,
+        };
     confirmActiveProforma();
     hasEditedSinceLoadRef.current = false;
     resetProforma(loaded);
@@ -2714,13 +3033,32 @@ export default function App() {
       let next = updater(prev);
       if (next.consecutivo !== prev.consecutivo) {
         if (next.consecutivo > 0) {
-          next = { ...next, isDraft: false };
+          next = {
+            ...next,
+            isDraft: false,
+            previousConsecutivo: next.previousConsecutivo || prev.previousConsecutivo || prev.draftCode,
+            draftCode: undefined,
+          };
           if (next.consecutivo >= nextConsecutivo) {
             const updatedNext = setNextConsecutivo(next.consecutivo + 1);
             setNextConsecutivoState(updatedNext);
           }
         } else {
-          next = { ...next, consecutivo: 0, isDraft: true };
+          const restoredDraftCode =
+            next.draftCode ||
+            prev.draftCode ||
+            prev.previousConsecutivo ||
+            computeNextDraftCode(
+              latestHistoryRef.current,
+              latestRemoteHistoryRef.current
+            );
+          next = {
+            ...next,
+            consecutivo: 0,
+            isDraft: true,
+            draftCode: restoredDraftCode,
+            previousConsecutivo: next.previousConsecutivo || restoredDraftCode,
+          };
         }
       }
       return next;
@@ -2851,7 +3189,7 @@ export default function App() {
           kind: 'warning',
           source: 'system',
           title: activeIsDraft
-            ? 'Datos clave incompletos en Proforma Borrador'
+            ? `Datos clave incompletos en Proforma ${activeNumLabel}`
             : Number.isFinite(consecutivoNum) && consecutivoNum > 0
               ? `Datos clave incompletos en Proforma Nº ${consecutivoNum}`
               : 'Datos clave incompletos en la proforma',
@@ -3164,7 +3502,7 @@ export default function App() {
                         </span>
                       ) : isProformaDraft(proforma) ? (
                         <span className="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200">
-                          Borrador
+                          {formatProformaNumberLabel(proforma)}
                         </span>
                       ) : (
                         <span className="text-zinc-900 dark:text-zinc-100">
@@ -3235,7 +3573,12 @@ export default function App() {
                         {!isProformaConfirmed && (
                           <button
                             type="button"
-                            onClick={() => setShowCreateOrLoadModal(true)}
+                            onClick={() => {
+                              setShowCreateOrLoadModal(true);
+                              if (cloudConfig.webhookUrl.trim()) {
+                                void handleSyncHistoryFromSheet(true);
+                              }
+                            }}
                             title="Crear una nueva cotización o cargar una proforma existente"
                             className="inline-flex items-center gap-1.5 rounded-md bg-orange-600 px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs transition-colors hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer dark:bg-orange-600 dark:hover:bg-orange-500"
                           >
@@ -4420,6 +4763,11 @@ export default function App() {
           isProformaConfirmed && hasUnsavedProformaChanges(proforma, history)
         }
         activeConsecutivo={isProformaConfirmed ? proforma.consecutivo : undefined}
+        activeDraftCode={
+          isProformaConfirmed && isProformaDraft(proforma)
+            ? formatProformaNumberLabel(proforma)
+            : undefined
+        }
         onRefreshFromSheet={() => void handleSyncHistoryFromSheet(false)}
         onGoToIntegration={() => {
           setShowIntegrationTab(true);

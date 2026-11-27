@@ -107,11 +107,41 @@ export function computeProformaTotals(data: ProformaData): ComputedTotals {
   };
 }
 
+export interface ProformaDraftSubject {
+  consecutivo?: number;
+  isDraft?: boolean;
+  draftCode?: string;
+  data?: {
+    consecutivo?: number;
+    isDraft?: boolean;
+    draftCode?: string;
+  };
+}
+
+export function extractDraftSequenceNumber(value?: string | null): number | null {
+  const str = String(value ?? '').trim();
+  if (!str) return null;
+  const match = str.match(/borrador\s*[-#:]?\s*(\d+)/i);
+  if (!match) return null;
+  const num = parseInt(match[1], 10);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
+export function formatDraftCode(seq: number): string {
+  const safe = Math.max(1, Math.floor(Number(seq) || 1));
+  return `Borrador ${String(safe).padStart(2, '0')}`;
+}
+
+export function getProformaDraftCode(
+  subject: ProformaDraftSubject | null | undefined
+): string {
+  const explicit =
+    subject?.draftCode?.trim() || subject?.data?.draftCode?.trim() || '';
+  return explicit || 'Borrador';
+}
+
 export function isProformaDraft(
-  subject:
-    | { consecutivo?: number; isDraft?: boolean; data?: { consecutivo?: number; isDraft?: boolean } }
-    | null
-    | undefined
+  subject: ProformaDraftSubject | null | undefined
 ): boolean {
   if (!subject) return false;
   if (subject.isDraft || subject.data?.isDraft) return true;
@@ -119,15 +149,47 @@ export function isProformaDraft(
   return !Number.isFinite(num) || num <= 0;
 }
 
+export function computeNextDraftCode(
+  localHistory: Array<ProformaDraftSubject> = [],
+  remoteHistory: Array<ProformaDraftSubject> = [],
+  extraDraftCodes: Array<string | undefined | null> = []
+): string {
+  let highestSeq = 0;
+  const usedSeqs = new Set<number>();
+
+  const inspectCode = (raw?: string | null) => {
+    const seq = extractDraftSequenceNumber(raw);
+    if (seq !== null) {
+      usedSeqs.add(seq);
+      if (seq > highestSeq) {
+        highestSeq = seq;
+      }
+    }
+  };
+
+  for (const item of [...localHistory, ...remoteHistory]) {
+    if (!isProformaDraft(item)) continue;
+    inspectCode(item?.draftCode);
+    inspectCode(item?.data?.draftCode);
+  }
+
+  for (const extra of extraDraftCodes) {
+    inspectCode(extra);
+  }
+
+  let candidate = highestSeq + 1;
+  while (usedSeqs.has(candidate)) {
+    candidate += 1;
+  }
+  return formatDraftCode(candidate);
+}
+
 export function formatProformaNumberLabel(
-  subject:
-    | { consecutivo?: number; isDraft?: boolean; data?: { consecutivo?: number; isDraft?: boolean } }
-    | null
-    | undefined,
+  subject: ProformaDraftSubject | null | undefined,
   prefix = 'Nº '
 ): string {
   if (!subject) return 'Borrador';
-  if (isProformaDraft(subject)) return 'Borrador';
+  if (isProformaDraft(subject)) return getProformaDraftCode(subject);
   const num = Number(subject.consecutivo ?? subject.data?.consecutivo ?? 0);
   return `${prefix}${num}`;
 }
@@ -137,7 +199,8 @@ export function buildPdfFileName(
   proyecto: string,
   ext = 'pdf',
   clienteFallback = '',
-  isDraft = false
+  isDraft = false,
+  draftCode?: string
 ): string {
   const sanitize = (val: string) =>
     String(val ?? '')
@@ -149,7 +212,8 @@ export function buildPdfFileName(
   const clientPart = sanitize(clienteFallback);
   const namePart = projectPart || clientPart || 'Cliente';
   if (isDraft || !Number.isFinite(consecutivo) || consecutivo <= 0) {
-    return `Proforma Borrador - ${namePart}.${ext}`;
+    const draftPart = sanitize(draftCode || '') || 'Borrador';
+    return `Proforma ${draftPart} - ${namePart}.${ext}`;
   }
   return `Proforma #${consecutivo} - ${namePart}.${ext}`;
 }

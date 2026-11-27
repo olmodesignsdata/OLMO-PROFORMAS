@@ -107,6 +107,8 @@ export interface ProformaData {
   id: string;
   consecutivo: number;
   isDraft?: boolean;
+  draftCode?: string;
+  previousConsecutivo?: string;
   proformaType?: ProformaType;
   tableColumnWidthsByType?: Partial<Record<ProformaType, TableColumnWidths>>;
   company: CompanyInfo;
@@ -142,11 +144,14 @@ export interface SavedProformaRecord {
   id: string;
   consecutivo: number;
   isDraft?: boolean;
+  draftCode?: string;
   savedAt: string;
   data: ProformaData;
   total: number;
   source?: 'local' | 'sheet' | 'both';
   rawDatosJson?: string;
+  syncedToSheet?: boolean;
+  unsyncedLocal?: boolean;
 }
 
 export interface AranSpecTemplate {
